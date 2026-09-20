@@ -29,3 +29,7 @@ compile_commands.json
 *.dylib
 *.exe
 *.pdb
+
+# Python tooling caches
+__pycache__/
+*.pyc
