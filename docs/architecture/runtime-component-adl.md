@@ -1719,6 +1719,14 @@ The RuntimeHost MUST NOT bypass the authority port.
 
 ---
 
+> **Amendment 2026-09-21 (ADR-0043):** qiven-host is sealed; the
+> ADR-0026 execution-authority invariants (single-writer lease, fencing,
+> quarantine, reconciliation, journal) are absorbed as
+> RuntimeHost-internal subsystem semantics behind
+> IExecutionAuthorityPort. Sections 44/45/§82 now read "the RuntimeHost
+> execution-authority subsystem" wherever they name the separate Host
+> path. The conjunctive-gates invariant is unchanged in meaning.
+
 # 45. Current JasonPC consequence
 
 ADR-0026's current fail-closed state remains binding.
