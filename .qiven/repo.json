@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "template": "cpp-library",
+  "template": "cpp-app",
   "template_version": "0.1.5",
   "repository_name": "qiven-runtime",
   "cmake_project_name": "qiven-runtime",
