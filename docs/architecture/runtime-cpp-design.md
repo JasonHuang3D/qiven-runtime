@@ -176,8 +176,10 @@ All ports are abstract interfaces; no exceptions; `Result` returns.
 8.3  IPostActionObservationPort  tri-state outcome reports (§15)
 8.4  IOutboundClaimPort        tool-mediated claims only in first
                                landing; free text is NotGoverned (§16/67)
-8.5  IExecutionAuthorityPort   admission/lease/fencing — Host semantics;
-                               Runtime cannot mint (ADL §44/85)
+8.5  IExecutionAuthorityPort   admission/lease/fencing — ADR-0026
+                               invariants as a RuntimeHost-internal
+                               authority subsystem (ADR-0043); the
+                               cognitive core cannot mint (§44/85)
 8.6  LowerLayerSearchPort      attributable search evidence (§35)
 8.7  ToolContractPort          accepted invocation shape (§36)
 8.8  MechanicalCheckPort       binds exact artifact digest (§37); real
