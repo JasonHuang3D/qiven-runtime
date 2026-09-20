@@ -144,7 +144,7 @@ def _toolchain() -> dict[str, str]:
 def _expand(value: str, tools: dict[str, str] | None) -> str:
     if "{" not in value:
         return value
-    mapping = {"root": str(ROOT)}
+    mapping = {"root": str(ROOT), "python": sys.executable}
     if tools:
         mapping.update(tools)
     try:

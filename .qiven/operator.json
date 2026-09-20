@@ -6,11 +6,20 @@
     "exact-head": {
       "builtin": "exact_head"
     },
+    "check-toolchain": {
+      "argv": ["{python}", "tools/check_toolchain.py"]
+    },
     "format-check": {
-      "argv": ["tools/format-check.cmd"]
+      "argv": ["{python}", "tools/format_sources.py", "--check"]
+    },
+    "format": {
+      "argv": ["{python}", "tools/format_sources.py", "--fix"]
     },
     "configure": {
-      "argv": ["tools/gen-vs2022-x64.cmd"]
+      "argv": ["{cmake}", "--preset", "vs2022-x64"]
+    },
+    "delete-all-branches-but-main": {
+      "argv": ["{python}", "tools/delete_all_branches.py"]
     },
     "build-debug": {
       "argv": ["{cmake}", "--build", "--preset", "vs2022-x64-debug", "--parallel"]
@@ -30,10 +39,14 @@
     },
     "clean-tree": {
       "builtin": "git_clean_tree"
+    },
+    "apply-patch": {
+      "argv": ["{python}", "tools/apply_patch.py"]
     }
   },
   "gates": {
     "local": [
+      "check-toolchain",
       "format-check",
       "configure",
       ["build-debug", "build-release"],
