@@ -33,3 +33,4 @@ compile_commands.json
 # Python tooling caches
 __pycache__/
 *.pyc
+.generated-temp/
