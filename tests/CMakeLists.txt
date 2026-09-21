@@ -67,6 +67,9 @@ add_library(
         headers/resolver.cpp
         headers/transaction.cpp
         headers/decision.cpp
+        headers/executor.cpp
+        headers/ingress.cpp
+        headers/state.cpp
         headers/intent.cpp
         headers/observed_action.cpp
         headers/profile.cpp
@@ -145,3 +148,24 @@ qiven_enable_test_warnings(qiven-runtime-decision-binding)
 target_precompile_headers(qiven-runtime-decision-binding REUSE_FROM qiven-runtime)
 set_target_properties(qiven-runtime-decision-binding PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.decision-binding COMMAND qiven-runtime-decision-binding)
+
+add_executable(qiven-runtime-ingress-queue ingress_queue.cpp)
+target_link_libraries(qiven-runtime-ingress-queue PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-ingress-queue)
+target_precompile_headers(qiven-runtime-ingress-queue REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-ingress-queue PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.ingress-queue COMMAND qiven-runtime-ingress-queue)
+
+add_executable(qiven-runtime-executor executor.cpp)
+target_link_libraries(qiven-runtime-executor PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-executor)
+target_precompile_headers(qiven-runtime-executor REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-executor PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.executor COMMAND qiven-runtime-executor)
+
+add_executable(qiven-runtime-control-core control_core.cpp)
+target_link_libraries(qiven-runtime-control-core PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-control-core)
+target_precompile_headers(qiven-runtime-control-core REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-control-core PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.control-core COMMAND qiven-runtime-control-core)
