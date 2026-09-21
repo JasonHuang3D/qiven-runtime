@@ -108,6 +108,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/activation.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/claims.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/interception.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/adapter/bridge.hpp
 )
 
 set(
@@ -117,6 +118,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/port/interception.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/manifest.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/loopback.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/bridge.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/claims.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/generation.cpp
@@ -195,6 +197,18 @@ if(CMAKE_GENERATOR MATCHES "^Visual Studio")
         FILES ${QIVEN_RUNTIME_PRIVATE_SOURCES}
     )
 endif()
+
+add_executable(qiven-adapter-bridge apps/adapter_bridge_main.cpp)
+add_executable(qiven::adapter_bridge ALIAS qiven-adapter-bridge)
+set_target_properties(
+    qiven-adapter-bridge
+    PROPERTIES
+        CXX_EXTENSIONS OFF
+        FOLDER "Apps"
+        VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(qiven-adapter-bridge PRIVATE qiven::runtime)
+target_compile_features(qiven-adapter-bridge PRIVATE cxx_std_20)
 
 add_executable(qiven-runtime-app app/main.cpp)
 add_executable(qiven::runtime_app ALIAS qiven-runtime-app)

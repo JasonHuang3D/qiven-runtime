@@ -37,14 +37,54 @@ The SAME suite driven by a REAL harness adapter fixture. Concretely:
 4. The owner relays the sealed output back VERBATIM (no paraphrase);
    the authoring session grades it against the same rubric.
 
-## Owner steps (when you choose to execute the H1)
+## Owner steps (the bridge EXISTS — the H1 is executable)
 
-The real-adapter bridge does not exist yet — building it is normal
-(non-H1) work that happens FIRST. When it exists, this section becomes
-one copyable block per step: the launch command/prompt for the fresh
-session, the exact suite invocation, and the relay format. Until then,
-**there is nothing for the owner to execute**: the H1 is armed, not
-overdue.
+The real adapter bridge landed (adapter/bridge.hpp + the
+qiven-adapter-bridge CLI, atomic file-persisted ledger). Three steps,
+each one block:
+
+**Step 1 — build the bridge (any session, normal work):**
+
+```cmd
+cd D:\JasonWork\qiven-runtime
+tools\qiven.cmd run build-release
+```
+
+The executable is `builds2022-x64\Release\qiven-adapter-bridge.exe`.
+
+**Step 2 — owner attaches the hooks (owner hands; workspace client
+config):** add to `D:\JasonWork\.zcode\config.json`, INSIDE the
+existing `hooks.events` object (keeping the exec-router PreToolUse hook
+as another list entry):
+
+```json
+"SessionStart": [
+  { "hooks": [ { "type": "command",
+      "command": "D:/JasonWork/qiven-runtime/build/vs2022-x64/Release/qiven-adapter-bridge.exe activate --kind session-start --state D:/JasonWork/qiven-runtime/.generated-temp/adapter-bridge/real-session.log" } ] }
+],
+"PreToolUse": [
+  { "matcher": "Bash", "hooks": [ { "type": "command",
+      "command": "D:/JasonWork/qiven-runtime/build/vs2022-x64/Release/qiven-adapter-bridge.exe intercept --tool Bash --session 1 --action 1 --state D:/JasonWork/qiven-runtime/.generated-temp/adapter-bridge/real-session.log" } ] }
+],
+"PostToolUse": [
+  { "matcher": "Bash", "hooks": [ { "type": "command",
+      "command": "D:/JasonWork/qiven-runtime/build/vs2022-x64/Release/qiven-adapter-bridge.exe observe --action 1 --exit 0 --state D:/JasonWork/qiven-runtime/.generated-temp/adapter-bridge/real-session.log" } ] }
+]
+```
+
+(The fixed `--action 1` records one correlated proposal/observation pair
+for the session; per-action correlation ids ride the hook payload when
+the hook input carries a stable event id.)
+
+**Step 3 — owner relays the sealed evidence (verbatim):**
+
+```cmd
+D:\JasonWork\qiven-runtimeuilds2022-x64\Release\qiven-adapter-bridge.exe evidence --state D:\JasonWork\qiven-runtime\.generated-tempdapter-bridgeeal-session.log
+```
+
+Paste the output back UNMODIFIED. The authoring session grades it
+against the F-suite rubric (complete surface, single observation,
+tri-state from exit facts, declared window) and records PASS/FAIL.
 
 ## Honesty boundary
 
