@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Format (--fix) or check (--check) tracked C/C++ sources via pinned clang-format.
+"""Format (--fix) or check (--check) tracked AND new (untracked, unignored) C/C++ sources.
 
 Was tools/format.cmd and tools/format-check.cmd (one script, two modes).
 """
@@ -24,7 +24,7 @@ def main() -> int:
         return 2
     tools = resolve()
     root = Path(__file__).resolve().parent.parent
-    listing = subprocess.run(["git", "-C", str(root), "ls-files", "--", *GLOBS],
+    listing = subprocess.run(["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "--", *GLOBS],
                              text=True, stdout=subprocess.PIPE, check=False)
     if listing.returncode != 0:
         print("[FAIL] git ls-files failed")
