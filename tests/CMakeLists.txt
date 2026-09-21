@@ -75,6 +75,7 @@ add_library(
         headers/intent.cpp
         headers/observed_action.cpp
         headers/profile.cpp
+        headers/reconciliation.cpp
 )
 
 target_link_libraries(qiven-runtime-header-check PRIVATE qiven::runtime)
@@ -185,3 +186,10 @@ qiven_enable_test_warnings(qiven-runtime-failure-retry)
 target_precompile_headers(qiven-runtime-failure-retry REUSE_FROM qiven-runtime)
 set_target_properties(qiven-runtime-failure-retry PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.failure-retry COMMAND qiven-runtime-failure-retry)
+
+add_executable(qiven-runtime-reconciliation reconciliation.cpp)
+target_link_libraries(qiven-runtime-reconciliation PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-reconciliation)
+target_precompile_headers(qiven-runtime-reconciliation REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-reconciliation PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.reconciliation COMMAND qiven-runtime-reconciliation)
