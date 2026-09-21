@@ -105,13 +105,18 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/outcome.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/admission.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/execution_authority.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/activation.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/claims.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/interception.hpp
 )
 
 set(
     QIVEN_RUNTIME_PRIVATE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/handshake.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/port/execution_authority.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/port/interception.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/manifest.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/loopback.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/claims.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/generation.cpp
