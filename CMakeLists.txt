@@ -87,6 +87,8 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/adapter/manifest.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/claims.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/generation.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/intent.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/observed_action.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/identity.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/profile.hpp
 )
@@ -97,6 +99,8 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/manifest.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/claims.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/generation.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/intent.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/observed_action.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/identity.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/profile.cpp
 )

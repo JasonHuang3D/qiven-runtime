@@ -2,6 +2,22 @@
 
 namespace qiven::runtime
 {
+u64 correlation_hash(const CorrelationKey& key) noexcept
+{
+    u64 seed = fnv1a64_offset_basis;
+    seed ^= key.generation.value;
+    seed *= fnv1a64_prime;
+    seed ^= key.adapter.fnv;
+    seed *= fnv1a64_prime;
+    seed ^= key.session.value;
+    seed *= fnv1a64_prime;
+    seed ^= key.actor.value;
+    seed *= fnv1a64_prime;
+    seed ^= key.action.value;
+    seed *= fnv1a64_prime;
+    return seed;
+}
+
 std::string render_id(IdKind kind, u64 bits)
 {
     static constexpr const char* names[] = {

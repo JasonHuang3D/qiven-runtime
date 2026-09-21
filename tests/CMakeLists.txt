@@ -59,6 +59,8 @@ add_library(
         headers/claims.cpp
         headers/generation.cpp
         headers/identity.cpp
+        headers/intent.cpp
+        headers/observed_action.cpp
         headers/profile.cpp
 )
 
@@ -71,3 +73,21 @@ set_target_properties(
         CXX_EXTENSIONS OFF
         FOLDER "Tests/Header Checks"
 )
+
+add_executable(qiven-runtime-observed-action observed_action.cpp)
+target_link_libraries(qiven-runtime-observed-action PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-observed-action)
+set_target_properties(qiven-runtime-observed-action PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.observed-action COMMAND qiven-runtime-observed-action)
+
+add_executable(qiven-runtime-intent intent.cpp)
+target_link_libraries(qiven-runtime-intent PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-intent)
+set_target_properties(qiven-runtime-intent PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.intent COMMAND qiven-runtime-intent)
+
+add_executable(qiven-runtime-correlation correlation.cpp)
+target_link_libraries(qiven-runtime-correlation PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-correlation)
+set_target_properties(qiven-runtime-correlation PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.correlation COMMAND qiven-runtime-correlation)
