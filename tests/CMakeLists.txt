@@ -65,6 +65,7 @@ add_library(
         headers/identity.cpp
         headers/requirement.cpp
         headers/resolver.cpp
+        headers/transaction.cpp
         headers/intent.cpp
         headers/observed_action.cpp
         headers/profile.cpp
@@ -122,3 +123,10 @@ qiven_enable_test_warnings(qiven-runtime-resolver-registry)
 target_precompile_headers(qiven-runtime-resolver-registry REUSE_FROM qiven-runtime)
 set_target_properties(qiven-runtime-resolver-registry PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.resolver-registry COMMAND qiven-runtime-resolver-registry)
+
+add_executable(qiven-runtime-before-judgment-path before_judgment_path.cpp)
+target_link_libraries(qiven-runtime-before-judgment-path PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-before-judgment-path)
+target_precompile_headers(qiven-runtime-before-judgment-path REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-before-judgment-path PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.before-judgment-path COMMAND qiven-runtime-before-judgment-path)
