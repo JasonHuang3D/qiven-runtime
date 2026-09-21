@@ -37,7 +37,7 @@ if(NOT EXISTS "${QIVEN_DRAFT_ROOT}/CMakeLists.txt")
     message(FATAL_ERROR "qiven-context-draft checkout not found; set QIVEN_DRAFT_ROOT to its path")
 endif()
 
-set(QIVEN_DRAFT_PINNED_SHA "d1e50a86061ee83ae311fdaa467e7d50aaa68317")
+set(QIVEN_DRAFT_PINNED_SHA "73a4bfa2a9068b6c3e37319585732ac1f89f5ef7")
 find_package(Git REQUIRED)
 execute_process(
     COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
