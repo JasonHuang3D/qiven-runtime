@@ -66,6 +66,7 @@ add_library(
         headers/requirement.cpp
         headers/resolver.cpp
         headers/transaction.cpp
+        headers/decision.cpp
         headers/intent.cpp
         headers/observed_action.cpp
         headers/profile.cpp
@@ -137,3 +138,10 @@ qiven_enable_test_warnings(qiven-runtime-before-execution-path)
 target_precompile_headers(qiven-runtime-before-execution-path REUSE_FROM qiven-runtime)
 set_target_properties(qiven-runtime-before-execution-path PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.before-execution-path COMMAND qiven-runtime-before-execution-path)
+
+add_executable(qiven-runtime-decision-binding decision_binding.cpp)
+target_link_libraries(qiven-runtime-decision-binding PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-decision-binding)
+target_precompile_headers(qiven-runtime-decision-binding REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-decision-binding PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.decision-binding COMMAND qiven-runtime-decision-binding)

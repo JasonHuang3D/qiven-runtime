@@ -77,6 +77,11 @@ struct EvidenceId
     u64 fnv = 0; // fnv1a64 over the receipt's bound identity fields
 };
 
+struct DecisionToken
+{
+    u64 fnv = 0; // fnv1a64 over the decision's bound facts; single-use
+};
+
 struct ProfileRevision
 {
     u64 value = 0; // monotonic profile lineage
