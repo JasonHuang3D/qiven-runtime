@@ -95,7 +95,10 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/requirement.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/resolver.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/transaction.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/state.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/decision.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/executor.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/ingress.hpp
 )
 
 set(
@@ -112,7 +115,10 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/requirement.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/resolver.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/transaction.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/state.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/decision.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/executor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ingress.cpp
 )
 
 target_sources(
