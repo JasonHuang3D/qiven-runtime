@@ -73,6 +73,10 @@ add_library(
         headers/outcome.cpp
         headers/admission.cpp
         headers/execution_authority.cpp
+        headers/activation.cpp
+        headers/claims.cpp
+        headers/interception.cpp
+        headers/loopback.cpp
         headers/state.cpp
         headers/state_store.cpp
         headers/intent.cpp
@@ -210,3 +214,10 @@ qiven_enable_test_warnings(qiven-runtime-admission-composition)
 target_precompile_headers(qiven-runtime-admission-composition REUSE_FROM qiven-runtime)
 set_target_properties(qiven-runtime-admission-composition PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.admission-composition COMMAND qiven-runtime-admission-composition)
+
+add_executable(qiven-runtime-adapter-conformance adapter_conformance.cpp)
+target_link_libraries(qiven-runtime-adapter-conformance PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-adapter-conformance)
+target_precompile_headers(qiven-runtime-adapter-conformance REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-adapter-conformance PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.adapter-conformance COMMAND qiven-runtime-adapter-conformance)
