@@ -26,6 +26,7 @@
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace qiven::runtime
 {
@@ -57,6 +58,9 @@ public:
     {
         return m_scopes.size();
     }
+
+    // Sorted active scope ids (state-store serialization order).
+    [[nodiscard]] std::vector<u64> active_scope_ids() const;
 
     // Lift the barrier (only the coordinator resolves; §52/§53).
     void lift(const EffectScope& scope) noexcept;

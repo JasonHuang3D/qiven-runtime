@@ -72,6 +72,7 @@ add_library(
         headers/ingress.cpp
         headers/outcome.cpp
         headers/state.cpp
+        headers/state_store.cpp
         headers/intent.cpp
         headers/observed_action.cpp
         headers/profile.cpp
@@ -193,3 +194,10 @@ qiven_enable_test_warnings(qiven-runtime-reconciliation)
 target_precompile_headers(qiven-runtime-reconciliation REUSE_FROM qiven-runtime)
 set_target_properties(qiven-runtime-reconciliation PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.reconciliation COMMAND qiven-runtime-reconciliation)
+
+add_executable(qiven-runtime-restart-recovery restart_recovery.cpp)
+target_link_libraries(qiven-runtime-restart-recovery PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-restart-recovery)
+target_precompile_headers(qiven-runtime-restart-recovery REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-restart-recovery PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.restart-recovery COMMAND qiven-runtime-restart-recovery)
