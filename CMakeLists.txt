@@ -118,10 +118,36 @@ target_sources(
 target_link_libraries(qiven-runtime PUBLIC qiven::foundation qiven::context_draft)
 
 if(MSVC)
-    target_compile_options(qiven-runtime PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(qiven-runtime PRIVATE /W4 /permissive- /utf-8 /MP)
 else()
     target_compile_options(qiven-runtime PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
 endif()
+
+# Build-performance policy (devkit docs/conventions/build-performance.md):
+# the heavy stable include stack (the frozen draft monolith + foundation
+# vocabulary + the common std set) is precompiled once for the library and
+# reused by the test targets below. The header-check target is EXEMPT by
+# design: precompiled headers would inject includes the checked headers
+# never asked for and mask a self-containment defect (never weaken the
+# detector).
+target_precompile_headers(
+    qiven-runtime
+    PRIVATE
+        <qiven/context/cognition.hpp>
+        <qiven/context/runtime.hpp>
+        <qiven/error.hpp>
+        <qiven/hashing_sha256.hpp>
+        <qiven/result.hpp>
+        <algorithm>
+        <array>
+        <cstdint>
+        <memory>
+        <optional>
+        <span>
+        <string>
+        <utility>
+        <vector>
+)
 
 if(CMAKE_GENERATOR MATCHES "^Visual Studio")
     source_group(
