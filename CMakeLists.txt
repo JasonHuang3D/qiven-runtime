@@ -98,6 +98,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/state.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/decision.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/executor.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/failure.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/ingress.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/outcome.hpp
 )
@@ -119,6 +120,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/state.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/decision.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/executor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/failure.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ingress.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/outcome.cpp
 )
