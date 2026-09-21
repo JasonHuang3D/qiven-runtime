@@ -77,6 +77,7 @@ add_library(
         headers/claims.cpp
         headers/interception.cpp
         headers/loopback.cpp
+        headers/bridge.cpp
         headers/state.cpp
         headers/state_store.cpp
         headers/intent.cpp
@@ -221,3 +222,10 @@ qiven_enable_test_warnings(qiven-runtime-adapter-conformance)
 target_precompile_headers(qiven-runtime-adapter-conformance REUSE_FROM qiven-runtime)
 set_target_properties(qiven-runtime-adapter-conformance PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.adapter-conformance COMMAND qiven-runtime-adapter-conformance)
+
+add_executable(qiven-runtime-adapter-bridge adapter_bridge.cpp)
+target_link_libraries(qiven-runtime-adapter-bridge PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-adapter-bridge)
+target_precompile_headers(qiven-runtime-adapter-bridge REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-adapter-bridge PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.adapter-bridge COMMAND qiven-runtime-adapter-bridge)
