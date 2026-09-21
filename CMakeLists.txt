@@ -92,6 +92,8 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/identity.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/cognition_port.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/profile.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/requirement.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/resolver.hpp
 )
 
 set(
@@ -105,6 +107,8 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/observed_action.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/identity.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/profile.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/requirement.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/resolver.cpp
 )
 
 target_sources(
