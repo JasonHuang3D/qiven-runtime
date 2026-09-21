@@ -52,6 +52,21 @@ struct AdapterInstanceId
     u64 fnv = 0; // fnv1a64 over the stable adapter identity
 };
 
+struct HarnessSessionId
+{
+    u64 value = 0; // harness-assigned session identity
+};
+
+struct ActorInstanceId
+{
+    u64 value = 0; // originates ONLY from an accepted adapter/session binding
+};
+
+struct HarnessActionId
+{
+    u64 value = 0; // adapter-assigned identity of one exact harness action
+};
+
 struct CapabilityId
 {
     u64 value = 0;
@@ -84,4 +99,43 @@ struct ContentDigest
 {
     return to_hex_sha256(digest.sha256);
 }
+
+// The external-boundary correlation key (ADL §17): a five-tuple binding one
+// exact harness action to its control identity. Immutable, equality-
+// comparable, hashable. For one exact harness action the key maps to one
+// ControlTransactionId and stays stable through interception, decision,
+// dispatch, observation and reconciliation (C-18). There is no global
+// "currentAction" — correlation is per-action, never ambient.
+struct CorrelationKey
+{
+    RuntimeGenerationId generation {};
+    AdapterInstanceId adapter {};
+    HarnessSessionId session {};
+    ActorInstanceId actor {};
+    HarnessActionId action {};
+
+    [[nodiscard]] bool operator==(const CorrelationKey& other) const noexcept
+    {
+        return generation.value == other.generation.value && adapter.fnv == other.adapter.fnv &&
+               session.value == other.session.value && actor.value == other.actor.value &&
+               action.value == other.action.value;
+    }
+    [[nodiscard]] bool operator!=(const CorrelationKey& other) const noexcept
+    {
+        return !(*this == other);
+    }
+};
+
+// Deterministic non-cryptographic correlation identity (fnv1a64 over the
+// five tuple fields; identity hashing, not integrity).
+[[nodiscard]] u64 correlation_hash(const CorrelationKey& key) noexcept;
 } // namespace qiven::runtime
+
+template <>
+struct std::hash<qiven::runtime::CorrelationKey>
+{
+    [[nodiscard]] std::size_t operator()(const qiven::runtime::CorrelationKey& key) const noexcept
+    {
+        return static_cast<std::size_t>(qiven::runtime::correlation_hash(key));
+    }
+};
