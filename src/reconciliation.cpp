@@ -1,5 +1,7 @@
 #include <qiven/runtime/reconciliation.hpp>
 
+#include <algorithm>
+
 namespace qiven::runtime
 {
 void ReconciliationBarrier::raise(EffectScope scope, const ControlTransactionId& transaction)
@@ -19,6 +21,19 @@ BarrierCheck ReconciliationBarrier::check(const EffectScope& scope, MutationRela
 bool ReconciliationBarrier::active(const EffectScope& scope) const noexcept
 {
     return m_scopes.contains(scope.id);
+}
+
+std::vector<u64> ReconciliationBarrier::active_scope_ids() const
+{
+    std::vector<u64> out;
+    out.reserve(m_scopes.size());
+    for (const auto& [scope, transaction] : m_scopes)
+    {
+        static_cast<void>(transaction);
+        out.push_back(scope);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
 }
 
 void ReconciliationBarrier::lift(const EffectScope& scope) noexcept

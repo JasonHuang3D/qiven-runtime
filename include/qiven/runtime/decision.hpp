@@ -107,6 +107,11 @@ public:
 
     [[nodiscard]] bool was_consumed(u64 token_value) const noexcept;
 
+    // Restart reconstruction (state store): pre-seed tokens consumed
+    // BEFORE the restart so a replayed old ALLOW hits AlreadyConsumed
+    // (C-12 across restarts). Control-thread use only.
+    void seed_consumed(u64 token_value) noexcept;
+
 private:
     std::unordered_set<u64> m_consumed;
 };

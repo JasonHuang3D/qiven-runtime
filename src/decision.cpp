@@ -232,4 +232,9 @@ bool DecisionLedger::was_consumed(u64 token_value) const noexcept
 {
     return m_consumed.contains(token_value);
 }
+
+void DecisionLedger::seed_consumed(u64 token_value) noexcept
+{
+    m_consumed.insert(token_value);
+}
 } // namespace qiven::runtime
