@@ -69,6 +69,7 @@ add_library(
         headers/decision.cpp
         headers/executor.cpp
         headers/ingress.cpp
+        headers/outcome.cpp
         headers/state.cpp
         headers/intent.cpp
         headers/observed_action.cpp
@@ -169,3 +170,10 @@ qiven_enable_test_warnings(qiven-runtime-control-core)
 target_precompile_headers(qiven-runtime-control-core REUSE_FROM qiven-runtime)
 set_target_properties(qiven-runtime-control-core PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.control-core COMMAND qiven-runtime-control-core)
+
+add_executable(qiven-runtime-post-action-tri-state post_action_tri_state.cpp)
+target_link_libraries(qiven-runtime-post-action-tri-state PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-post-action-tri-state)
+target_precompile_headers(qiven-runtime-post-action-tri-state REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-post-action-tri-state PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.post-action-tri-state COMMAND qiven-runtime-post-action-tri-state)
