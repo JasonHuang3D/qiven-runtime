@@ -63,6 +63,8 @@ add_library(
         headers/generation.cpp
         headers/cognition_port.cpp
         headers/identity.cpp
+        headers/requirement.cpp
+        headers/resolver.cpp
         headers/intent.cpp
         headers/observed_action.cpp
         headers/profile.cpp
@@ -106,3 +108,17 @@ qiven_enable_test_warnings(qiven-runtime-cognition-pin)
 target_precompile_headers(qiven-runtime-cognition-pin REUSE_FROM qiven-runtime)
 set_target_properties(qiven-runtime-cognition-pin PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.cognition-pin COMMAND qiven-runtime-cognition-pin)
+
+add_executable(qiven-runtime-requirement-derivation requirement_derivation.cpp)
+target_link_libraries(qiven-runtime-requirement-derivation PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-requirement-derivation)
+target_precompile_headers(qiven-runtime-requirement-derivation REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-requirement-derivation PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.requirement-derivation COMMAND qiven-runtime-requirement-derivation)
+
+add_executable(qiven-runtime-resolver-registry resolver_registry.cpp)
+target_link_libraries(qiven-runtime-resolver-registry PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-resolver-registry)
+target_precompile_headers(qiven-runtime-resolver-registry REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-resolver-registry PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.resolver-registry COMMAND qiven-runtime-resolver-registry)

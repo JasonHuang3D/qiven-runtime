@@ -72,6 +72,11 @@ struct CapabilityId
     u64 value = 0;
 };
 
+struct EvidenceId
+{
+    u64 fnv = 0; // fnv1a64 over the receipt's bound identity fields
+};
+
 struct ProfileRevision
 {
     u64 value = 0; // monotonic profile lineage
