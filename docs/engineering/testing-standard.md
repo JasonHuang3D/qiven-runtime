@@ -77,15 +77,14 @@ Cross-platform CI remains an independent later gate.
 
 ## 8. Formatting validation
 
-Formatting scripts operate on files visible through `git ls-files`. When a feature creates new C/C++ files, expose only those new files without staging their contents:
+Formatting scripts enumerate tracked AND new (untracked, unignored) C/C++ files themselves; no index preparation is needed:
 
 ```cmd
-git add -N -- <each new C/C++ file created by this feature>
-tools\format.cmd
-tools\format-check.cmd
+toolsormat.cmd
+toolsormat-check.cmd
 ```
 
-Do not use a broad `git add -N .` merely to make the formatter discover new files. Inspect the diff afterward because a formatter can legitimately change more text than expected.
+`git add -N` is PROHIBITED for formatter exposure (2026-09-21 scar): an intent-to-add entry holds an EMPTY blob, and any later `git checkout -- .` restores that empty blob over the real file content - silent data loss. The formatter's enumeration is a pure read; keep it that way. Inspect the diff afterward because a formatter can legitimately change more text than expected.
 
 ## 9. Documentation-only changes
 
