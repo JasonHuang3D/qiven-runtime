@@ -68,6 +68,7 @@ add_library(
         headers/transaction.cpp
         headers/decision.cpp
         headers/executor.cpp
+        headers/failure.cpp
         headers/ingress.cpp
         headers/outcome.cpp
         headers/state.cpp
@@ -177,3 +178,10 @@ qiven_enable_test_warnings(qiven-runtime-post-action-tri-state)
 target_precompile_headers(qiven-runtime-post-action-tri-state REUSE_FROM qiven-runtime)
 set_target_properties(qiven-runtime-post-action-tri-state PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.post-action-tri-state COMMAND qiven-runtime-post-action-tri-state)
+
+add_executable(qiven-runtime-failure-retry failure_retry.cpp)
+target_link_libraries(qiven-runtime-failure-retry PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-failure-retry)
+target_precompile_headers(qiven-runtime-failure-retry REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-failure-retry PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.failure-retry COMMAND qiven-runtime-failure-retry)
