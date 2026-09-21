@@ -61,6 +61,7 @@ add_library(
         headers/adapter_manifest.cpp
         headers/claims.cpp
         headers/generation.cpp
+        headers/cognition_port.cpp
         headers/identity.cpp
         headers/intent.cpp
         headers/observed_action.cpp
@@ -98,3 +99,10 @@ qiven_enable_test_warnings(qiven-runtime-correlation)
 target_precompile_headers(qiven-runtime-correlation REUSE_FROM qiven-runtime)
 set_target_properties(qiven-runtime-correlation PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.correlation COMMAND qiven-runtime-correlation)
+
+add_executable(qiven-runtime-cognition-pin cognition_pin.cpp)
+target_link_libraries(qiven-runtime-cognition-pin PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-cognition-pin)
+target_precompile_headers(qiven-runtime-cognition-pin REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-cognition-pin PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.cognition-pin COMMAND qiven-runtime-cognition-pin)
