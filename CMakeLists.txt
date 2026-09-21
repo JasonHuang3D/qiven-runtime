@@ -95,6 +95,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/requirement.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/resolver.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/transaction.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/decision.hpp
 )
 
 set(
@@ -111,6 +112,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/requirement.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/resolver.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/transaction.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/decision.cpp
 )
 
 target_sources(

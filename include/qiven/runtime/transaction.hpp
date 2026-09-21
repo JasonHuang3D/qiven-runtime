@@ -133,6 +133,9 @@ enum class Disposition : u8
     ReDeliberate,
     Await,
     Deny,
+    NotGoverned, // produced by claim-coverage analysis (ADL 75); phases
+                 // never emit it - a hard-governed channel must not let
+                 // NotGoverned masquerade as ALLOW
 };
 
 [[nodiscard]] Disposition disposition_for(const ControlTransaction& transaction) noexcept;
