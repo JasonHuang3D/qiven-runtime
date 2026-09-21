@@ -71,6 +71,8 @@ add_library(
         headers/failure.cpp
         headers/ingress.cpp
         headers/outcome.cpp
+        headers/admission.cpp
+        headers/execution_authority.cpp
         headers/state.cpp
         headers/state_store.cpp
         headers/intent.cpp
@@ -201,3 +203,10 @@ qiven_enable_test_warnings(qiven-runtime-restart-recovery)
 target_precompile_headers(qiven-runtime-restart-recovery REUSE_FROM qiven-runtime)
 set_target_properties(qiven-runtime-restart-recovery PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.restart-recovery COMMAND qiven-runtime-restart-recovery)
+
+add_executable(qiven-runtime-admission-composition admission_composition.cpp)
+target_link_libraries(qiven-runtime-admission-composition PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-admission-composition)
+target_precompile_headers(qiven-runtime-admission-composition REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-admission-composition PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.admission-composition COMMAND qiven-runtime-admission-composition)

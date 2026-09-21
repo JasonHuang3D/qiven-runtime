@@ -103,11 +103,14 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/failure.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/ingress.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/outcome.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/admission.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/execution_authority.hpp
 )
 
 set(
     QIVEN_RUNTIME_PRIVATE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/handshake.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/port/execution_authority.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/manifest.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/claims.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition.cpp
@@ -127,6 +130,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/failure.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ingress.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/outcome.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/admission.cpp
 )
 
 target_sources(
