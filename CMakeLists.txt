@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(qiven-runtime VERSION 0.1.0 LANGUAGES CXX)
+# C is enabled for vendored third-party C targets (TP law; design 17):
+# without it .c sources classify as <None> and never compile.
+project(qiven-runtime VERSION 0.1.0 LANGUAGES CXX C)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 if(MSVC)
@@ -62,6 +64,12 @@ endif()
 
 add_subdirectory("${QIVEN_FOUNDATION_ROOT}" "${CMAKE_BINARY_DIR}/qiven-foundation" EXCLUDE_FROM_ALL)
 add_subdirectory("${QIVEN_DRAFT_ROOT}" "${CMAKE_BINARY_DIR}/qiven-context-draft" EXCLUDE_FROM_ALL)
+
+# Third-party law: qiven-devkit docs/engineering/third-party-dependencies.md
+# (M1 vendored, namespaced target; NO directory-level EXCLUDE_FROM_ALL —
+# the VS generator drops consuming ProjectReferences under it (LNK1104);
+# provenance verified by the third-party-verify gate task).
+add_subdirectory(third_party/sqlite3)
 
 # --- control-plane library (design §2) ------------------------------------
 add_library(qiven-runtime STATIC)

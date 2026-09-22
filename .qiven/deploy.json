@@ -1,0 +1,29 @@
+{
+  "schema": "qiven-deploy-policy-v1",
+  "product": "qiven-runtime",
+  "version": "0.1.0",
+  "profile": "release-x64",
+  "gate": "local",
+  "build": {
+    "configure_preset": "vs2022-x64",
+    "binary_dir": "build/vs2022-x64",
+    "config": "Release"
+  },
+  "products": [
+    { "from": "build/vs2022-x64/Release/qiven-runtime-app.exe", "to": "bin/qiven-runtime-app.exe" },
+    { "from": "build/vs2022-x64/Release/qiven-adapter-bridge.exe", "to": "bin/qiven-adapter-bridge.exe" },
+    { "from": "build/vs2022-x64/Release/qiven-runtime.lib", "to": "lib/qiven-runtime.lib" },
+    { "from": "include/qiven", "to": "include/qiven" }
+  ],
+  "docs": {
+    "readme_template": "docs/deploy/README.template.md",
+    "extras": [
+      { "from": "docs/architecture/runtime-production-mvp-architecture.md", "to": "ARCHITECTURE.md" },
+      { "from": "docs/architecture/runtime-production-mvp-cpp-design.md", "to": "CPP-DESIGN.md" }
+    ]
+  },
+  "licenses": { "repo": "README.md", "repo_note": "internal workspace project; no separate LICENSE file yet" },
+  "smoke": [
+    { "cwd": "bin", "command": ["qiven-runtime-app.exe"], "expect_exit": 0, "note": "bootstrap self-check" }
+  ]
+}

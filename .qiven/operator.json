@@ -7,50 +7,118 @@
       "builtin": "exact_head"
     },
     "check-toolchain": {
-      "argv": ["{python}", "tools/check_toolchain.py"]
+      "argv": [
+        "{python}",
+        "tools/check_toolchain.py"
+      ]
     },
     "format-check": {
-      "argv": ["{python}", "tools/format_sources.py", "--check"]
+      "argv": [
+        "{python}",
+        "tools/format_sources.py",
+        "--check"
+      ]
     },
     "format": {
-      "argv": ["{python}", "tools/format_sources.py", "--fix"]
+      "argv": [
+        "{python}",
+        "tools/format_sources.py",
+        "--fix"
+      ]
     },
     "configure": {
-      "argv": ["{cmake}", "--preset", "vs2022-x64"]
+      "argv": [
+        "{cmake}",
+        "--preset",
+        "vs2022-x64"
+      ]
     },
     "delete-all-branches-but-main": {
-      "argv": ["{python}", "tools/delete_all_branches.py"]
+      "argv": [
+        "{python}",
+        "tools/delete_all_branches.py"
+      ]
     },
     "build-debug": {
-      "argv": ["{cmake}", "--build", "--preset", "vs2022-x64-debug", "--parallel"]
+      "argv": [
+        "{cmake}",
+        "--build",
+        "--preset",
+        "vs2022-x64-debug",
+        "--parallel"
+      ]
     },
     "build-release": {
-      "argv": ["{cmake}", "--build", "--preset", "vs2022-x64-release", "--parallel"]
+      "argv": [
+        "{cmake}",
+        "--build",
+        "--preset",
+        "vs2022-x64-release",
+        "--parallel"
+      ]
     },
     "test-debug": {
-      "argv": ["{ctest}", "--preset", "vs2022-x64-debug"]
+      "argv": [
+        "{ctest}",
+        "--preset",
+        "vs2022-x64-debug"
+      ]
     },
     "test-release": {
-      "argv": ["{ctest}", "--preset", "vs2022-x64-release"]
+      "argv": [
+        "{ctest}",
+        "--preset",
+        "vs2022-x64-release"
+      ]
     },
     "diff-check": {
-      "builtin": "git_diff_check",
-      "base": "origin/main"
+      "argv": [
+        "git",
+        "diff",
+        "--check",
+        "origin/main...HEAD",
+        "--",
+        ".",
+        ":(exclude,glob)third_party/**"
+      ]
     },
     "clean-tree": {
       "builtin": "git_clean_tree"
     },
     "apply-patch": {
-      "argv": ["{python}", "tools/apply_patch.py"]
+      "argv": [
+        "{python}",
+        "tools/apply_patch.py"
+      ]
+    },
+    "third-party-verify": {
+      "argv": [
+        "python",
+        "tools/third_party_verify.py"
+      ]
+    },
+    "deploy": {
+      "argv": [
+        "cmd",
+        "/c",
+        "call tools\\deploy.cmd"
+      ]
     }
   },
   "gates": {
     "local": [
       "check-toolchain",
+      "third-party-verify",
       "format-check",
       "configure",
-      ["build-debug", "build-release"],
-      ["test-debug", "test-release"],
+      [
+        "build-debug",
+        "build-release"
+      ],
+      [
+        "test-debug",
+        "test-release"
+      ],
       "diff-check",
       "clean-tree"
     ]
