@@ -7,9 +7,26 @@
 
 namespace qiven::runtime
 {
-ControlCore::ControlCore(TransactionMinter& minter, Executor& executor, ResolverFn resolver,
-                         port::PinnedCognition cognition, StructuralFacts facts) :
-m_minter(minter), m_executor(executor), m_resolver(std::move(resolver)), m_cognition(std::move(cognition)),
+namespace
+{
+u64 clock_ms() noexcept
+{
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+}
+} // namespace
+
+ControlCore::ControlCore(TransactionMinter& minter,
+                         Executor& executor,
+                         const resolver::RequirementResolverRegistry& registry,
+                         ResolverMechanism mechanism,
+                         port::PinnedCognition cognition,
+                         StructuralFacts facts) :
+m_minter(minter),
+m_executor(executor),
+m_registry(registry),
+m_mechanism(std::move(mechanism)),
+m_cognition(std::move(cognition)),
 m_facts(facts)
 {
 }
@@ -41,10 +58,11 @@ TransactionView ControlCore::view(const ControlTransactionId& id) const
     {
         return out;
     }
-    out.exists      = true;
-    out.id          = transaction->id;
-    out.phase       = transaction->phase;
-    out.disposition = disposition_for(*transaction);
+    out.exists        = true;
+    out.id            = transaction->id;
+    out.causal_parent = transaction->causal_parent;
+    out.phase         = transaction->phase;
+    out.disposition   = disposition_for(*transaction);
     for (const qiven::context::PreparedRequirement& prepared : transaction->packet.requirements)
     {
         if (prepared.requirement.blocking && prepared.status == qiven::context::RequirementStatus::Pending)
@@ -53,6 +71,13 @@ TransactionView ControlCore::view(const ControlTransactionId& id) const
         }
     }
     return out;
+}
+
+const std::vector<resolver::EvidenceReceipt>& ControlCore::resume_receipts(const ControlTransactionId& id) const
+{
+    static const std::vector<resolver::EvidenceReceipt> empty;
+    const auto found = m_resume.find(id.value);
+    return found == m_resume.end() ? empty : found->second;
 }
 
 DrainResult ControlCore::drain(BoundedIngressQueue& ingress)
@@ -82,9 +107,22 @@ DrainResult ControlCore::drain(BoundedIngressQueue& ingress)
     return result;
 }
 
+const resolver::ResolverBinding* ControlCore::binding_for(const RequirementIdentity& identity) const
+{
+    // Selection by the full four-tuple's (kind, view) resolution: exactly
+    // one accepted binding may exist for a dispatchable requirement in
+    // this generation; zero or many are both fail-closed (§8.3).
+    const auto found = m_registry.find_for_kind_and_view(identity.kind, "default");
+    if (found.size() != 1)
+    {
+        return nullptr;
+    }
+    return found.front();
+}
+
 void ControlCore::handle_proposal(BoundedIngressQueue& ingress, const IngressMessage& message, DrainResult& result)
 {
-    const u64 key = correlation_hash(message.correlation);
+    const CorrelationKey key = message.correlation;
 
     const auto existing = m_by_correlation.find(key);
     if (existing != m_by_correlation.end())
@@ -132,8 +170,46 @@ void ControlCore::handle_proposal(BoundedIngressQueue& ingress, const IngressMes
         packet.requirements.push_back(prepared);
     }
 
+    // §8.2 step 7 — pre-satisfaction happens HERE, at proposal time,
+    // before the judgment opens: an unexpired activation receipt whose
+    // type, source, digest and generation match the new judgment may
+    // pre-satisfy its BeforeJudgment requirements. Single-use: a receipt
+    // pre-satisfies exactly one requirement of one judgment.
+    const u64 now_ms = clock_ms();
+    for (qiven::context::PreparedRequirement& prepared : packet.requirements)
+    {
+        if (!prepared.requirement.blocking ||
+            prepared.boundary != qiven::context::RequirementBoundary::BeforeJudgment ||
+            prepared.status != qiven::context::RequirementStatus::Pending)
+        {
+            continue;
+        }
+        RequirementIdentity identity;
+        identity.kind     = prepared.requirement.kind;
+        identity.subject  = prepared.requirement.subject;
+        identity.boundary = prepared.boundary;
+        identity.blocking = prepared.requirement.blocking;
+        for (const port::ActivationReceipt& activation : message.activation_receipts)
+        {
+            const u64 use = port::activation_use_identity(activation);
+            if (m_spent_activations.contains(use))
+            {
+                continue; // single-use: already consumed by an earlier judgment
+            }
+            if (!activation.valid_for(identity, m_cognition.revision, m_cognition.snapshot_digest_sha256,
+                                      message.correlation.generation, m_cognition.policy_digest, now_ms))
+            {
+                continue;
+            }
+            prepared.status = qiven::context::RequirementStatus::Satisfied;
+            prepared.evidence.push_back("activation:" + std::to_string(activation.injection_event));
+            m_spent_activations.insert(use);
+            break;
+        }
+    }
+
     ControlTransaction transaction =
-        begin_control_transaction(m_minter.next(), std::nullopt, message.correlation, message.action,
+        begin_control_transaction(m_minter.next(), message.causal_parent, message.correlation, message.action,
                                   std::move(intents), m_cognition, std::move(packet));
 
     const u64 id_value = transaction.id.value;
@@ -157,22 +233,43 @@ void ControlCore::dispatch_resolvers(BoundedIngressQueue& ingress, ControlTransa
         {
             continue;
         }
-        const ControlTransactionId id = transaction.id;
         RequirementIdentity identity;
-        identity.kind                    = prepared.requirement.kind;
-        identity.subject                 = prepared.requirement.subject;
-        identity.boundary                = prepared.boundary;
-        identity.blocking                = prepared.requirement.blocking;
-        ResolverFn resolve_fn            = m_resolver;
-        BoundedIngressQueue* ingress_ptr = &ingress;
+        identity.kind     = prepared.requirement.kind;
+        identity.subject  = prepared.requirement.subject;
+        identity.boundary = prepared.boundary;
+        identity.blocking = prepared.requirement.blocking;
 
-        Executor::Task task = [id, identity, resolve_fn, ingress_ptr] {
-            // resolver thread: touches ONLY the injected resolver and the
+        // §8.3 selection: only the registry's accepted binding may
+        // dispatch; no binding (or an ambiguous set) fails the
+        // requirement closed NOW — it must not linger Pending forever
+        const resolver::ResolverBinding* binding = binding_for(identity);
+        if (binding == nullptr)
+        {
+            prepared.status = qiven::context::RequirementStatus::Failed;
+            continue;
+        }
+
+        const resolver::ResolverBinding bound            = *binding;
+        const ControlTransactionId id                    = transaction.id;
+        const RuntimeGenerationId generation             = transaction.correlation.generation;
+        const ContentDigest policy_digest                = m_cognition.policy_digest;
+        const qiven::context::RevisionId source_revision = m_cognition.revision;
+        ResolverMechanism mechanism                      = m_mechanism;
+        BoundedIngressQueue* ingress_ptr                 = &ingress;
+
+        Executor::Task task = [id, identity, bound, generation, policy_digest, source_revision, mechanism,
+                               ingress_ptr] {
+            // resolver thread: touches ONLY the injected mechanism and the
             // thread-safe ingress queue — never control state (design §9)
+            const resolver::ReceiptContext context { generation,
+                                                     policy_digest,
+                                                     source_revision,
+                                                     "loopback",
+                                                     clock_ms() };
             std::optional<qiven::runtime::resolver::EvidenceReceipt> receipt;
             try
             {
-                receipt = resolve_fn ? resolve_fn(identity) : std::nullopt;
+                receipt = mechanism ? mechanism(bound, identity, context) : std::nullopt;
             }
             catch (...)
             {
@@ -244,16 +341,37 @@ void ControlCore::handle_evidence(const IngressMessage& message, DrainResult& re
             ++result.replays;
             return;
         }
-        if (message.receipt.requirement == identity)
+
+        // §8.3 acceptance: a receipt satisfies a requirement ONLY when the
+        // registry validates it — requirement identity, resolver type and
+        // version, evidence type, source, digest, generation and policy
+        // under the live facts. Any mismatch fails the requirement closed
+        // and is counted; it is never guessed into place.
+        const resolver::ResolverBinding* binding = binding_for(identity);
+        const resolver::ReceiptValidation validation =
+            binding != nullptr
+                ? resolver::validate_receipt(message.receipt, *binding, identity, transaction.correlation.generation,
+                                             m_cognition.policy_digest, clock_ms())
+                : resolver::ReceiptValidation { resolver::ReceiptRejection::WrongRequirement };
+        if (validation.rejection == resolver::ReceiptRejection::None)
         {
             prepared.status = qiven::context::RequirementStatus::Satisfied;
             prepared.evidence.push_back("receipt:" + std::to_string(message.receipt.id.fnv));
+
+            // §8.2 timing: in-flight satisfaction of a blocking
+            // BeforeJudgment requirement marks this transaction for
+            // ReDeliberate — it can never authorize this proposal
+            if (prepared.requirement.blocking &&
+                prepared.boundary == qiven::context::RequirementBoundary::BeforeJudgment)
+            {
+                m_redeliberation_pending.insert(transaction.id.value);
+                m_resume[transaction.id.value].push_back(message.receipt);
+            }
         }
         else
         {
-            // a receipt bound to a DIFFERENT requirement cannot satisfy
-            // this one (C-05/C-06 identity binding)
             prepared.status = qiven::context::RequirementStatus::Failed;
+            ++result.receipt_rejections;
             ++result.integrity_failures;
         }
         break;
@@ -316,6 +434,23 @@ void ControlCore::handle_failure(const IngressMessage& message, DrainResult& res
 
 void ControlCore::reevaluate_after_reports(ControlTransaction& transaction)
 {
+    if (transaction.terminal())
+    {
+        return; // no post-hoc repair of a settled path (§18)
+    }
+
+    // §8.2: an in-flight-resolved BeforeJudgment requirement ends THIS
+    // transaction as ReDeliberate even when every requirement reports
+    // satisfied — the evidence authorizes the NEXT judgment, never the
+    // one that discovered it. A typed preparation failure still denies
+    // first (S0-02).
+    if (m_redeliberation_pending.contains(transaction.id.value) &&
+        transaction.packet.failure == qiven::context::PreparationFailure::None)
+    {
+        transaction.phase = TransactionPhase::ReDeliberationRequired;
+        return;
+    }
+
     evaluate_before_judgment(transaction);
     if (transaction.phase == TransactionPhase::PreparedForJudgment)
     {

@@ -58,7 +58,12 @@ struct PinError
 
 struct PinnedCognition
 {
-    qiven::context::RevisionId revision;            // content-addressed day-one
+    qiven::context::RevisionId revision; // content-addressed day-one
+    // REVISION identity, distinct from content identity (production-MVP
+    // §4 invariant 3): the source revision this cognition was constructed
+    // from (e.g. the bundle's git commit oid). Empty day-one for direct
+    // file pins, where revision and content identity coincide.
+    std::string source_revision;
     qiven::context::SnapshotDigest snapshot_digest; // draft identity of the pinned bytes
     ContentDigest snapshot_digest_sha256;           // integrity-grade identity of the bytes
     ContentDigest policy_digest;                    // canonical policy preimage digest
@@ -70,7 +75,7 @@ struct PinnedCognition
     // content carry the same revision identity.
     [[nodiscard]] bool same_revision(const PinnedCognition& other) const noexcept
     {
-        return revision.value == other.revision.value;
+        return revision.value == other.revision.value && source_revision == other.source_revision;
     }
 };
 

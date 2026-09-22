@@ -24,9 +24,10 @@ endif()
 # --- frozen semantic library pin (layer contract §2) ----------------------
 # qiven-context-draft is consumed as a FROZEN semantic library at an exact
 # revision; upgrades are an explicit re-pin with re-validation.
-# Semantic baseline: frozen v4 @ 4cbc995. Consumption pin: 41d32ff
-# (descendant chain 31fdf505 -> 73a4bfa -> 41d32ff; v4 semantics unchanged -
-# the later commits are engineering-docs managed syncs, not semantic corpus).
+# Semantic baseline: frozen v4 @ 4cbc995. Consumption pin: de7f0e1
+# (descendant chain 31fdf505 -> 73a4bfa -> 41d32ff -> de7f0e1; v4
+# semantics unchanged - the later commits are engineering-docs managed
+# syncs and template manual patches, not semantic corpus).
 set(QIVEN_DRAFT_ROOT "" CACHE PATH "Path to the pinned qiven-context-draft checkout")
 if(NOT QIVEN_DRAFT_ROOT)
     set(QIVEN_DRAFT_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/../qiven-context-draft")
@@ -38,7 +39,7 @@ if(NOT EXISTS "${QIVEN_DRAFT_ROOT}/CMakeLists.txt")
     message(FATAL_ERROR "qiven-context-draft checkout not found; set QIVEN_DRAFT_ROOT to its path")
 endif()
 
-set(QIVEN_DRAFT_PINNED_SHA "41d32ffe8cf2132c6aff41319ce85704d1a69052")
+set(QIVEN_DRAFT_PINNED_SHA "de7f0e16ee13e0b54e3c6d3d16e1a2ade65ada59")
 find_package(Git REQUIRED)
 execute_process(
     COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
@@ -86,16 +87,21 @@ set(
     QIVEN_RUNTIME_PUBLIC_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/adapter/handshake.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/adapter/manifest.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/auth.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/claims.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/generation.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/intent.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/observed_action.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/identity.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/cognition_bundle.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/cognition_port.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/deployment_profile.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/runtime_journal.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/profile.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/reconciliation.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/requirement.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/resolver.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/scope.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/transaction.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/state.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/state_store.hpp
@@ -115,6 +121,8 @@ set(
 set(
     QIVEN_RUNTIME_PRIVATE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/handshake.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/auth.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/port/activation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/port/execution_authority.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/port/interception.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/manifest.cpp
@@ -130,6 +138,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/reconciliation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/requirement.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/resolver.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/scope.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/transaction.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/state.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/state_store.cpp

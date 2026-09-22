@@ -17,12 +17,14 @@
 
 #include <qiven/runtime/identity.hpp>
 #include <qiven/runtime/observed_action.hpp>
+#include <qiven/runtime/port/activation.hpp>
 #include <qiven/runtime/resolver.hpp>
 
 #include <condition_variable>
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <vector>
 
 namespace qiven::runtime
 {
@@ -40,6 +42,13 @@ struct IngressMessage
     // Proposal payload
     CorrelationKey correlation {};
     ObservedAction action;
+    // §18/§8.2: a proposal following a ReDeliberate outcome carries the
+    // prior transaction as its causal parent for traceability.
+    std::optional<ControlTransactionId> causal_parent;
+    // §8.2 step 7: activation receipts presented BEFORE the judgment
+    // opens may pre-satisfy its BeforeJudgment requirements. Receipts
+    // discovered inside the current judgment never authorize it.
+    std::vector<port::ActivationReceipt> activation_receipts;
 
     // Evidence/failure payload
     ControlTransactionId transaction {};
