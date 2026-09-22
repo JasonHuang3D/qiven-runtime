@@ -1,0 +1,118 @@
+schema: qiven-deployment-profile-v1
+
+# The accepted DeploymentProfile instance for the production MVP vertical
+# slice (production-MVP architecture section 3; ADR-0047). ACCEPTED
+# configuration, never synthesized: this file IS the accepted record and
+# revision bumps are explicit re-acceptances.
+#
+# Day-one honesty notes (MVP-2):
+#   - the actor binding is the accepted LOOPBACK binding; the real ZCode
+#     foreground-session handshake binding lands with MVP-4 and bumps
+#     this revision;
+#   - the raw ZCode tool classes (bash/write/edit) are declared in the
+#     capability universe with mediation kind Unmediated - complete
+#     mediation over them is MVP-4's H1-proven claim, and an unclaimed
+#     gap is explicit here, not silent;
+#   - the qiven_record surfaces are the mediated typed path.
+
+profile_id: zcode-jason-context-record-mvp
+revision: 1
+control_version: 1
+resolver_registry_revision: 1
+classifier_contract_revision: 1
+conformance_evidence: qiven-runtime docs/design/mvp2-cognition.md (profile_accept test spine; gate:local at the MVP-2 batch head)
+freshness_window_ms: 604800000
+
+governed_paths:
+  - state/active-work.yaml
+  - state/current.md
+  - memory/records
+  - memory/index.yaml
+  - obligations
+  - obligations/index.yaml
+  - sessions
+
+actors:
+  - adapter: 13644155810937356244
+    session_token: 1
+    credential_token: 1
+
+capabilities:
+  - id: 1
+    adapter: 13644155810937356244
+    operation_class: FileSystemWrite
+    can_mutate_world: true
+    can_publish_claims: false
+    requires_execution_authority: true
+  - id: 2
+    adapter: 13644155810937356244
+    operation_class: FileSystemWrite
+    can_mutate_world: true
+    can_publish_claims: false
+    requires_execution_authority: true
+  - id: 3
+    adapter: 13644155810937356244
+    operation_class: FileSystemWrite
+    can_mutate_world: true
+    can_publish_claims: false
+    requires_execution_authority: true
+  - id: 4
+    adapter: 2288014926110752679
+    operation_class: FileSystemWrite
+    can_mutate_world: true
+    can_publish_claims: false
+    requires_execution_authority: true
+  - id: 5
+    adapter: 2288014926110752679
+    operation_class: FileSystemWrite
+    can_mutate_world: true
+    can_publish_claims: false
+    requires_execution_authority: true
+  - id: 6
+    adapter: 2288014926110752679
+    operation_class: FileSystemWrite
+    can_mutate_world: true
+    can_publish_claims: false
+    requires_execution_authority: true
+
+# capability ids: 1 memory.add, 2 obligation.create/transition,
+# 3 active_work.patch + session_checkpoint.write, 4 zcode bash,
+# 5 zcode write, 6 zcode edit (4-6 Unmediated until MVP-4).
+mediation:
+  - capability: 1
+    kind: ActionInterception
+  - capability: 2
+    kind: ActionInterception
+  - capability: 3
+    kind: ActionInterception
+  - capability: 4
+    kind: Unmediated
+  - capability: 5
+    kind: Unmediated
+  - capability: 6
+    kind: Unmediated
+
+claims:
+  tool_mediated: true
+  free_text: false
+
+cognition:
+  repository: https://github.com/JasonHuang3D/qiven-context.git
+  authorized_ref: refs/heads/main
+  policy_path: runtime/invocation-policy.yaml
+  policy_sha256: c3a767fddd28e4e7db84575ba1ca84f391d7d37d990dd12ff044fe1ddf51b672
+  source_paths:
+    - runtime/invocation-policy.yaml
+    - memory/index.yaml
+    - memory/records
+    - obligations/index.yaml
+    - obligations
+    - decisions/index.yaml
+    - decisions
+    - state/active-work.yaml
+    - state/current.md
+    - state/roadmap.yaml
+    - governance/authority.yaml
+
+git_executable: C:/Program Files/Git/cmd/git.exe
+git_min_version: 2.40

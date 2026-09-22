@@ -92,6 +92,13 @@ add_library(
         headers/journal_schema.cpp
         headers/journal_runtime_journal.cpp
         headers/journal_recovery.cpp
+        headers/jsonx_json_codec.cpp
+        headers/processx_process_runner.cpp
+        headers/cognition_policy.cpp
+        headers/cognition_bundle_store.cpp
+        headers/cognition_publisher.cpp
+        headers/deployment_profile_file.cpp
+        headers/generation_activation.cpp
 )
 
 target_link_libraries(qiven-runtime-header-check PRIVATE qiven::runtime)
@@ -299,6 +306,16 @@ endfunction()
 qiven_runtime_add_journal_test(journal-commands journal_commands.cpp)
 qiven_runtime_add_journal_test(journal-schema-conformance journal_schema_conformance.cpp)
 qiven_runtime_add_journal_test(audit-chain-verify audit_chain_verify.cpp)
+
+# --- MVP-2 cognition/profile tests (design docs/design/mvp2-cognition.md §6)
+
+# The cognition tests exercise the library surface plus, where noted,
+# real git fixtures under the workroot.
+qiven_runtime_add_journal_test(policy-parse policy_parse.cpp)
+qiven_runtime_add_journal_test(process-runner-bounded process_runner_bounded.cpp)
+qiven_runtime_add_journal_test(bundle-publish-pin bundle_publish_pin.cpp)
+qiven_runtime_add_journal_test(profile-accept profile_accept.cpp)
+qiven_runtime_add_journal_test(generation-stale generation_stale.cpp)
 
 # The crash test needs the crash hooks live INSIDE the process that dies:
 # it compiles the journal sources directly with the test-guard macro

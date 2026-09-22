@@ -125,6 +125,10 @@ public:
     // Last INSERT row id on this connection (sessions table).
     [[nodiscard]] i64 last_insert_rowid() const noexcept;
 
+    // Rows changed by the most recent statement on this connection (the
+    // generation stale-mark count inside advance_generation's transaction).
+    [[nodiscard]] i64 changes() const noexcept;
+
     [[nodiscard]] bool is_open() const noexcept;
 
 private:
@@ -255,6 +259,7 @@ public:
     [[nodiscard]] qiven::Result<bool> barrier_active(std::string_view scope);
     [[nodiscard]] qiven::Result<u64> audit_event_count();
     [[nodiscard]] qiven::Result<u64> boot_epoch();
+    [[nodiscard]] qiven::Result<u64> max_generation_id(); // 0 when none exists yet
     [[nodiscard]] qiven::Result<std::string> install_id();
     [[nodiscard]] qiven::Result<void> verify_audit_chain();
 

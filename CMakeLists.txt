@@ -178,6 +178,13 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/claims.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/interception.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/adapter/bridge.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/jsonx/json_codec.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/processx/process_runner.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/policy.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/bundle.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/publisher.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/host/deployment_profile.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/host/generation_activation.hpp
 )
 
 set(
@@ -213,6 +220,13 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ingress.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/outcome.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/admission.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/jsonx/json_codec.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/processx/process_runner.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/policy.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/bundle.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/publisher.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/host/deployment_profile.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/host/generation_activation.cpp
 )
 
 target_sources(
@@ -300,6 +314,20 @@ set_target_properties(
 )
 target_link_libraries(qiven-runtime-app PRIVATE qiven::runtime)
 target_compile_features(qiven-runtime-app PRIVATE cxx_std_20)
+
+# qiven-runtimectl: the read-only operational client (MVP-2 minimal
+# surface: cognition show / profile show; status + doctor land MVP-3).
+add_executable(qiven-runtimectl apps/runtimectl_main.cpp)
+add_executable(qiven::runtimectl_app ALIAS qiven-runtimectl)
+set_target_properties(
+    qiven-runtimectl
+    PROPERTIES
+        CXX_EXTENSIONS OFF
+        FOLDER "Apps"
+        VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(qiven-runtimectl PRIVATE qiven::runtime)
+target_compile_features(qiven-runtimectl PRIVATE cxx_std_20)
 
 if(QIVEN_RUNTIME_BUILD_TESTS)
     enable_testing()
