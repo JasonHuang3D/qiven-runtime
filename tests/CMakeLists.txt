@@ -92,6 +92,13 @@ add_library(
         headers/journal_schema.cpp
         headers/journal_runtime_journal.cpp
         headers/journal_recovery.cpp
+        headers/jsonx_json_codec.cpp
+        headers/processx_process_runner.cpp
+        headers/cognition_policy.cpp
+        headers/cognition_bundle_store.cpp
+        headers/cognition_publisher.cpp
+        headers/deployment_profile_file.cpp
+        headers/generation_activation.cpp
 )
 
 target_link_libraries(qiven-runtime-header-check PRIVATE qiven::runtime)
@@ -291,14 +298,27 @@ function(qiven_runtime_add_journal_test target source)
             FOLDER "Tests"
             VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
+    # The gate runs test-debug and test-release in PARALLEL: the workroot
+    # carries $<CONFIG> so Debug and Release runs never share fixture paths
+    # (the race this fixes was caught live by bundle-publish-pin, 2026-09-23).
     target_compile_definitions(${target} PRIVATE
-        QIVEN_RUNTIME_TEST_WORKROOT="${QIVEN_RUNTIME_TEST_WORKROOT}")
+        QIVEN_RUNTIME_TEST_WORKROOT="${QIVEN_RUNTIME_TEST_WORKROOT}/$<CONFIG>")
     add_test(NAME qiven-runtime.${target} COMMAND ${target})
 endfunction()
 
 qiven_runtime_add_journal_test(journal-commands journal_commands.cpp)
 qiven_runtime_add_journal_test(journal-schema-conformance journal_schema_conformance.cpp)
 qiven_runtime_add_journal_test(audit-chain-verify audit_chain_verify.cpp)
+
+# --- MVP-2 cognition/profile tests (design docs/design/mvp2-cognition.md §6)
+
+# The cognition tests exercise the library surface plus, where noted,
+# real git fixtures under the workroot.
+qiven_runtime_add_journal_test(policy-parse policy_parse.cpp)
+qiven_runtime_add_journal_test(process-runner-bounded process_runner_bounded.cpp)
+qiven_runtime_add_journal_test(bundle-publish-pin bundle_publish_pin.cpp)
+qiven_runtime_add_journal_test(profile-accept profile_accept.cpp)
+qiven_runtime_add_journal_test(generation-stale generation_stale.cpp)
 
 # The crash test needs the crash hooks live INSIDE the process that dies:
 # it compiles the journal sources directly with the test-guard macro
@@ -325,7 +345,7 @@ set_target_properties(
 target_compile_definitions(
     qiven-runtime-journal-crash-recovery PRIVATE
     QIVEN_RUNTIME_TEST_CRASH_POINTS
-    QIVEN_RUNTIME_TEST_WORKROOT="${QIVEN_RUNTIME_TEST_WORKROOT}"
+    QIVEN_RUNTIME_TEST_WORKROOT="${QIVEN_RUNTIME_TEST_WORKROOT}/$<CONFIG>"
 )
 add_test(NAME qiven-runtime.journal-crash-recovery
     COMMAND qiven-runtime-journal-crash-recovery)

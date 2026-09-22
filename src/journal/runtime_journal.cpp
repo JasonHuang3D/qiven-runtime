@@ -572,6 +572,11 @@ i64 JournalDb::last_insert_rowid() const noexcept
     return m_db != nullptr ? static_cast<i64>(sqlite3_last_insert_rowid(m_db)) : 0;
 }
 
+i64 JournalDb::changes() const noexcept
+{
+    return m_db != nullptr ? static_cast<i64>(sqlite3_changes64(m_db)) : 0;
+}
+
 qiven::Result<void> JournalDb::exec(std::string_view sql)
 {
     char* error = nullptr;
@@ -1972,6 +1977,32 @@ qiven::Result<void> RuntimeJournal::advance_generation(RuntimeGenerationId id,
         put_digest(payload, profile_digest);
         put_str(payload, build_id);
         put_u64(payload, now_ms);
+
+        // MVP-2 exit gate 4 (ARCH section 15): creating a new generation
+        // invalidates every UNCONSUMED decision bound under an older
+        // generation — same transaction as the activation. Consumed
+        // decisions are untouched (their effects already happened; an
+        // already-dispatched action stays attached to its original
+        // generation, ARCH section 7.4). The count rides the audit payload
+        // as an append-only field (chain verification rehashes stored
+        // bytes, so pre-MVP-2 events verify unchanged).
+        auto stale = m_db.prepare(
+            "UPDATE decisions SET state = 'stale' WHERE state = 'bound' AND generation != ?");
+        if (!stale.is_ok())
+        {
+            return failed<void>(stale);
+        }
+        if (auto bind = stale.value().bind(1, static_cast<i64>(id.value)); !bind.is_ok())
+        {
+            return failed<void>(bind);
+        }
+        auto staled = stale.value().step();
+        if (!staled.is_ok())
+        {
+            return failed<void>(staled);
+        }
+        put_u64(payload, static_cast<u64>(m_db.changes()));
+
         if (auto audit = append_audit(kind_generation_advanced, payload); !audit.is_ok())
         {
             return failed<void>(audit);
@@ -2137,6 +2168,22 @@ qiven::Result<u64> RuntimeJournal::audit_event_count()
 qiven::Result<u64> RuntimeJournal::boot_epoch()
 {
     return m_boot_epoch;
+}
+
+qiven::Result<u64> RuntimeJournal::max_generation_id()
+{
+    auto stmt = m_db.prepare("SELECT COALESCE(MAX(id), 0) FROM generations");
+    if (!stmt.is_ok())
+    {
+        return qiven::Result<u64>::fail(stmt.reason());
+    }
+    auto row = stmt.value().step();
+    if (!row.is_ok() || !row.value())
+    {
+        return qiven::Result<u64>::fail(
+            row.is_ok() ? err_open("journal-generation-max-unavailable") : row.reason());
+    }
+    return static_cast<u64>(stmt.value().col_i64(0));
 }
 
 qiven::Result<std::string> RuntimeJournal::install_id()

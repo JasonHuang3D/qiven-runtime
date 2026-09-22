@@ -12,6 +12,7 @@
   "products": [
     { "from": "build/vs2022-x64/Release/qiven-runtime-app.exe", "to": "bin/qiven-runtime-app.exe" },
     { "from": "build/vs2022-x64/Release/qiven-adapter-bridge.exe", "to": "bin/qiven-adapter-bridge.exe" },
+    { "from": "build/vs2022-x64/Release/qiven-runtimectl.exe", "to": "bin/qiven-runtimectl.exe" },
     { "from": "build/vs2022-x64/Release/qiven-runtime.lib", "to": "lib/qiven-runtime.lib" },
     { "from": "include/qiven", "to": "include/qiven" }
   ],
@@ -24,6 +25,7 @@
   },
   "licenses": { "repo": "README.md", "repo_note": "internal workspace project; no separate LICENSE file yet" },
   "smoke": [
-    { "cwd": "bin", "command": ["qiven-runtime-app.exe"], "expect_exit": 0, "note": "bootstrap self-check" }
+    { "cwd": "bin", "command": ["qiven-runtime-app.exe"], "expect_exit": 0, "note": "bootstrap self-check" },
+    { "cwd": "bin", "command": ["qiven-runtimectl.exe", "cognition", "show"], "expect_exit": 1, "note": "read-only client: typed non-zero when no active bundle exists in the bundle cwd" }
   ]
 }
