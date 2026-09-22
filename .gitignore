@@ -20,9 +20,6 @@ compile_commands.json
 
 # Local patches and build products
 *.patch
-# ...except vendored third-party patches, which are COMMITTED content
-# (Devkit third-party-dependencies.md section 6)
-!third_party/**/*.patch
 *.obj
 *.o
 *.a
