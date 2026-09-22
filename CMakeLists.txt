@@ -65,11 +65,42 @@ endif()
 add_subdirectory("${QIVEN_FOUNDATION_ROOT}" "${CMAKE_BINARY_DIR}/qiven-foundation" EXCLUDE_FROM_ALL)
 add_subdirectory("${QIVEN_DRAFT_ROOT}" "${CMAKE_BINARY_DIR}/qiven-context-draft" EXCLUDE_FROM_ALL)
 
-# Third-party law: qiven-devkit docs/engineering/third-party-dependencies.md
-# (M1 vendored, namespaced target; NO directory-level EXCLUDE_FROM_ALL —
-# the VS generator drops consuming ProjectReferences under it (LNK1104);
-# provenance verified by the third-party-verify gate task).
-add_subdirectory(third_party/sqlite3)
+# --- third-party singleton (Devkit standard v2; cross-repo-cmake.md) ----
+# One workspace copy: qiven-third-party-win. Root resolution: env override
+# -> sibling default -> fail. Exact-SHA pin, validated at configure (same
+# discipline as the draft pin); moving the pin is an explicit re-pin batch.
+set(QIVEN_THIRD_PARTY_ROOT "" CACHE PATH "Path to the qiven-third-party-win checkout")
+if(NOT QIVEN_THIRD_PARTY_ROOT)
+    set(QIVEN_THIRD_PARTY_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/../qiven-third-party-win")
+    if(EXISTS "${QIVEN_THIRD_PARTY_DEFAULT}/CMakeLists.txt")
+        set(QIVEN_THIRD_PARTY_ROOT "${QIVEN_THIRD_PARTY_DEFAULT}")
+    endif()
+endif()
+if(NOT EXISTS "${QIVEN_THIRD_PARTY_ROOT}/packages/sqlite3/CMakeLists.txt")
+    message(FATAL_ERROR "qiven-third-party-win checkout not found; set QIVEN_THIRD_PARTY_ROOT to its path")
+endif()
+
+set(QIVEN_THIRD_PARTY_PIN "318453834315a68fa85374dffa9a77ff73d6e71c")
+find_package(Git REQUIRED)
+execute_process(
+    COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+    WORKING_DIRECTORY "${QIVEN_THIRD_PARTY_ROOT}"
+    RESULT_VARIABLE QIVEN_TP_SHA_RESULT
+    OUTPUT_VARIABLE QIVEN_TP_SHA
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT QIVEN_TP_SHA_RESULT EQUAL 0)
+    message(FATAL_ERROR "cannot read the qiven-third-party-win revision at ${QIVEN_THIRD_PARTY_ROOT}")
+endif()
+if(NOT QIVEN_TP_SHA STREQUAL QIVEN_THIRD_PARTY_PIN)
+    message(FATAL_ERROR "qiven-third-party-win is pinned at ${QIVEN_THIRD_PARTY_PIN} but the checkout is at ${QIVEN_TP_SHA}; re-pin explicitly in CMakeLists.txt and re-run the third-party-verify gate")
+endif()
+
+# Consumption law (standard section 5; conventions cross-repo-cmake.md):
+# per-package add_subdirectory into the CONSUMER build tree; NO directory-
+# level EXCLUDE_FROM_ALL (VS generator drops ProjectReferences -> LNK1104).
+add_subdirectory("${QIVEN_THIRD_PARTY_ROOT}/packages/sqlite3" "${CMAKE_BINARY_DIR}/tp/sqlite3")
 
 # --- control-plane library (design §2) ------------------------------------
 add_library(qiven-runtime STATIC)

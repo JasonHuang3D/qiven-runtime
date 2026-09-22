@@ -489,14 +489,14 @@ everything paste-ready (H1-preparation duty).
 
 ## 17. Third-party dependencies (Devkit standard applied)
 
-| Slot | Artifact | Mode | Notes |
+| Slot | Artifact | Source | Notes |
 | --- | --- | --- | --- |
-| TP-1 | SQLite 3 amalgamation | vendored source, `third_party/sqlite3/` | landed 2026-09-23 under the Devkit third-party standard (provenance + digest-verify gate task + smoke test). Compile: `/W3`, `_CRT_SECURE_NO_WARNINGS` scoped to the target only, `SQLITE_THREADSAFE=1` (serialized — cheap when single-threaded), `SQLITE_OMIT_LOAD_EXTENSION`, `SQLITE_OMIT_DEPRECATE`, `SQLITE_DEFAULT_FOREIGN_KEYS=0` (runtime enables per-connection), no PCH, EXCLUDE_FROM_ALL consumed via `qiven::tp::sqlite3`. |
+| TP-1 | SQLite 3.53.4 | workspace singleton `qiven-third-party-win/packages/sqlite3` (class S) | consumed per the Devkit third-party standard v2: `QIVEN_THIRD_PARTY_ROOT` resolution + exact-SHA pin (`QIVEN_THIRD_PARTY_PIN`) + consumer spot-verification gate task; target `qiven::tp::sqlite3` with the standard's scoped flag law (`/W3`, `_CRT_SECURE_NO_WARNINGS` PRIVATE, `SQLITE_THREADSAFE=1`, `SQLITE_OMIT_LOAD_EXTENSION`, `SQLITE_OMIT_DEPRECATED`, `SQLITE_DEFAULT_WAL_SYNCHRONOUS=1`, no PCH). |
 
-Additions require: entry here + provenance manifest + gate verify task
-+ a §16 test touching the dependency + this document's design section.
-(D-1/D-4 keep JSON, YAML-emission, crypto, and process management
-first-party on purpose.)
+Additions require: a singleton package (provenance + per-class CMake
+under the standard), an entry here, the consumer pin move, and a §16
+test touching the dependency. (D-1/D-4 keep JSON, YAML-emission,
+crypto, and process management first-party on purpose.)
 
 ## 18. Deployment surface
 
