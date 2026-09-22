@@ -2186,6 +2186,16 @@ qiven::Result<u64> RuntimeJournal::max_generation_id()
     return static_cast<u64>(stmt.value().col_i64(0));
 }
 
+qiven::Result<bool> RuntimeJournal::quarantined()
+{
+    return m_quarantined;
+}
+
+qiven::Result<void> RuntimeJournal::checkpoint()
+{
+    return m_db.checkpoint_wal();
+}
+
 qiven::Result<std::string> RuntimeJournal::install_id()
 {
     return m_install_id;

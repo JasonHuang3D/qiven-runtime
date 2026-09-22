@@ -145,11 +145,17 @@ typed 65 denial BEFORE the deadline (hook mapping, DESIGN §10).
 
 ### 3.3 Named-pipe server (DESIGN §10/§12.3)
 
-`\\.\pipe\qiven-runtime\<install-id>\v1`, `FILE_FLAG_FIRST_PIPE_INSTANCE |
-FILE_FLAG_OVERLAPPED | PIPE_REJECT_REMOTE_CLIENTS`, DACL from SDDL
-`D:P(A;;GA;;OW)` (owner-only generic-all; built from the process owner
-SID string at runtime — the SDDL literal is pinned by test). First
-connection: `GetNamedPipeClientProcessId` → `OpenProcess` →
+`\\.\pipe\qiven-runtime-<install-id>-v1` — a FLAT single-segment name.
+**Recorded delta on ARCH §12.1's `\\.\pipe\qiven-runtime\<install-id>\v1`:**
+NPFS prunes the intermediate namespace directories of a multi-segment pipe
+name once no listening instance exists, so next-instance creation at
+accept() time fails ERROR_PATH_NOT_FOUND (found live by the
+host-lifecycle test, 2026-09-23). The flat name preserves every security
+property: the pipe NAME is not the security boundary — the owner-only
+DACL is. `FILE_FLAG_FIRST_PIPE_INSTANCE | PIPE_REJECT_REMOTE_CLIENTS` on
+the first instance; DACL from SDDL `D:P(A;;GA;;;OW)` (owner-only
+generic-all; the SDDL literal is pinned by test). First connection:
+`GetNamedPipeClientProcessId` → `OpenProcess` →
 `QueryFullProcessImageNameW` → compare to the install record (jsonx file
 `.qiven/runtime/clients.json`, digest-recorded; first boot writes the
 record with the current executables and the host validates every

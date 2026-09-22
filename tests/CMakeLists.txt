@@ -99,6 +99,10 @@ add_library(
         headers/cognition_publisher.cpp
         headers/deployment_profile_file.cpp
         headers/generation_activation.cpp
+        headers/ipc_framing.cpp
+        headers/ipc_protocol.cpp
+        headers/ipc_named_pipe_server.cpp
+        headers/runtime_host.cpp
 )
 
 target_link_libraries(qiven-runtime-header-check PRIVATE qiven::runtime)
@@ -319,6 +323,12 @@ qiven_runtime_add_journal_test(process-runner-bounded process_runner_bounded.cpp
 qiven_runtime_add_journal_test(bundle-publish-pin bundle_publish_pin.cpp)
 qiven_runtime_add_journal_test(profile-accept profile_accept.cpp)
 qiven_runtime_add_journal_test(generation-stale generation_stale.cpp)
+
+# --- MVP-3 host/IPC tests (design docs/design/mvp3-host-ipc.md §6) ---------
+
+qiven_runtime_add_journal_test(pipe-frame-security pipe_frame_security.cpp)
+qiven_runtime_add_journal_test(process-runner-bounds process_runner_bounds.cpp)
+qiven_runtime_add_journal_test(host-lifecycle host_lifecycle.cpp)
 
 # The crash test needs the crash hooks live INSIDE the process that dies:
 # it compiles the journal sources directly with the test-guard macro
