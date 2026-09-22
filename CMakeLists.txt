@@ -26,7 +26,7 @@ endif()
 # Foundation pin (cross-repo-cmake.md law; owner direction 2026-09-23:
 # full SHA-pin coverage - the v2 standard's recorded gap is closed, not
 # deferred; upgrades are an explicit re-pin with re-validation).
-set(QIVEN_FOUNDATION_PINNED_SHA "424a9a8225f10d72a3a40d7c5cbd863382d32536")
+set(QIVEN_FOUNDATION_PINNED_SHA "209874a2f289b86b447bff42e2eaf1177760ee27")
 find_package(Git REQUIRED)
 execute_process(
     COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
@@ -156,6 +156,9 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/cognition_port.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/deployment_profile.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/port/runtime_journal.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/journal/schema.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/journal/runtime_journal.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/journal/recovery.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/profile.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/reconciliation.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/requirement.hpp
@@ -181,6 +184,9 @@ set(
     QIVEN_RUNTIME_PRIVATE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/handshake.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/auth.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/journal/schema.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/journal/runtime_journal.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/journal/recovery.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/port/activation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/port/execution_authority.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/port/interception.cpp
@@ -220,6 +226,10 @@ target_sources(
 )
 
 target_link_libraries(qiven-runtime PUBLIC qiven::foundation qiven::context_draft)
+# TP-1 SQLite: implementation detail of the journal subsystem — PRIVATE so
+# no consumer compile surface ever sees sqlite3.h (GR-2; the public journal
+# headers forward-declare `struct sqlite3;` only).
+target_link_libraries(qiven-runtime PRIVATE qiven::tp::sqlite3)
 
 if(MSVC)
     target_compile_options(qiven-runtime PRIVATE /W4 /permissive- /utf-8 /MP)
