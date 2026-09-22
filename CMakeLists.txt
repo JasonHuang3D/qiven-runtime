@@ -26,7 +26,7 @@ endif()
 # Foundation pin (cross-repo-cmake.md law; owner direction 2026-09-23:
 # full SHA-pin coverage - the v2 standard's recorded gap is closed, not
 # deferred; upgrades are an explicit re-pin with re-validation).
-set(QIVEN_FOUNDATION_PINNED_SHA "209874a2f289b86b447bff42e2eaf1177760ee27")
+set(QIVEN_FOUNDATION_PINNED_SHA "79e67895a2a02a206d07660de1a483a856bc2612")
 find_package(Git REQUIRED)
 execute_process(
     COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
@@ -46,10 +46,10 @@ endif()
 # --- frozen semantic library pin (layer contract §2) ----------------------
 # qiven-context-draft is consumed as a FROZEN semantic library at an exact
 # revision; upgrades are an explicit re-pin with re-validation.
-# Semantic baseline: frozen v4 @ 4cbc995. Consumption pin: 611255b
-# (descendant chain 31fdf505 -> 73a4bfa -> 41d32ff -> de7f0e1 -> 611255b;
-# v4 semantics unchanged - the later commits are engineering-docs managed
-# syncs, template manual patches and the foundation-pin build glue).
+# Semantic baseline: frozen v4 @ 4cbc995. Consumption pin: 7583724
+# (descendant chain 31fdf505 -> 73a4bfa -> 41d32ff -> de7f0e1 -> 611255b ->
+# 7583724; v4 semantics unchanged - the later commits are engineering-docs
+# managed syncs, template manual patches and the foundation-pin build glue).
 set(QIVEN_DRAFT_ROOT "" CACHE PATH "Path to the pinned qiven-context-draft checkout")
 if(NOT QIVEN_DRAFT_ROOT)
     set(QIVEN_DRAFT_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/../qiven-context-draft")
@@ -61,7 +61,7 @@ if(NOT EXISTS "${QIVEN_DRAFT_ROOT}/CMakeLists.txt")
     message(FATAL_ERROR "qiven-context-draft checkout not found; set QIVEN_DRAFT_ROOT to its path")
 endif()
 
-set(QIVEN_DRAFT_PINNED_SHA "611255b8dba1a2318177a559dc827c5cb83c0ad6")
+set(QIVEN_DRAFT_PINNED_SHA "7583724bc87ff6ab97d69f57c94ab509305e7853")
 find_package(Git REQUIRED)
 execute_process(
     COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
