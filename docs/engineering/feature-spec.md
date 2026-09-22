@@ -1,10 +1,10 @@
-# CTO Feature Specification Contract
+# Feature Specification Contract
 
-This document defines how `jason-brother` should assign implementation-ready work to `jason-worker`. The purpose is not to micromanage code; it is to communicate architectural intent and semantic boundaries strongly enough that the worker can exercise senior local engineering judgment without guessing public contracts or expanding scope.
+This document defines how implementation-ready work is specified before implementation begins — for owner-assigned and session-planned work alike (single-session unified engineering, ADR-0044). The purpose is not to micromanage code; it is to state architectural intent and semantic boundaries strongly enough that implementation can proceed with senior engineering judgment without guessing public contracts or expanding scope.
 
 ## 1. Required batch header
 
-A Work request should normally establish:
+A task batch should normally establish:
 
 ```text
 WORK BATCH
@@ -13,7 +13,7 @@ Base commit: <optional when branch state is authoritative>
 Maximum features:
 Usage policy:
 Batch-final validation:
-Remote policy: local only; no push/merge/PR
+Publication: per execution-protocol (owner authorization or standing delegation)
 
 AUTHORIZED FEATURE QUEUE
 1. <feature A>
@@ -23,7 +23,7 @@ AUTHORIZED FEATURE QUEUE
 STOP AFTER <last authorized feature>.
 ```
 
-Feature dependency order must be explicit. Do not make the worker infer whether later work starts from `main` or from an earlier local feature branch.
+Feature dependency order must be explicit. Do not leave it implicit whether later work starts from `main` or from an earlier local feature branch.
 
 ## 2. Required feature fields
 
@@ -68,13 +68,13 @@ A strong specification identifies things such as:
 - portability and platform exposure boundaries;
 - observable compatibility requirements.
 
-Ordinary private implementation choices that preserve these semantics remain the worker's responsibility.
+Ordinary private implementation choices that preserve these semantics remain the implementer's responsibility.
 
 ## 4. Public API
 
-When public naming or API shape is architecturally important, specify it or constrain the allowed shape. If public contract design is deliberately unresolved, mark the feature as requiring CTO review before implementation rather than encouraging the worker to invent it.
+When public naming or API shape is architecturally important, specify it or constrain the allowed shape. If public contract design is deliberately unresolved, mark the feature as requiring an owner/architecture decision before implementation rather than encouraging the implementer to invent it.
 
-Do not ask the worker to choose between `assert`, optional/result/error code, exception, termination, or silent fallback when that choice changes public failure semantics.
+Do not leave the failure-channel choice — `assert`, optional/result/error code, exception, termination, or silent fallback — undecided when it changes public failure semantics.
 
 ## 5. Ownership and lifetime
 
@@ -86,7 +86,7 @@ If these points materially affect the contract and are not decided, the feature 
 
 Classify meaningful failure channels. Distinguish caller programming errors, invariant violations, recoverable runtime failure, and environmental failure. State whether failure leaves output/state unchanged when that matters.
 
-Do not leave the worker to invent a failure category because the happy path is obvious.
+Do not leave the implementer to invent a failure category because the happy path is obvious.
 
 ## 7. Performance and cost
 
@@ -118,7 +118,7 @@ A correct implementation file that is not integrated into the repository is not 
 
 Specify semantic risks rather than only test filenames. Name success, boundary, failure, ownership/move, overflow/alignment, state-preservation, regression, and portability-sensitive cases when they are part of the contract.
 
-The worker may add another directly relevant test when it exposes a meaningful risk, but should not inflate test count mechanically.
+The implementer may add another directly relevant test when it exposes a meaningful risk, but should not inflate test count mechanically.
 
 ## 11. Validation profile
 
@@ -174,13 +174,13 @@ Architectural barrier:
 YES
 ```
 
-when dependent features should wait for Chat/GitHub/CI review before stacking continues.
+when dependent features should wait for owner/remote review before stacking continues.
 
-Use `NO` only when the CTO has consciously decided local stacking is safe. If omitted for an obviously cross-cutting feature, the worker should conservatively stop after completing it.
+Use `NO` only when it has been consciously decided that local stacking is safe. If omitted for an obviously cross-cutting feature, the implementer should conservatively stop after completing it.
 
 ## 16. Specification quality check
 
-Before assigning a batch, verify:
+Before starting a batch, verify:
 
 - feature dependencies and bases are explicit;
 - public semantics are decided;
@@ -195,4 +195,4 @@ Before assigning a batch, verify:
 - the queue is finite and reviewable;
 - a senior engineer can tell when to stop without needing trivial implementation instructions.
 
-If missing information affects architecture or externally observable behavior, improve the specification or stop for CTO review before spending implementation budget.
+If missing information affects architecture or externally observable behavior, improve the specification or raise an owner/architecture decision point before spending implementation budget.

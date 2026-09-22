@@ -47,7 +47,7 @@ New or materially changed public headers must remain self-contained according to
 
 ## 7. Local validation profiles
 
-Two Work-mode local validation profiles exist.
+Two local validation profiles exist.
 
 ### FULL
 
@@ -63,15 +63,15 @@ Then run the repository's Debug and Release build/test presets.
 
 ### FOCUSED
 
-`FOCUSED` is a CTO-authorized optimization, not a worker-selected shortcut. It may be used only when the current feature specification provides exact build targets, tests, selectors, or commands. Focused validation must exercise the authorized scope in both Debug and Release configurations unless the specification explicitly says otherwise.
+`FOCUSED` is a specification-authorized scoped validation, not a session-selected shortcut. It may be used only when the current task specification provides exact build targets, tests, selectors, or commands. Focused validation must exercise the authorized scope in both Debug and Release configurations unless the specification explicitly says otherwise.
 
-If the focused scope is missing, ambiguous, or becomes insufficient because implementation broadens the affected surface, use `FULL` or stop for CTO review.
+If the focused scope is missing, ambiguous, or becomes insufficient because implementation broadens the affected surface, use `FULL` or stop and raise an owner/architecture decision point.
 
 Architectural barriers and cross-cutting infrastructure changes normally require `FULL`.
 
 ### Batch-final full validation
 
-When any feature in a batch uses `FOCUSED`, the final stack tip normally receives one complete repository-level FULL Debug/Release validation before normal handoff. This preserves repository confidence while avoiding repeated full-suite execution after every small stacked feature.
+When any feature in a batch uses `FOCUSED`, the final stack tip normally receives one complete repository-level FULL Debug/Release validation before normal publication. This preserves repository confidence while avoiding repeated full-suite execution after every small stacked feature.
 
 Cross-platform CI remains an independent later gate.
 
@@ -80,15 +80,15 @@ Cross-platform CI remains an independent later gate.
 Formatting scripts enumerate tracked AND new (untracked, unignored) C/C++ files themselves; no index preparation is needed:
 
 ```cmd
-toolsormat.cmd
-toolsormat-check.cmd
+tools\format.cmd
+tools\format-check.cmd
 ```
 
 `git add -N` is PROHIBITED for formatter exposure (2026-09-21 scar): an intent-to-add entry holds an EMPTY blob, and any later `git checkout -- .` restores that empty blob over the real file content - silent data loss. The formatter's enumeration is a pure read; keep it that way. Inspect the diff afterward because a formatter can legitimately change more text than expected.
 
 ## 9. Documentation-only changes
 
-Documentation-only work does not automatically require full Debug/Release compilation unless the feature specification requires it, build/configuration commands changed, documentation is programmatically validated, or another applicable contract requires it.
+Documentation-only work does not automatically require full Debug/Release compilation unless the task specification requires it, build/configuration commands changed, documentation is programmatically validated, or another applicable contract requires it.
 
 Still inspect diffs and verify paths/commands against the repository.
 
@@ -141,4 +141,21 @@ Where supported, provide explicit controls analogous to `QIVEN_TEST_VERBOSE=1` a
 
 ## 15. Future incremental validation
 
-The repository may later add labels, affected-target analysis, caching, sharding, or other incremental mechanisms. Until such mechanisms are explicit and validated, `FOCUSED` is the only worker-level route for reducing per-feature validation scope. Test-latency optimization must preserve confidence rather than merely reduce elapsed time.
+The repository may later add labels, affected-target analysis, caching, sharding, or other incremental mechanisms. Until such mechanisms are explicit and validated, `FOCUSED` is the only session-level route for reducing per-feature validation scope. Test-latency optimization must preserve confidence rather than merely reduce elapsed time.
+
+## 16. Adversarial and concurrency posture (2026-09-21 owner direction)
+
+Correctness of concurrency-bearing and adversarially-sensitive code is not proven by happy-path suites alone.
+
+- Concurrency-bearing components (queues, coordinators, single-writer
+  authorities, barriers, state stores) receive adversarial suites that
+  attack their specific hazard classes (races, ordering, duplicate
+  delivery, stale-token reuse, lost wakeups), plus bounded race-shake
+  repetition (for example 10 consecutive clean runs) with zero flakes
+  before a publication claim.
+- Equivalence/classification logic (retry classes, disposition mapping,
+  profile conformance) receives adversarial inputs: equivalent
+  near-miss proposals, stale variants, and boundary payloads — not only
+  representative samples.
+- A flake is a defect candidate, not noise to re-roll: diagnose it or
+  record it with a bounded follow-up; never silently re-run until green.
