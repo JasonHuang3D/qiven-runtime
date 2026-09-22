@@ -72,14 +72,25 @@ another entry in the PreToolUse list):
 pair for the session; per-action correlation ids ride the hook payload
 when the hook input carries a stable event id.)
 
-Then work in the session normally for a few tool calls (the bridge is
-advisory — nothing is blocked), and run Step 3.
+**Step 2.5 — start a NEW session.** Workspace hooks do NOT hot-reload:
+they load at session start. After the config change, open a fresh
+session (or restart this one) and make a few Bash tool calls in it (the
+bridge is advisory — nothing is blocked). Until a hook fires at least
+once, the state file does not exist.
 
 **Step 3 — owner relays the sealed evidence (verbatim):**
 
 ```cmd
 D:\JasonWork\qiven-runtime\build\vs2022-x64\Release\qiven-adapter-bridge.exe evidence --state D:\JasonWork\qiven-runtime\.generated-temp\adapter-bridge\real-session.log
 ```
+
+The command ALWAYS speaks (owner direction 2026-09-22: silence is a
+defect):
+
+- state missing → stderr names the path, stdout explains the
+  new-session requirement, exit 1;
+- state present → a `bridge-state <path>` header plus the recorded
+  events, exit 0.
 
 Paste the output back UNMODIFIED. The authoring session grades it
 against the F-suite rubric (complete surface, single observation,

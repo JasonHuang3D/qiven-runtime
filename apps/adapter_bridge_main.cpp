@@ -153,7 +153,27 @@ int main(int argc, char** argv)
     }
     if (command == "evidence")
     {
-        std::fputs(bridge.evidence_dump().c_str(), stdout);
+        // SILENCE IS A DEFECT (owner-caught): an evidence query must
+        // always speak - a missing or empty state is a diagnosable
+        // condition, never a blank exit
+        std::error_code ec;
+        if (!std::filesystem::exists(state_file, ec) || ec)
+        {
+            std::fprintf(stderr, "bridge state not found: %s\n", state_file.string().c_str());
+            std::printf("no hook events recorded yet. Hooks fire only in sessions STARTED AFTER\n"
+                        "the config change (workspace hooks do not hot-reload). Verify the hook\n"
+                        "commands point at this --state path, then start a new session and make a\n"
+                        "few tool calls.\n");
+            return 1;
+        }
+        const std::string dump = bridge.evidence_dump();
+        std::printf("bridge-state %s\n", state_file.string().c_str());
+        if (dump.empty())
+        {
+            std::printf("state file exists but recorded no events.\n");
+            return 1;
+        }
+        std::fputs(dump.c_str(), stdout);
         return 0;
     }
 
