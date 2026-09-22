@@ -45,7 +45,6 @@ jobs:
   validate:
     name: ${{ matrix.name }}
     needs: plan
-    if: ${{ (matrix.id == 'windows' && needs.plan.outputs.windows == 'true') || (matrix.id == 'linux' && needs.plan.outputs.linux == 'true') || (matrix.id == 'macos' && needs.plan.outputs.macos == 'true') }}
     strategy:
       fail-fast: false
       matrix:
@@ -54,11 +53,22 @@ jobs:
           - { id: linux, name: Linux GCC x64, os: ubuntu-24.04 }
           - { id: macos, name: macOS AppleClang arm64, os: macos-15 }
     runs-on: ${{ matrix.os }}
+    # matrix is NOT available in a job-level if (GitHub evaluates it before
+    # strategy expansion); per-unit gating lives at step level via the plan
+    # output keyed by matrix.id (windows|linux|macos match the plan outputs).
+    # The former job-level if was INVALID since repo creation (template-
+    # inherited) and made every push carrying this file create a zero-job
+    # failing run - the "phantom push runs" misclassified as a platform
+    # anomaly on 2026-09-22; root cause found by the owner in the UI.
     steps:
       - uses: actions/checkout@v6
+        if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
       - run: cmake -S . -B build -DQIVEN_RUNTIME_BUILD_TESTS=ON
+        if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
       - run: cmake --build build --config Debug --parallel
+        if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
       - run: ctest --test-dir build -C Debug --output-on-failure
+        if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
 
   ci-gate:
     name: CI Gate
