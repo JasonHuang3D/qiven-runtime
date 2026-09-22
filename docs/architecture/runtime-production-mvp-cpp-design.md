@@ -229,6 +229,18 @@ a row in `runtime_meta` (never a sidecar file that could desync).
 
 ### 7.3 Physical schema (first cut; migrations append-only)
 
+> **Correction pointer (MVP-1, 2026-09-23):** the DDL below contains two
+> defects found by the batch design's pre-implementation review
+> (`docs/design/mvp1-journal.md` §1) and corrected in the landed schema
+> (`src/journal/schema.cpp`): (1) the `decisions` CHECK references a
+> `state` column the column list never declared — the landed schema
+> declares `state TEXT NOT NULL CHECK(state IN ('bound','consumed',`
+> `'stale'))` with `CHECK((state='consumed') = (consumed_ms IS NOT NULL))`;
+> (2) `transaction` is an SQLite keyword and must be quoted in DDL and
+> DML. Lease rows are never deleted (expiry derived; the row is the
+> fencing-epoch high-water mark). The DDL text here is retained as the
+> reviewed historical basis.
+
 ```sql
 -- schema_version 1 (MVP-1); migrations are validated, never silent
 CREATE TABLE runtime_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
