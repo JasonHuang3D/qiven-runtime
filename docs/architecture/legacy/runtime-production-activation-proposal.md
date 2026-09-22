@@ -1,3 +1,12 @@
+> **STATUS (2026-09-23, ADR-0047): LEGACY / HISTORICAL INPUT.** This
+> engineering proposal (qiven-runtime `43c0535d`) was the pre-architecture
+> delivery-batch thinking. Its delivery order is SUPERSEDED by the
+> [Runtime Production MVP Architecture](../runtime-production-mvp-architecture.md)
+> (ADR §2 records which tendencies were rejected and why); its product
+> pressures remain valid history. It is not an architectural authority
+> and must not be cited to justify conflicting plans. Durable design:
+> [runtime-production-mvp-cpp-design.md](../runtime-production-mvp-cpp-design.md).
+
 # Runtime Production Activation (RPA) — Program Proposal
 
 Status: **proposal** (owner-endorsed direction 2026-09-22 in
