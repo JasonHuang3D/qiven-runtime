@@ -7,7 +7,9 @@ its mission and current status.
   the Devkit: `docs/conventions/README.md` there, including the agent-entry
   rule (`agent-entry.md`). Read that index before creating files, folders,
   branches or targets.
-- This repository's engineering standards: `docs/engineering/README.md`.
+- Engineering standards (implementation, testing, execution, specification)
+  are ALSO canonical in the Devkit: `docs/engineering/README.md` there
+  (ADR-0046 — repositories carry no copies; this pointer is the entry).
 - Architecture documents, where present: `docs/architecture/`.
 
 Roles, typed handoffs, execution authority and workflow are canonical in
