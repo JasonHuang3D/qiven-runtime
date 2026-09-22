@@ -247,6 +247,9 @@ public:
 
     [[nodiscard]] qiven::Result<port::JournalRecoveryReport> recover_at(u64 now_ms);
 
+    // Graceful-shutdown WAL checkpoint (TRUNCATE) for host callers.
+    [[nodiscard]] qiven::Result<void> checkpoint();
+
     // --- read surface (control facts; no audit side effects) --------------
     [[nodiscard]] qiven::Result<std::string> tx_state_of(ControlTransactionId id);
     [[nodiscard]] qiven::Result<std::string> decision_state_of(const DecisionId& id);
@@ -260,6 +263,7 @@ public:
     [[nodiscard]] qiven::Result<u64> audit_event_count();
     [[nodiscard]] qiven::Result<u64> boot_epoch();
     [[nodiscard]] qiven::Result<u64> max_generation_id(); // 0 when none exists yet
+    [[nodiscard]] qiven::Result<bool> quarantined();      // runtime_meta flag, read surface
     [[nodiscard]] qiven::Result<std::string> install_id();
     [[nodiscard]] qiven::Result<void> verify_audit_chain();
 

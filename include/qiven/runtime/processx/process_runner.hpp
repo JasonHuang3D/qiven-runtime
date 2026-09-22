@@ -29,6 +29,7 @@
 
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace qiven::runtime::processx
@@ -41,13 +42,28 @@ inline constexpr i32 err_allowlist    = 74;
 inline constexpr u64 default_deadline_ms      = 30'000;
 inline constexpr u64 default_output_cap_bytes = 8 * 1024 * 1024;
 
+// Executable admission (cpp-design section 11): exact path plus, when
+// recorded, the SHA-256 of the image bytes. A mismatched or unlisted
+// binary is a typed 74 denial — never a spawn.
+struct AllowlistedExecutable
+{
+    std::filesystem::path path;
+    std::string expected_sha256_hex; // empty = path admission only
+};
+
 struct ProcessSpec
 {
-    std::filesystem::path executable; // absolute; the caller (profile) owns allowlisting
+    std::filesystem::path executable; // absolute; must satisfy allowed_executables when set
     std::vector<std::string> argv;    // explicit arguments; argv[0] is the program name
     std::filesystem::path working_dir;
     u64 deadline_ms      = default_deadline_ms;
     u64 output_cap_bytes = default_output_cap_bytes;
+    // When non-empty: the COMPLETE child environment is exactly these
+    // entries plus the OS floor (SystemRoot/SystemDrive) — nothing is
+    // inherited. When empty: the parent environment is inherited (the
+    // publisher's git plumbing compat mode; governed paths always set it).
+    std::vector<std::pair<std::string, std::string>> env_allowlist;
+    std::vector<AllowlistedExecutable> allowed_executables;
 };
 
 struct ProcessRun

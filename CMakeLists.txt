@@ -185,6 +185,10 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/publisher.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/host/deployment_profile.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/host/generation_activation.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/host/runtime_host.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/ipc/framing.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/ipc/protocol.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/ipc/named_pipe_server.hpp
 )
 
 set(
@@ -227,6 +231,10 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/publisher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/host/deployment_profile.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/host/generation_activation.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/host/runtime_host.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ipc/framing.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ipc/protocol.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ipc/named_pipe_server.cpp
 )
 
 target_sources(
@@ -244,6 +252,11 @@ target_link_libraries(qiven-runtime PUBLIC qiven::foundation qiven::context_draf
 # no consumer compile surface ever sees sqlite3.h (GR-2; the public journal
 # headers forward-declare `struct sqlite3;` only).
 target_link_libraries(qiven-runtime PRIVATE qiven::tp::sqlite3)
+# OS-provided DPAPI (CryptProtectData) for the IPC installation secret
+# (Win32 API is not third-party; cpp-design GR-6/first-party law).
+if(WIN32)
+    target_link_libraries(qiven-runtime PRIVATE crypt32)
+endif()
 
 if(MSVC)
     target_compile_options(qiven-runtime PRIVATE /W4 /permissive- /utf-8 /MP)
@@ -303,20 +316,20 @@ set_target_properties(
 target_link_libraries(qiven-adapter-bridge PRIVATE qiven::runtime)
 target_compile_features(qiven-adapter-bridge PRIVATE cxx_std_20)
 
-add_executable(qiven-runtime-app app/main.cpp)
-add_executable(qiven::runtime_app ALIAS qiven-runtime-app)
+add_executable(qiven-runtime-host apps/runtime_host_main.cpp)
+add_executable(qiven::runtime_host ALIAS qiven-runtime-host)
 set_target_properties(
-    qiven-runtime-app
+    qiven-runtime-host
     PROPERTIES
         CXX_EXTENSIONS OFF
         FOLDER "Apps"
         VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
 )
-target_link_libraries(qiven-runtime-app PRIVATE qiven::runtime)
-target_compile_features(qiven-runtime-app PRIVATE cxx_std_20)
+target_link_libraries(qiven-runtime-host PRIVATE qiven::runtime)
+target_compile_features(qiven-runtime-host PRIVATE cxx_std_20)
 
-# qiven-runtimectl: the read-only operational client (MVP-2 minimal
-# surface: cognition show / profile show; status + doctor land MVP-3).
+# qiven-runtimectl: the read-only operational client (local surface since
+# MVP-2; authenticated status/doctor over the pipe since MVP-3).
 add_executable(qiven-runtimectl apps/runtimectl_main.cpp)
 add_executable(qiven::runtimectl_app ALIAS qiven-runtimectl)
 set_target_properties(

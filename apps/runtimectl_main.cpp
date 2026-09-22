@@ -1,24 +1,29 @@
 // ============================================================================
 // apps/runtimectl_main.cpp — qiven-runtimectl, the read-only operational
-// client (MVP-2 minimal surface; ARCH section 6.4)
+// client (ARCH section 6.4; MVP-2 local surface + MVP-3 IPC surface)
 //
-// MVP-2 ships exactly two subcommands, both local and read-only:
-//   qiven-runtimectl cognition show [--root <qiven-context checkout>]
-//   qiven-runtimectl profile show  [--profile <profile file>]
+//   qiven-runtimectl cognition show [--root <checkout>]
+//   qiven-runtimectl profile show  [--profile <file>]
+//   qiven-runtimectl status show    [--root <checkout>]   (authenticated IPC)
+//   qiven-runtimectl doctor show    [--root <checkout>]   (authenticated IPC)
 //
-// `status` and `doctor` arrive with MVP-3 (they need the host IPC
-// endpoint). Exit codes follow the script law: 0 pass, 1 failure,
-// 2 usage.
+// An unreachable or uninstalled host is reported as such (exit 1) — never
+// as "governed" (the ARCH section 15 MVP-4 row 5 discipline, applied
+// early). Exit codes: 0 pass, 1 failure, 2 usage.
 // ============================================================================
 
 #include <qiven/runtime/cognition/bundle.hpp>
 #include <qiven/runtime/host/deployment_profile.hpp>
-#include <qiven/types.hpp>
+#include <qiven/runtime/ipc/framing.hpp>
+#include <qiven/runtime/ipc/named_pipe_server.hpp>
+#include <qiven/runtime/ipc/protocol.hpp>
 
 #include <cstddef>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -31,19 +36,30 @@ constexpr int exit_usage = 2;
 int usage()
 {
     std::cerr << "usage: qiven-runtimectl cognition show [--root <qiven-context checkout>]\n"
-              << "       qiven-runtimectl profile show [--profile <profile file>]\n";
+              << "       qiven-runtimectl profile show [--profile <profile file>]\n"
+              << "       qiven-runtimectl status show [--root <qiven-context checkout>]\n"
+              << "       qiven-runtimectl doctor show [--root <qiven-context checkout>]\n";
     return exit_usage;
+}
+
+std::filesystem::path flag_value(const std::vector<std::string>& args, const std::string& flag)
+{
+    for (std::size_t i = 0; i + 1 < args.size(); ++i)
+    {
+        if (args[i] == flag)
+        {
+            return args[i + 1];
+        }
+    }
+    return {};
 }
 
 int cognition_show(const std::vector<std::string>& args)
 {
     std::filesystem::path repo_root = std::filesystem::current_path();
-    for (std::size_t i = 0; i + 1 < args.size(); ++i)
+    if (const auto given = flag_value(args, "--root"); !given.empty())
     {
-        if (args[i] == "--root")
-        {
-            repo_root = args[i + 1];
-        }
+        repo_root = given;
     }
     const qiven::runtime::cognition::BundleStore store(repo_root / ".qiven" / "runtime");
     auto bundle = store.load_active();
@@ -75,12 +91,9 @@ int profile_show(const std::vector<std::string>& args)
 {
     std::filesystem::path file = std::filesystem::current_path() /
                                  "config" / "profiles" / "zcode-jason-context-record-mvp.yaml";
-    for (std::size_t i = 0; i + 1 < args.size(); ++i)
+    if (const auto given = flag_value(args, "--profile"); !given.empty())
     {
-        if (args[i] == "--profile")
-        {
-            file = args[i + 1];
-        }
+        file = given;
     }
     auto profile = qiven::runtime::host::load_profile_file(file);
     if (!profile.is_ok())
@@ -109,6 +122,117 @@ int profile_show(const std::vector<std::string>& args)
               << "  git executable       : " << value.git_executable.string() << "\n";
     return exit_ok;
 }
+
+// One authenticated round-trip over the installation pipe.
+qiven::Result<qiven::runtime::ipc::Reply> transact(
+    const std::filesystem::path& runtime_root, const qiven::runtime::ipc::Request& request)
+{
+    using ReplyResult = qiven::Result<qiven::runtime::ipc::Reply>;
+    auto secret       = qiven::runtime::ipc::InstallationSecret::ensure(runtime_root);
+    if (!secret.is_ok())
+    {
+        return ReplyResult::fail(secret.reason());
+    }
+    const qiven::runtime::ipc::FrameCodec codec(secret.value());
+
+    const std::filesystem::path install_file = runtime_root / "install.id";
+    if (!std::filesystem::exists(install_file))
+    {
+        return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable, 62,
+                                                    "no installed RuntimeHost (install.id absent)"));
+    }
+    std::ifstream in(install_file);
+    std::string install_id((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char> {});
+    while (!install_id.empty() &&
+           (install_id.back() == '\n' || install_id.back() == '\r' || install_id.back() == ' '))
+    {
+        install_id.pop_back();
+    }
+
+    auto client =
+        qiven::runtime::ipc::PipeClient::connect(qiven::runtime::ipc::pipe_name(install_id));
+    if (!client.is_ok())
+    {
+        return ReplyResult::fail(client.reason());
+    }
+    qiven::runtime::ipc::FrameHeader header;
+    header.request_id     = 1;
+    header.connection_seq = 1;
+    if (!client.value().write_bytes(codec.encode(
+            header, qiven::runtime::ipc::encode_request_body(request))))
+    {
+        return ReplyResult::fail(
+            qiven::Error::make(qiven::error_category::unavailable, 65, "request write failed"));
+    }
+    auto frame = client.value().read_frame();
+    if (!frame.has_value())
+    {
+        return ReplyResult::fail(
+            qiven::Error::make(qiven::error_category::unavailable, 65, "no reply from host"));
+    }
+    auto verified = codec.decode(frame.value());
+    if (!verified.is_ok())
+    {
+        return ReplyResult::fail(verified.reason());
+    }
+    auto reply = qiven::runtime::ipc::decode_reply(verified.value().body);
+    if (!reply.is_ok())
+    {
+        return ReplyResult::fail(qiven::Error::make(qiven::error_category::invalid_argument,
+                                                    reply.reason().code, reply.reason().detail));
+    }
+    return ReplyResult(std::move(reply.value()));
+}
+
+int ipc_show(const std::vector<std::string>& args, bool doctor)
+{
+    std::filesystem::path repo_root = std::filesystem::current_path();
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        repo_root = given;
+    }
+    qiven::runtime::ipc::Request request;
+    request.kind       = doctor ? qiven::runtime::ipc::Request::Kind::Doctor
+                                : qiven::runtime::ipc::Request::Kind::Status;
+    request.request_id = 1;
+    auto reply         = transact(repo_root / ".qiven" / "runtime", request);
+    if (!reply.is_ok())
+    {
+        std::cout << (doctor ? "doctor" : "status") << ": HOST UNREACHABLE ("
+                  << reply.reason().message << ") - nothing is reported governed\n";
+        return exit_fail;
+    }
+    if (reply.value().kind == qiven::runtime::ipc::Reply::Kind::ErrorView)
+    {
+        std::cout << (doctor ? "doctor" : "status") << ": HOST DENIED ("
+                  << reply.value().error_code << ": " << reply.value().error_detail << ")\n";
+        return exit_fail;
+    }
+    if (doctor)
+    {
+        std::cout << "doctor: " << (reply.value().findings.empty() ? "healthy" : "findings")
+                  << "\n"
+                  << "  integrity_ok   : " << (reply.value().integrity_ok ? "yes" : "no") << "\n"
+                  << "  audit_chain_ok : " << (reply.value().audit_chain_ok ? "yes" : "no") << "\n"
+                  << "  bundle_active  : " << (reply.value().bundle_active_ok ? "yes" : "no")
+                  << "\n";
+        for (const auto& finding : reply.value().findings)
+        {
+            std::cout << "  - " << finding << "\n";
+        }
+        return reply.value().findings.empty() ? exit_ok : exit_fail;
+    }
+    std::cout << "status:\n"
+              << "  state           : " << reply.value().state << "\n"
+              << "  install_id      : " << reply.value().install_id << "\n"
+              << "  boot_epoch      : " << reply.value().boot_epoch << "\n"
+              << "  generation      : " << reply.value().generation << "\n"
+              << "  bundle_revision : " << reply.value().bundle_revision << "\n"
+              << "  journal_events  : " << reply.value().journal_events << "\n"
+              << "  quarantined     : " << (reply.value().quarantined ? "yes" : "no") << "\n";
+    return exit_ok;
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -127,6 +251,14 @@ int main(int argc, char** argv)
     if (object == "profile" && verb == "show")
     {
         return profile_show(args);
+    }
+    if (object == "status" && verb == "show")
+    {
+        return ipc_show(args, false);
+    }
+    if (object == "doctor" && verb == "show")
+    {
+        return ipc_show(args, true);
     }
     return usage();
 }
