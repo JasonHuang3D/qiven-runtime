@@ -38,10 +38,14 @@ The MVP explicitly excludes a general-purpose agent platform, a general event bu
 | `qiven-context-draft` | `73a4bfa2a9068b6c3e37319585732ac1f89f5ef7` (design-time); pinned consumption now `de7f0e1` (docs-only descendant chain; v4 semantics unchanged) | The frozen-v4 dependency pinned by `qiven-runtime` |
 | Engineering proposal | [`legacy/runtime-production-activation-proposal.md`](legacy/runtime-production-activation-proposal.md) | Historical input (product pressure and delivery thinking); delivery order superseded — legacy since 2026-09-23 |
 
-Baseline-refresh law (cold-boot drift fix, 2026-09-23): when a ref cited
-above advances, the accepting batch updates this table in the same
-transaction, so a cold boot never sees design-time refs presented as
-current baselines. Design-time originals stay recorded for provenance.
+Baseline-refresh law (cold-boot drift fix, 2026-09-23; refined same
+day): this table pins DESIGN-TIME provenance plus the accepting anchor
+of each MVP batch. It refreshes when an MVP batch (MVP-0..MVP-7) or a
+pin move lands — not on every engineering PR; live repository heads
+are carried by qiven-context state at cold boot. Current anchor: MVP-0
++ engineering standards/pins landed through runtime `f434451`
+(draft pin `611255b`, foundation pin `424a9a8`, third-party singleton
+pin `3184538`). Design-time originals stay recorded for provenance.
 
 ### 1.2 What has already been demonstrated
 
