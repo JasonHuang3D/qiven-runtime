@@ -42,10 +42,11 @@ Baseline-refresh law (cold-boot drift fix, 2026-09-23; refined same
 day): this table pins DESIGN-TIME provenance plus the accepting anchor
 of each MVP batch. It refreshes when an MVP batch (MVP-0..MVP-7) or a
 pin move lands — not on every engineering PR; live repository heads
-are carried by qiven-context state at cold boot. Current anchor: MVP-0
-+ engineering standards/pins landed through runtime `f434451`
-(draft pin `611255b`, foundation pin `424a9a8`, third-party singleton
-pin `3184538`). Design-time originals stay recorded for provenance.
+are carried by qiven-context state at cold boot. Current anchor: MVP-3
+complete — MVP-1 `763ff26`, MVP-2 runtime PR #46 `e22462b` + qiven-context
+`runtime/invocation-policy.yaml` PR #118 `662d563`, MVP-3 PR #47 `59ea55c`
+(foundation pin `79e6789`, draft pin `7583724`, third-party singleton pin
+`3184538`). Design-time originals stay recorded for provenance.
 
 ### 1.2 What has already been demonstrated
 
