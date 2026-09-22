@@ -89,6 +89,9 @@ add_library(
         headers/interception.cpp
         headers/loopback.cpp
         headers/bridge.cpp
+        headers/journal_schema.cpp
+        headers/journal_runtime_journal.cpp
+        headers/journal_recovery.cpp
 )
 
 target_link_libraries(qiven-runtime-header-check PRIVATE qiven::runtime)
@@ -268,3 +271,61 @@ target_link_libraries(qiven-runtime-third-party-sqlite PRIVATE qiven::runtime qi
 qiven_enable_test_warnings(qiven-runtime-third-party-sqlite)
 set_target_properties(qiven-runtime-third-party-sqlite PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.third-party-sqlite COMMAND qiven-runtime-third-party-sqlite)
+
+# --- MVP-1 journal tests (design docs/design/mvp1-journal.md §6) ------------
+
+# Test journals live under <repo>/.generated-temp/runtime/tests/<name>/
+# (GR-5 regenerable class; .generated-temp is the only generated-artifact
+# location in the repository tree).
+set(QIVEN_RUNTIME_TEST_WORKROOT "${CMAKE_SOURCE_DIR}/.generated-temp/runtime/tests")
+
+function(qiven_runtime_add_journal_test target source)
+    add_executable(${target} ${source})
+    target_link_libraries(${target} PRIVATE qiven::runtime qiven::tp::sqlite3)
+    qiven_enable_test_warnings(${target})
+    target_precompile_headers(${target} REUSE_FROM qiven-runtime)
+    set_target_properties(
+        ${target}
+        PROPERTIES
+            CXX_EXTENSIONS OFF
+            FOLDER "Tests"
+            VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+    target_compile_definitions(${target} PRIVATE
+        QIVEN_RUNTIME_TEST_WORKROOT="${QIVEN_RUNTIME_TEST_WORKROOT}")
+    add_test(NAME qiven-runtime.${target} COMMAND ${target})
+endfunction()
+
+qiven_runtime_add_journal_test(journal-commands journal_commands.cpp)
+qiven_runtime_add_journal_test(journal-schema-conformance journal_schema_conformance.cpp)
+qiven_runtime_add_journal_test(audit-chain-verify audit_chain_verify.cpp)
+
+# The crash test needs the crash hooks live INSIDE the process that dies:
+# it compiles the journal sources directly with the test-guard macro
+# (production qiven-runtime never defines it; batch design §3.6). No PCH
+# reuse — these TUs build with their own include set.
+add_executable(
+    qiven-runtime-journal-crash-recovery
+    journal_crash_recovery.cpp
+    ../src/journal/schema.cpp
+    ../src/journal/runtime_journal.cpp
+    ../src/journal/recovery.cpp
+)
+target_link_libraries(
+    qiven-runtime-journal-crash-recovery PRIVATE qiven::runtime qiven::tp::sqlite3
+)
+qiven_enable_test_warnings(qiven-runtime-journal-crash-recovery)
+set_target_properties(
+    qiven-runtime-journal-crash-recovery
+    PROPERTIES
+        CXX_EXTENSIONS OFF
+        FOLDER "Tests"
+        VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+target_compile_definitions(
+    qiven-runtime-journal-crash-recovery PRIVATE
+    QIVEN_RUNTIME_TEST_CRASH_POINTS
+    QIVEN_RUNTIME_TEST_WORKROOT="${QIVEN_RUNTIME_TEST_WORKROOT}"
+)
+add_test(NAME qiven-runtime.journal-crash-recovery
+    COMMAND qiven-runtime-journal-crash-recovery)

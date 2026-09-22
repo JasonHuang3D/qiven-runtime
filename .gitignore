@@ -34,3 +34,6 @@ compile_commands.json
 __pycache__/
 *.pyc
 .generated-temp/
+
+# Runtime control journal and runtime-local state (MVP-1; never committed)
+.qiven/runtime/
