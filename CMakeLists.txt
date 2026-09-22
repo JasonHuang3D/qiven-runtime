@@ -23,13 +23,33 @@ if(NOT EXISTS "${QIVEN_FOUNDATION_ROOT}/CMakeLists.txt")
     message(FATAL_ERROR "qiven-foundation checkout not found; set QIVEN_FOUNDATION_ROOT to its path")
 endif()
 
+# Foundation pin (cross-repo-cmake.md law; owner direction 2026-09-23:
+# full SHA-pin coverage - the v2 standard's recorded gap is closed, not
+# deferred; upgrades are an explicit re-pin with re-validation).
+set(QIVEN_FOUNDATION_PINNED_SHA "424a9a8225f10d72a3a40d7c5cbd863382d32536")
+find_package(Git REQUIRED)
+execute_process(
+    COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+    WORKING_DIRECTORY "${QIVEN_FOUNDATION_ROOT}"
+    RESULT_VARIABLE QIVEN_FOUNDATION_SHA_RESULT
+    OUTPUT_VARIABLE QIVEN_FOUNDATION_SHA
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT QIVEN_FOUNDATION_SHA_RESULT EQUAL 0)
+    message(FATAL_ERROR "cannot read the qiven-foundation revision at ${QIVEN_FOUNDATION_ROOT}")
+endif()
+if(NOT QIVEN_FOUNDATION_SHA STREQUAL QIVEN_FOUNDATION_PINNED_SHA)
+    message(FATAL_ERROR "qiven-foundation is pinned at ${QIVEN_FOUNDATION_PINNED_SHA} but the checkout is at ${QIVEN_FOUNDATION_SHA}; re-pin explicitly in CMakeLists.txt and re-validate")
+endif()
+
 # --- frozen semantic library pin (layer contract §2) ----------------------
 # qiven-context-draft is consumed as a FROZEN semantic library at an exact
 # revision; upgrades are an explicit re-pin with re-validation.
-# Semantic baseline: frozen v4 @ 4cbc995. Consumption pin: de7f0e1
-# (descendant chain 31fdf505 -> 73a4bfa -> 41d32ff -> de7f0e1; v4
-# semantics unchanged - the later commits are engineering-docs managed
-# syncs and template manual patches, not semantic corpus).
+# Semantic baseline: frozen v4 @ 4cbc995. Consumption pin: 611255b
+# (descendant chain 31fdf505 -> 73a4bfa -> 41d32ff -> de7f0e1 -> 611255b;
+# v4 semantics unchanged - the later commits are engineering-docs managed
+# syncs, template manual patches and the foundation-pin build glue).
 set(QIVEN_DRAFT_ROOT "" CACHE PATH "Path to the pinned qiven-context-draft checkout")
 if(NOT QIVEN_DRAFT_ROOT)
     set(QIVEN_DRAFT_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/../qiven-context-draft")
@@ -41,7 +61,7 @@ if(NOT EXISTS "${QIVEN_DRAFT_ROOT}/CMakeLists.txt")
     message(FATAL_ERROR "qiven-context-draft checkout not found; set QIVEN_DRAFT_ROOT to its path")
 endif()
 
-set(QIVEN_DRAFT_PINNED_SHA "de7f0e16ee13e0b54e3c6d3d16e1a2ade65ada59")
+set(QIVEN_DRAFT_PINNED_SHA "611255b8dba1a2318177a559dc827c5cb83c0ad6")
 find_package(Git REQUIRED)
 execute_process(
     COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
