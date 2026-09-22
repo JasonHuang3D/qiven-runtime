@@ -504,6 +504,38 @@ def _builtin(name: str, spec: dict[str, Any], console: Console, expect_head: str
     return Result(name, "pass", 0, duration)
 
 
+def _record_duration(result: Result, kind: str) -> None:
+    """Append one task-duration event to the durable durations log (the
+    evidence base for long-class routing decisions; owner 2026-09-23).
+    Never raises: logging must not gate."""
+    try:
+        path = ROOT / ".generated-temp" / "operator" / "task-durations.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        event = {
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "kind": kind,
+            "task": result.name,
+            "status": result.status,
+            "duration_seconds": round(result.duration_seconds, 3),
+            "head": _git_head_or_empty(),
+        }
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _git_head_or_empty() -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        return completed.stdout.strip()[:12] if completed.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
 def _run_task(name: str, tasks: dict[str, Any], console: Console, expect_head: str | None) -> Result:
     spec = tasks.get(name)
     if not isinstance(spec, dict):
@@ -511,8 +543,11 @@ def _run_task(name: str, tasks: dict[str, Any], console: Console, expect_head: s
         console.emit("fail", detail)
         return Result(name, "fail", 2, detail=detail)
     if "builtin" in spec:
-        return _builtin(name, spec, console, expect_head)
-    return _run_process(name, spec, console)
+        result = _builtin(name, spec, console, expect_head)
+    else:
+        result = _run_process(name, spec, console)
+    _record_duration(result, kind="task")
+    return result
 
 
 def _unknown_task_error(name: str, tasks: dict[str, Any]) -> str:
@@ -539,7 +574,8 @@ def _write_gate_receipt(payload: dict[str, Any]) -> None:
             "status": payload.get("status"),
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "tasks": [
-                {"name": r.get("name"), "status": r.get("status")}
+                {"name": r.get("name"), "status": r.get("status"),
+                 "duration_seconds": r.get("duration_seconds")}
                 for r in payload.get("results", [])
             ],
         }
