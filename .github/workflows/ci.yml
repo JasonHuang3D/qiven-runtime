@@ -11,6 +11,10 @@ on:
         default: full
         type: string
 
+# Trigger registration refresh 2026-09-22: phantom zero-job push runs were
+# created for every push against this dispatch-only file (stale GitHub-side
+# event registration since repo creation). This comment change forces
+# re-registration. See qiven-context session-ci-handoff-contract.md.
 permissions:
   contents: read
 
