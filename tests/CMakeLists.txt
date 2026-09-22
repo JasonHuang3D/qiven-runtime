@@ -298,8 +298,11 @@ function(qiven_runtime_add_journal_test target source)
             FOLDER "Tests"
             VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
+    # The gate runs test-debug and test-release in PARALLEL: the workroot
+    # carries $<CONFIG> so Debug and Release runs never share fixture paths
+    # (the race this fixes was caught live by bundle-publish-pin, 2026-09-23).
     target_compile_definitions(${target} PRIVATE
-        QIVEN_RUNTIME_TEST_WORKROOT="${QIVEN_RUNTIME_TEST_WORKROOT}")
+        QIVEN_RUNTIME_TEST_WORKROOT="${QIVEN_RUNTIME_TEST_WORKROOT}/$<CONFIG>")
     add_test(NAME qiven-runtime.${target} COMMAND ${target})
 endfunction()
 
@@ -342,7 +345,7 @@ set_target_properties(
 target_compile_definitions(
     qiven-runtime-journal-crash-recovery PRIVATE
     QIVEN_RUNTIME_TEST_CRASH_POINTS
-    QIVEN_RUNTIME_TEST_WORKROOT="${QIVEN_RUNTIME_TEST_WORKROOT}"
+    QIVEN_RUNTIME_TEST_WORKROOT="${QIVEN_RUNTIME_TEST_WORKROOT}/$<CONFIG>"
 )
 add_test(NAME qiven-runtime.journal-crash-recovery
     COMMAND qiven-runtime-journal-crash-recovery)

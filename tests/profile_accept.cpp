@@ -184,11 +184,15 @@ int main()
 
     // The SHIPPED accepted instance loads clean (config/profiles/).
     {
-        // workroot = <repo>/.generated-temp/runtime/tests -> repo is three
-        // levels up.
-        const std::filesystem::path repo = workroot.parent_path().parent_path().parent_path();
-        const auto shipped               = repo / "config" / "profiles" / "zcode-jason-context-record-mvp.yaml";
-        auto loaded                      = load_profile_file(shipped);
+        // workroot = <repo>/.generated-temp/runtime/tests/<config> -> the
+        // repository root is four levels up.
+        std::filesystem::path repo = workroot;
+        for (int i = 0; i < 4; ++i)
+        {
+            repo = repo.parent_path();
+        }
+        const auto shipped = repo / "config" / "profiles" / "zcode-jason-context-record-mvp.yaml";
+        auto loaded        = load_profile_file(shipped);
         QIVEN_VERIFY(loaded.is_ok());
         QIVEN_VERIFY(loaded.value().profile_id == "zcode-jason-context-record-mvp");
         QIVEN_VERIFY(loaded.value().cognition.policy_path == "runtime/invocation-policy.yaml");
