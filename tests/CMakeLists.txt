@@ -59,31 +59,36 @@ add_library(
     OBJECT
         headers/adapter_handshake.cpp
         headers/adapter_manifest.cpp
+        headers/auth.cpp
         headers/claims.cpp
         headers/generation.cpp
+        headers/cognition_bundle.cpp
         headers/cognition_port.cpp
-        headers/identity.cpp
-        headers/requirement.cpp
-        headers/resolver.cpp
-        headers/transaction.cpp
         headers/decision.cpp
+        headers/deployment_profile.cpp
         headers/executor.cpp
         headers/failure.cpp
+        headers/identity.cpp
         headers/ingress.cpp
+        headers/intent.cpp
+        headers/observed_action.cpp
         headers/outcome.cpp
+        headers/profile.cpp
+        headers/reconciliation.cpp
+        headers/requirement.cpp
+        headers/resolver.cpp
+        headers/runtime_journal.cpp
+        headers/scope.cpp
+        headers/state.cpp
+        headers/state_store.cpp
+        headers/transaction.cpp
         headers/admission.cpp
-        headers/execution_authority.cpp
         headers/activation.cpp
         headers/claims.cpp
+        headers/execution_authority.cpp
         headers/interception.cpp
         headers/loopback.cpp
         headers/bridge.cpp
-        headers/state.cpp
-        headers/state_store.cpp
-        headers/intent.cpp
-        headers/observed_action.cpp
-        headers/profile.cpp
-        headers/reconciliation.cpp
 )
 
 target_link_libraries(qiven-runtime-header-check PRIVATE qiven::runtime)
@@ -250,3 +255,10 @@ qiven_enable_test_warnings(qiven-runtime-claim-profile-conformance)
 target_precompile_headers(qiven-runtime-claim-profile-conformance REUSE_FROM qiven-runtime)
 set_target_properties(qiven-runtime-claim-profile-conformance PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_test(NAME qiven-runtime.claim-profile-conformance COMMAND qiven-runtime-claim-profile-conformance)
+
+add_executable(qiven-runtime-redeliberate-timing redeliberate_timing.cpp)
+target_link_libraries(qiven-runtime-redeliberate-timing PRIVATE qiven::runtime)
+qiven_enable_test_warnings(qiven-runtime-redeliberate-timing)
+target_precompile_headers(qiven-runtime-redeliberate-timing REUSE_FROM qiven-runtime)
+set_target_properties(qiven-runtime-redeliberate-timing PROPERTIES CXX_EXTENSIONS OFF FOLDER "Tests" VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_test(NAME qiven-runtime.redeliberate-timing COMMAND qiven-runtime-redeliberate-timing)

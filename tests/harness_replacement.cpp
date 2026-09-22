@@ -141,16 +141,35 @@ DeploymentProfile dual_harness_profile()
 std::vector<std::string> run_through(const char* harness_name, const DeploymentProfile& profile,
                                      const qiven::runtime::port::PinnedCognition& cognition)
 {
+    static_cast<void>(profile);
     TransactionMinter minter;
     Executor pool { 2, 8 };
     BoundedIngressQueue ingress { 16 };
-    ControlCore core { minter, pool,
-                       [](const qiven::runtime::RequirementIdentity& identity) {
-                           return std::make_optional(qiven::runtime::resolver::make_evidence_receipt(
-                               identity, qiven::runtime::resolver::ResolverIdentity { "loopback", 1 }, identity.subject,
-                               "harness-proof", std::span<const std::byte>()));
-                       },
-                       cognition, StructuralFacts {} };
+
+    qiven::runtime::resolver::ResolverBinding binding;
+    binding.key.kind           = RequirementKind::VerifyCanonical;
+    binding.key.type           = qiven::runtime::resolver::ResolverType::CanonicalRecall;
+    binding.key.version        = 1;
+    binding.key.cognition_view = "default";
+    binding.resolver           = qiven::runtime::resolver::ResolverIdentity { "loopback", 1 };
+    binding.accepted_evidence  = qiven::runtime::resolver::EvidenceType::CanonicalRecord;
+    binding.trust              = qiven::runtime::resolver::TrustDomain::Mechanism;
+    auto registry              = qiven::runtime::resolver::RequirementResolverRegistry::Builder {}
+                        .add(binding)
+                        .build();
+    QIVEN_VERIFY(registry.is_ok());
+
+    qiven::runtime::ResolverMechanism mechanism = [](const qiven::runtime::resolver::ResolverBinding&,
+                                                     const qiven::runtime::RequirementIdentity& identity,
+                                                     const qiven::runtime::resolver::ReceiptContext& context) {
+        return std::make_optional(qiven::runtime::resolver::make_evidence_receipt(
+            identity, qiven::runtime::resolver::ResolverIdentity { "loopback", 1 },
+            qiven::runtime::resolver::ResolverType::CanonicalRecall,
+            qiven::runtime::resolver::EvidenceType::CanonicalRecord, identity.subject, "harness-proof",
+            std::span<const std::byte>(), context));
+    };
+
+    ControlCore core { minter, pool, registry.value(), std::move(mechanism), cognition, StructuralFacts {} };
 
     const qiven::runtime::AdapterInstanceId adapter { qiven::fnv1a64(harness_name) };
     IngressMessage proposal;
@@ -164,6 +183,19 @@ std::vector<std::string> run_through(const char* harness_name, const DeploymentP
                                                      qiven::runtime::ActorInstanceId { 1 },
                                                      qiven::runtime::CapabilityId { adapter.fnv }, "op", "target",
                                                      std::span<const std::byte>(blob, 1));
+
+    // §8.2: present cognition injected before the judgment
+    qiven::runtime::port::ActivationReceipt activation;
+    activation.kind               = qiven::runtime::port::ActivationKind::SessionStart;
+    activation.subject            = "canonical source";
+    activation.canonical_revision = cognition.revision;
+    activation.injected_digest    = cognition.snapshot_digest_sha256;
+    activation.generation         = proposal.correlation.generation;
+    activation.actor_token        = 1;
+    activation.session_token      = 1;
+    activation.injection_event    = 1;
+    proposal.activation_receipts.push_back(activation);
+
     QIVEN_VERIFY(ingress.try_push(std::move(proposal)));
 
     for (int spin = 0; spin < 400; ++spin)

@@ -155,15 +155,30 @@ int run_adapter_conformance(AdapterFixture& fixture)
         const std::byte payload[] { std::byte { 0x31 } };
         decision.action_digest = ContentDigest { qiven::sha256(payload, sizeof payload) };
         decision.disposition   = qiven::runtime::Disposition::Allow;
+        decision.generation    = qiven::runtime::RuntimeGenerationId { 1 };
+        decision.session       = qiven::runtime::HarnessSessionId { 1 };
+        decision.actor         = qiven::runtime::ActorInstanceId { 1 };
+
+        qiven::runtime::CorrelationKey correlation { qiven::runtime::RuntimeGenerationId { 1 },
+                                                     qiven::runtime::AdapterInstanceId { 1 },
+                                                     qiven::runtime::HarnessSessionId { 1 },
+                                                     qiven::runtime::ActorInstanceId { 1 },
+                                                     qiven::runtime::HarnessActionId { 1 } };
 
         PostActionObservation observation;
-        observation.action_digest = decision.action_digest;
-        observation.reported      = ExecutionOutcome::Succeeded;
-        observation.evidence      = "exit 0";
+        observation.transaction    = decision.transaction;
+        observation.harness_action = correlation.action;
+        observation.generation     = decision.generation;
+        observation.action_digest  = decision.action_digest;
+        observation.reported       = ExecutionOutcome::Succeeded;
+        observation.evidence       = "exit 0";
 
-        const auto accepted = observer.observe(decision, observation, false);
+        const auto accepted = observer.observe(decision, correlation, observation);
         check(accepted.status == ObservationStatus::Accepted, "F5 first observation accepted");
-        const auto conflict = observer.observe(decision, observation, true);
+        PostActionObservation conflicting = observation;
+        conflicting.reported              = ExecutionOutcome::Failed;
+        conflicting.evidence              = "exit 1";
+        const auto conflict               = observer.observe(decision, correlation, conflicting);
         check(conflict.status == ObservationStatus::RejectedDuplicate, "F5 duplicate rejected (46)");
     }
 
@@ -174,13 +189,25 @@ int run_adapter_conformance(AdapterFixture& fixture)
         const std::byte payload[] { std::byte { 0x32 } };
         decision.action_digest = ContentDigest { qiven::sha256(payload, sizeof payload) };
         decision.disposition   = qiven::runtime::Disposition::Allow;
+        decision.generation    = qiven::runtime::RuntimeGenerationId { 1 };
+        decision.session       = qiven::runtime::HarnessSessionId { 1 };
+        decision.actor         = qiven::runtime::ActorInstanceId { 1 };
+
+        qiven::runtime::CorrelationKey correlation { qiven::runtime::RuntimeGenerationId { 1 },
+                                                     qiven::runtime::AdapterInstanceId { 1 },
+                                                     qiven::runtime::HarnessSessionId { 1 },
+                                                     qiven::runtime::ActorInstanceId { 1 },
+                                                     qiven::runtime::HarnessActionId { 2 } };
 
         PostActionObservation observation;
-        observation.action_digest = decision.action_digest;
-        observation.reported      = ExecutionOutcome::Failed; // even if the
-                                                              // adapter SAYS failed
-        observation.evidence = "";                            // with no evidence
-        const auto result    = observer.observe(decision, observation, false);
+        observation.transaction    = decision.transaction;
+        observation.harness_action = correlation.action;
+        observation.generation     = decision.generation;
+        observation.action_digest  = decision.action_digest;
+        observation.reported       = ExecutionOutcome::Failed; // even if the
+                                                               // adapter SAYS failed
+        observation.evidence = "";                             // with no evidence
+        const auto result    = observer.observe(decision, correlation, observation);
         check(result.status == ObservationStatus::Accepted, "F6 accepted");
         check(result.outcome == ExecutionOutcome::Indeterminate, "F6 no-ack is Indeterminate (C-14)");
     }

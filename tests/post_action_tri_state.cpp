@@ -6,7 +6,9 @@
 
 namespace
 {
+using qiven::u64;
 using qiven::runtime::ContentDigest;
+using qiven::runtime::CorrelationKey;
 using qiven::runtime::EffectScope;
 using qiven::runtime::ExecutionDecision;
 using qiven::runtime::ExecutionOutcome;
@@ -19,8 +21,21 @@ ExecutionDecision sample_decision()
 {
     ExecutionDecision decision;
     decision.action_digest = ContentDigest { qiven::SHA256Digest { std::byte { 0x11 } } };
+    decision.transaction   = qiven::runtime::ControlTransactionId { 3 };
+    decision.generation    = qiven::runtime::RuntimeGenerationId { 2 };
+    decision.session       = qiven::runtime::HarnessSessionId { 5 };
+    decision.actor         = qiven::runtime::ActorInstanceId { 6 };
     decision.disposition   = qiven::runtime::Disposition::Allow;
     return decision;
+}
+
+CorrelationKey correlation_of(const ExecutionDecision& decision, u64 harness_action)
+{
+    return CorrelationKey { decision.generation,
+                            qiven::runtime::AdapterInstanceId { 1 },
+                            decision.session,
+                            decision.actor,
+                            HarnessActionId { harness_action } };
 }
 
 PostActionObservation observation_of(const ExecutionDecision& decision, ExecutionOutcome reported, std::string evidence)
@@ -29,6 +44,7 @@ PostActionObservation observation_of(const ExecutionDecision& decision, Executio
     observation.transaction    = decision.transaction;
     observation.harness_action = HarnessActionId { 1 };
     observation.action_digest  = decision.action_digest;
+    observation.generation     = decision.generation;
     observation.reported       = reported;
     observation.scope          = EffectScope { 77 };
     observation.evidence       = std::move(evidence);
@@ -38,31 +54,78 @@ PostActionObservation observation_of(const ExecutionDecision& decision, Executio
 
 int main()
 {
-    // §46 correlation: a digest that disagrees with the consumed decision
-    // is rejected
+    const CorrelationKey correlation = correlation_of(sample_decision(), 1);
+
+    // §46/§11.3 correlation: a digest that disagrees with the consumed
+    // decision is rejected
     {
         PostActionObserver observer;
         auto decision             = sample_decision();
         auto observation          = observation_of(decision, ExecutionOutcome::Succeeded, "exit 0");
         observation.action_digest = ContentDigest { qiven::SHA256Digest { std::byte { 0x99 } } };
-        const auto result         = observer.observe(decision, observation, false);
+        const auto result         = observer.observe(decision, correlation, observation);
         QIVEN_VERIFY(result.status == ObservationStatus::RejectedCorrelationMismatch);
     }
 
-    // §46 duplicate: a second observation for the same execution is an
-    // integrity rejection
+    // §11.3 COMPLETE correlation: any other bound field disagreeing is
+    // equally rejected — transaction, generation, harness action, session
+    // and actor are all validated, not only the digest
     {
         PostActionObserver observer;
         const auto decision = sample_decision();
-        const auto result   = observer.observe(decision, observation_of(decision, ExecutionOutcome::Succeeded, "ok"), true);
-        QIVEN_VERIFY(result.status == ObservationStatus::RejectedDuplicate);
+
+        auto wrong_transaction        = observation_of(decision, ExecutionOutcome::Succeeded, "exit 0");
+        wrong_transaction.transaction = qiven::runtime::ControlTransactionId { 999 };
+        QIVEN_VERIFY(observer.observe(decision, correlation, wrong_transaction).status ==
+                     ObservationStatus::RejectedCorrelationMismatch);
+
+        auto wrong_generation       = observation_of(decision, ExecutionOutcome::Succeeded, "exit 0");
+        wrong_generation.generation = qiven::runtime::RuntimeGenerationId { 42 };
+        QIVEN_VERIFY(observer.observe(decision, correlation, wrong_generation).status ==
+                     ObservationStatus::RejectedCorrelationMismatch);
+
+        auto wrong_harness           = observation_of(decision, ExecutionOutcome::Succeeded, "exit 0");
+        wrong_harness.harness_action = HarnessActionId { 77 };
+        QIVEN_VERIFY(observer.observe(decision, correlation, wrong_harness).status ==
+                     ObservationStatus::RejectedCorrelationMismatch);
+
+        // a correlation tuple whose session differs from the decision's
+        // bound session is rejected even with a matching digest
+        const CorrelationKey other_session = correlation_of(decision, 1);
+        CorrelationKey forged              = other_session;
+        forged.session                     = qiven::runtime::HarnessSessionId { 555 };
+        QIVEN_VERIFY(observer.observe(decision, forged, observation_of(decision, ExecutionOutcome::Succeeded, "exit 0"))
+                         .status == ObservationStatus::RejectedCorrelationMismatch);
+    }
+
+    // §46 duplicate: a DIFFERENT second observation for the same exact
+    // execution is an integrity rejection; an identical re-delivery is an
+    // idempotent replay
+    {
+        PostActionObserver observer;
+        const auto decision = sample_decision();
+
+        const auto first = observer.observe(decision, correlation,
+                                            observation_of(decision, ExecutionOutcome::Succeeded, "exit 0"));
+        QIVEN_VERIFY(first.status == ObservationStatus::Accepted);
+
+        const auto different = observer.observe(decision, correlation,
+                                                observation_of(decision, ExecutionOutcome::Failed, "exit 1"));
+        QIVEN_VERIFY(different.status == ObservationStatus::RejectedDuplicate);
+
+        const auto identical = observer.observe(decision, correlation,
+                                                observation_of(decision, ExecutionOutcome::Succeeded, "exit 0"));
+        QIVEN_VERIFY(identical.status == ObservationStatus::Accepted);
+        QIVEN_VERIFY(identical.outcome == ExecutionOutcome::Succeeded);
+        QIVEN_VERIFY(observer.observed(correlation));
     }
 
     // C-14 tri-state: established success is Succeeded and terminal
     {
         PostActionObserver observer;
         const auto decision = sample_decision();
-        const auto result   = observer.observe(decision, observation_of(decision, ExecutionOutcome::Succeeded, "exit 0"), false);
+        const auto result =
+            observer.observe(decision, correlation, observation_of(decision, ExecutionOutcome::Succeeded, "exit 0"));
         QIVEN_VERIFY(result.status == ObservationStatus::Accepted);
         QIVEN_VERIFY(result.outcome == ExecutionOutcome::Succeeded);
         QIVEN_VERIFY(!result.barrier_active);
@@ -72,8 +135,9 @@ int main()
     {
         PostActionObserver observer;
         const auto decision = sample_decision();
-        const auto result =
-            observer.observe(decision, observation_of(decision, ExecutionOutcome::Failed, "tool crashed at 2026-09-21 18:00:01"), false);
+        const auto result   = observer.observe(decision, correlation,
+                                               observation_of(decision, ExecutionOutcome::Failed,
+                                                              "tool crashed at 2026-09-21 18:00:01"));
         QIVEN_VERIFY(result.status == ObservationStatus::Accepted);
         QIVEN_VERIFY(result.outcome == ExecutionOutcome::Failed);
         QIVEN_VERIFY(!result.fingerprint.stableMessage.empty());
@@ -88,7 +152,7 @@ int main()
         const auto decision = sample_decision();
         auto observation    = observation_of(decision, ExecutionOutcome::Indeterminate, "");
         observation.scope   = EffectScope { 4242 };
-        const auto result   = observer.observe(decision, observation, false);
+        const auto result   = observer.observe(decision, correlation, observation);
         QIVEN_VERIFY(result.status == ObservationStatus::Accepted);
         QIVEN_VERIFY(result.outcome == ExecutionOutcome::Indeterminate);
         QIVEN_VERIFY(result.barrier_active);
@@ -100,7 +164,8 @@ int main()
     {
         PostActionObserver observer;
         const auto decision = sample_decision();
-        const auto result   = observer.observe(decision, observation_of(decision, ExecutionOutcome::Failed, ""), false);
+        const auto result   = observer.observe(decision, correlation,
+                                               observation_of(decision, ExecutionOutcome::Failed, ""));
         QIVEN_VERIFY(result.status == ObservationStatus::Accepted);
         QIVEN_VERIFY(result.outcome == ExecutionOutcome::Indeterminate);
         QIVEN_VERIFY(result.barrier_active);
@@ -110,7 +175,8 @@ int main()
     {
         PostActionObserver observer;
         const auto decision = sample_decision();
-        const auto result   = observer.observe(decision, observation_of(decision, ExecutionOutcome::Succeeded, ""), false);
+        const auto result   = observer.observe(decision, correlation,
+                                               observation_of(decision, ExecutionOutcome::Succeeded, ""));
         QIVEN_VERIFY(result.outcome == ExecutionOutcome::Indeterminate);
         QIVEN_VERIFY(result.barrier_active);
     }

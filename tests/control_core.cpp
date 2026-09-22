@@ -88,6 +88,45 @@ qiven::runtime::port::PinnedCognition pin_of(const Snapshot& snapshot, const cha
     return std::move(pinned).value(); // pin owns the snapshot; file may vanish
 }
 
+qiven::runtime::resolver::RequirementResolverRegistry make_registry()
+{
+    qiven::runtime::resolver::ResolverBinding recall;
+    recall.key.kind           = RequirementKind::MandatoryRecall;
+    recall.key.type           = qiven::runtime::resolver::ResolverType::CanonicalRecall;
+    recall.key.version        = 1;
+    recall.key.cognition_view = "default";
+    recall.resolver           = qiven::runtime::resolver::ResolverIdentity { "loopback", 1 };
+    recall.accepted_evidence  = qiven::runtime::resolver::EvidenceType::CanonicalRecord;
+    recall.trust              = qiven::runtime::resolver::TrustDomain::Mechanism;
+
+    qiven::runtime::resolver::ResolverBinding check;
+    check.key.kind           = RequirementKind::RunMechanicalCheck;
+    check.key.type           = qiven::runtime::resolver::ResolverType::MechanicalCheck;
+    check.key.version        = 1;
+    check.key.cognition_view = "default";
+    check.resolver           = qiven::runtime::resolver::ResolverIdentity { "loopback", 1 };
+    check.accepted_evidence  = qiven::runtime::resolver::EvidenceType::MechanicalCheckReceipt;
+    check.trust              = qiven::runtime::resolver::TrustDomain::Mechanism;
+
+    auto built = qiven::runtime::resolver::RequirementResolverRegistry::Builder()
+                     .add(std::move(recall))
+                     .add(std::move(check))
+                     .build();
+    QIVEN_VERIFY(built.is_ok());
+    return std::move(built).value();
+}
+
+qiven::runtime::ResolverMechanism succeed_mechanism()
+{
+    return [](const qiven::runtime::resolver::ResolverBinding& binding,
+              const qiven::runtime::RequirementIdentity& identity,
+              const qiven::runtime::resolver::ReceiptContext& context) {
+        return std::make_optional(qiven::runtime::resolver::make_evidence_receipt(
+            identity, binding.resolver, binding.key.type, binding.accepted_evidence, identity.subject, "loopback-core",
+            std::span<const std::byte>(), context));
+    };
+}
+
 qiven::runtime::CorrelationKey key_numbered(u64 n)
 {
     return qiven::runtime::CorrelationKey { qiven::runtime::RuntimeGenerationId { 1 },
@@ -95,6 +134,25 @@ qiven::runtime::CorrelationKey key_numbered(u64 n)
                                             qiven::runtime::HarnessSessionId { 1 },
                                             qiven::runtime::ActorInstanceId { 1 },
                                             qiven::runtime::HarnessActionId { n } };
+}
+
+// §8.2 step 7: a valid activation receipt for the BeforeJudgment
+// requirement, injected before the judgment opens.
+qiven::runtime::port::ActivationReceipt activation_for(const qiven::runtime::port::PinnedCognition& cognition,
+                                                       const qiven::runtime::CorrelationKey& key,
+                                                       u64 injection_event)
+{
+    qiven::runtime::port::ActivationReceipt activation;
+    activation.kind               = qiven::runtime::port::ActivationKind::SessionStart;
+    activation.subject            = "policy context";
+    activation.canonical_revision = cognition.revision;
+    activation.injected_digest    = cognition.snapshot_digest_sha256;
+    activation.evidence_type      = qiven::runtime::resolver::EvidenceType::CanonicalRecord;
+    activation.generation         = key.generation;
+    activation.actor_token        = key.actor.value;
+    activation.session_token      = key.session.value;
+    activation.injection_event    = injection_event;
+    return activation;
 }
 
 IngressMessage proposal_for(const qiven::runtime::CorrelationKey& key, std::byte payload)
@@ -109,15 +167,6 @@ IngressMessage proposal_for(const qiven::runtime::CorrelationKey& key, std::byte
     return message;
 }
 
-qiven::runtime::ResolverFn succeed_resolver()
-{
-    return [](const qiven::runtime::RequirementIdentity& identity) {
-        return std::make_optional(qiven::runtime::resolver::make_evidence_receipt(
-            identity, qiven::runtime::resolver::ResolverIdentity { "loopback", 1 }, identity.subject, "loopback-core",
-            std::span<const std::byte>()));
-    };
-}
-
 bool settled(const ControlCore& core)
 {
     const auto all = core.views();
@@ -127,7 +176,8 @@ bool settled(const ControlCore& core)
     }
     for (const auto& view : all)
     {
-        if (view.phase != TransactionPhase::CognitiveAllowed && view.phase != TransactionPhase::Denied)
+        if (view.phase != TransactionPhase::CognitiveAllowed && view.phase != TransactionPhase::Denied &&
+            view.phase != TransactionPhase::ReDeliberationRequired)
         {
             return false;
         }
@@ -145,6 +195,7 @@ DrainResult drain_until(ControlCore& core, BoundedIngressQueue& ingress, bool (*
         total.dropped_unknown += round.dropped_unknown;
         total.integrity_failures += round.integrity_failures;
         total.replays += round.replays;
+        total.receipt_rejections += round.receipt_rejections;
         if (round.processed == 0)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -157,17 +208,22 @@ DrainResult drain_until(ControlCore& core, BoundedIngressQueue& ingress, bool (*
 
 int main()
 {
-    const auto cognition = pin_of(ruled_snapshot(), "qiven-rca8-core-");
+    const auto cognition = pin_of(ruled_snapshot(), "qiven-mvp0-core-");
+    const auto registry  = make_registry();
 
-    // end to end: both blocking requirements resolve concurrently and the
-    // transaction reaches CognitiveAllowed with recorded evidence
+    // end to end WITH pre-satisfied BeforeJudgment cognition (§8.2 step 7):
+    // the activation receipt pre-satisfies at proposal time; the remaining
+    // BeforeExecution requirement resolves in flight; CognitiveAllowed
     {
         TransactionMinter minter;
         Executor pool { 2, 16 };
         BoundedIngressQueue ingress { 32 };
-        ControlCore core { minter, pool, succeed_resolver(), cognition, qiven::runtime::StructuralFacts {} };
+        ControlCore core { minter, pool, registry, succeed_mechanism(), cognition,
+                           qiven::runtime::StructuralFacts {} };
 
-        QIVEN_VERIFY(ingress.try_push(proposal_for(key_numbered(1), std::byte { 0x01 })));
+        auto proposal = proposal_for(key_numbered(1), std::byte { 0x01 });
+        proposal.activation_receipts.push_back(activation_for(cognition, proposal.correlation, 1));
+        QIVEN_VERIFY(ingress.try_push(std::move(proposal)));
         drain_until(core, ingress, settled);
 
         const auto all = core.views();
@@ -186,21 +242,73 @@ int main()
         }
     }
 
+    // §8.2 WITHOUT pre-injected cognition: the in-flight-resolved
+    // BeforeJudgment requirement ends the transaction ReDeliberate —
+    // the evidence authorizes the NEXT judgment, never this proposal
+    {
+        TransactionMinter minter;
+        Executor pool { 2, 16 };
+        BoundedIngressQueue ingress { 32 };
+        ControlCore core { minter, pool, registry, succeed_mechanism(), cognition,
+                           qiven::runtime::StructuralFacts {} };
+
+        QIVEN_VERIFY(ingress.try_push(proposal_for(key_numbered(2), std::byte { 0x02 })));
+        drain_until(core, ingress, settled);
+
+        const auto all = core.views();
+        QIVEN_VERIFY(all.size() == 1);
+        QIVEN_VERIFY(all[0].phase == TransactionPhase::ReDeliberationRequired);
+        QIVEN_VERIFY(all[0].disposition == qiven::runtime::Disposition::ReDeliberate);
+        QIVEN_VERIFY(!core.resume_receipts(all[0].id).empty()); // §8.2 step 4 resume context
+    }
+
     // §29 fail-closed: a resolver that cannot produce trusted evidence
     // denies the transaction (Blocked -> Failed, never Satisfied)
     {
         TransactionMinter minter;
         Executor pool { 2, 16 };
         BoundedIngressQueue ingress { 32 };
-        ControlCore core { minter, pool,
-                           [](const qiven::runtime::RequirementIdentity&) { return std::optional<qiven::runtime::resolver::EvidenceReceipt> {}; },
-                           cognition, qiven::runtime::StructuralFacts {} };
+        ControlCore core {
+            minter, pool, registry,
+            [](const qiven::runtime::resolver::ResolverBinding&, const qiven::runtime::RequirementIdentity&,
+               const qiven::runtime::resolver::ReceiptContext&)
+                -> std::optional<qiven::runtime::resolver::EvidenceReceipt> { return std::nullopt; },
+            cognition, qiven::runtime::StructuralFacts {}
+        };
 
-        QIVEN_VERIFY(ingress.try_push(proposal_for(key_numbered(2), std::byte { 0x02 })));
+        QIVEN_VERIFY(ingress.try_push(proposal_for(key_numbered(3), std::byte { 0x03 })));
         drain_until(core, ingress, settled);
         const auto all = core.views();
         QIVEN_VERIFY(all.size() == 1);
         QIVEN_VERIFY(all[0].phase == TransactionPhase::Denied);
+    }
+
+    // §8.3 fail-closed: a receipt from the WRONG resolver type cannot
+    // satisfy the accepted binding — the requirement fails closed
+    {
+        TransactionMinter minter;
+        Executor pool { 2, 16 };
+        BoundedIngressQueue ingress { 32 };
+        ControlCore core {
+            minter, pool, registry,
+            [](const qiven::runtime::resolver::ResolverBinding&, const qiven::runtime::RequirementIdentity& identity,
+               const qiven::runtime::resolver::ReceiptContext& context) {
+                auto receipt = qiven::runtime::resolver::make_evidence_receipt(
+                    identity, qiven::runtime::resolver::ResolverIdentity { "loopback", 1 },
+                    qiven::runtime::resolver::ResolverType::TypedHumanHandoff, // wrong type for every binding
+                    qiven::runtime::resolver::EvidenceType::TypedHumanHandoff, identity.subject, "loopback-core",
+                    std::span<const std::byte>(), context);
+                return std::make_optional(std::move(receipt));
+            },
+            cognition, qiven::runtime::StructuralFacts {}
+        };
+
+        QIVEN_VERIFY(ingress.try_push(proposal_for(key_numbered(4), std::byte { 0x04 })));
+        const auto total = drain_until(core, ingress, settled);
+        const auto all   = core.views();
+        QIVEN_VERIFY(all.size() == 1);
+        QIVEN_VERIFY(all[0].phase == TransactionPhase::Denied);
+        QIVEN_VERIFY(total.receipt_rejections >= 1);
     }
 
     // §60 idempotent replay: the same correlation + identical content never
@@ -209,14 +317,17 @@ int main()
         TransactionMinter minter;
         Executor pool { 2, 16 };
         BoundedIngressQueue ingress { 32 };
-        ControlCore core { minter, pool, succeed_resolver(), cognition, qiven::runtime::StructuralFacts {} };
+        ControlCore core { minter, pool, registry, succeed_mechanism(), cognition,
+                           qiven::runtime::StructuralFacts {} };
 
-        const auto key = key_numbered(3);
-        QIVEN_VERIFY(ingress.try_push(proposal_for(key, std::byte { 0x03 })));
+        const auto key = key_numbered(5);
+        auto proposal  = proposal_for(key, std::byte { 0x05 });
+        proposal.activation_receipts.push_back(activation_for(cognition, key, 5));
+        QIVEN_VERIFY(ingress.try_push(std::move(proposal)));
         drain_until(core, ingress, settled);
 
         // identical replay after settlement
-        QIVEN_VERIFY(ingress.try_push(proposal_for(key, std::byte { 0x03 })));
+        QIVEN_VERIFY(ingress.try_push(proposal_for(key, std::byte { 0x05 })));
         auto result = core.drain(ingress);
         QIVEN_VERIFY(result.replays >= 1);
         QIVEN_VERIFY(core.transaction_count() == 1);
@@ -230,13 +341,38 @@ int main()
         QIVEN_VERIFY(all[0].phase == TransactionPhase::CognitiveAllowed); // untouched
     }
 
+    // full-value correlation (§10.3): two keys differing ONLY in the actor
+    // field are two distinct transactions — a 64-bit hash is not identity
+    {
+        TransactionMinter minter;
+        Executor pool { 2, 16 };
+        BoundedIngressQueue ingress { 32 };
+        ControlCore core { minter, pool, registry, succeed_mechanism(), cognition,
+                           qiven::runtime::StructuralFacts {} };
+
+        const auto base = key_numbered(6);
+        auto other      = base;
+        other.actor     = qiven::runtime::ActorInstanceId { 2 };
+
+        auto first = proposal_for(base, std::byte { 0x06 });
+        first.activation_receipts.push_back(activation_for(cognition, base, 6));
+        auto second = proposal_for(other, std::byte { 0x06 });
+        second.activation_receipts.push_back(activation_for(cognition, other, 7));
+        QIVEN_VERIFY(ingress.try_push(std::move(first)));
+        QIVEN_VERIFY(ingress.try_push(std::move(second)));
+        drain_until(core, ingress, settled);
+
+        QIVEN_VERIFY(core.transaction_count() == 2);
+    }
+
     // §61: evidence for an unknown transaction is dropped and counted,
     // never attached anywhere by guessing
     {
         TransactionMinter minter;
         Executor pool { 1, 4 };
         BoundedIngressQueue ingress { 8 };
-        ControlCore core { minter, pool, succeed_resolver(), cognition, qiven::runtime::StructuralFacts {} };
+        ControlCore core { minter, pool, registry, succeed_mechanism(), cognition,
+                           qiven::runtime::StructuralFacts {} };
 
         IngressMessage ghost;
         ghost.kind                = IngressMessage::Kind::EvidenceDelivery;
@@ -255,22 +391,31 @@ int main()
         TransactionMinter minter;
         Executor pool { 2, 16 };
         BoundedIngressQueue ingress { 64 };
-        ControlCore core { minter, pool, succeed_resolver(), cognition, qiven::runtime::StructuralFacts {} };
+        ControlCore core { minter, pool, registry, succeed_mechanism(), cognition,
+                           qiven::runtime::StructuralFacts {} };
 
-        QIVEN_VERIFY(ingress.try_push(proposal_for(key_numbered(4), std::byte { 0x04 })));
+        const auto key = key_numbered(7);
+        auto proposal  = proposal_for(key, std::byte { 0x07 });
+        proposal.activation_receipts.push_back(activation_for(cognition, key, 8));
+        QIVEN_VERIFY(ingress.try_push(std::move(proposal)));
         drain_until(core, ingress, settled);
         const auto id = core.views()[0].id;
 
         IngressMessage duplicate;
         duplicate.kind                 = IngressMessage::Kind::EvidenceDelivery;
         duplicate.transaction          = id;
-        duplicate.requirement.kind     = RequirementKind::MandatoryRecall;
-        duplicate.requirement.subject  = "policy context";
-        duplicate.requirement.boundary = RequirementBoundary::BeforeJudgment;
+        duplicate.requirement.kind     = RequirementKind::RunMechanicalCheck;
+        duplicate.requirement.subject  = "gate receipt";
+        duplicate.requirement.boundary = RequirementBoundary::BeforeExecution;
         duplicate.requirement.blocking = true;
         duplicate.receipt              = qiven::runtime::resolver::make_evidence_receipt(
-            duplicate.requirement, qiven::runtime::resolver::ResolverIdentity { "loopback", 1 }, "policy context",
-            "loopback-core", std::span<const std::byte> {});
+            duplicate.requirement, qiven::runtime::resolver::ResolverIdentity { "loopback", 1 },
+            qiven::runtime::resolver::ResolverType::MechanicalCheck,
+            qiven::runtime::resolver::EvidenceType::MechanicalCheckReceipt, "gate receipt", "loopback-core",
+            std::span<const std::byte> {},
+            qiven::runtime::resolver::ReceiptContext { qiven::runtime::RuntimeGenerationId { 1 },
+                                                       qiven::runtime::ContentDigest { qiven::SHA256Digest {} },
+                                                       qiven::context::RevisionId { "sha256:test" }, "loopback", 0 });
         QIVEN_VERIFY(ingress.try_push(std::move(duplicate)));
 
         const auto result = core.drain(ingress);
@@ -287,21 +432,28 @@ int main()
 
         std::atomic<bool> release_second { false };
 
-        qiven::runtime::ResolverFn resolver = [&](const qiven::runtime::RequirementIdentity& identity) {
-            if (identity.subject == "gate receipt")
-            {
-                while (!release_second.load())
+        qiven::runtime::ResolverMechanism resolver =
+            [&](const qiven::runtime::resolver::ResolverBinding& binding,
+                const qiven::runtime::RequirementIdentity& identity,
+                const qiven::runtime::resolver::ReceiptContext& context) {
+                if (identity.subject == "gate receipt")
                 {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    while (!release_second.load())
+                    {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    }
                 }
-            }
-            return succeed_resolver()(identity);
-        };
-        ControlCore core { minter, pool, resolver, cognition, qiven::runtime::StructuralFacts {} };
+                return succeed_mechanism()(binding, identity, context);
+            };
+        ControlCore core { minter, pool, registry, std::move(resolver), cognition,
+                           qiven::runtime::StructuralFacts {} };
 
-        QIVEN_VERIFY(ingress.try_push(proposal_for(key_numbered(5), std::byte { 0x05 })));
+        const auto key = key_numbered(8);
+        auto proposal  = proposal_for(key, std::byte { 0x08 });
+        proposal.activation_receipts.push_back(activation_for(cognition, key, 9));
+        QIVEN_VERIFY(ingress.try_push(std::move(proposal)));
 
-        // wait until one report landed and the other is still in flight
+        // wait until the in-flight BeforeExecution report is still pending
         bool saw_partial = false;
         for (int spin = 0; spin < 600; ++spin)
         {
@@ -325,13 +477,18 @@ int main()
     // determinism: identical arrival order into two fresh cores produces
     // the same transaction ids, phases and dispositions
     {
-        auto run = [&cognition] {
+        auto run = [&cognition, &registry] {
             TransactionMinter minter;
             Executor pool { 2, 16 };
             BoundedIngressQueue ingress { 32 };
-            ControlCore core { minter, pool, succeed_resolver(), cognition, qiven::runtime::StructuralFacts {} };
-            QIVEN_VERIFY(ingress.try_push(proposal_for(key_numbered(6), std::byte { 0x06 })));
-            QIVEN_VERIFY(ingress.try_push(proposal_for(key_numbered(7), std::byte { 0x07 })));
+            ControlCore core { minter, pool, registry, succeed_mechanism(), cognition,
+                               qiven::runtime::StructuralFacts {} };
+            auto first = proposal_for(key_numbered(9), std::byte { 0x09 });
+            first.activation_receipts.push_back(activation_for(cognition, first.correlation, 10));
+            auto second = proposal_for(key_numbered(10), std::byte { 0x0A });
+            second.activation_receipts.push_back(activation_for(cognition, second.correlation, 11));
+            QIVEN_VERIFY(ingress.try_push(std::move(first)));
+            QIVEN_VERIFY(ingress.try_push(std::move(second)));
             drain_until(core, ingress, settled);
             std::vector<std::pair<u64, int>> outcome;
             for (const auto& view : core.views())
@@ -353,14 +510,17 @@ int main()
         TransactionMinter minter;
         Executor pool { 2, 32 };
         BoundedIngressQueue ingress { 64 };
-        ControlCore core { minter, pool, succeed_resolver(), cognition, qiven::runtime::StructuralFacts {} };
+        ControlCore core { minter, pool, registry, succeed_mechanism(), cognition,
+                           qiven::runtime::StructuralFacts {} };
 
-        const auto key = key_numbered(8);
+        const auto key = key_numbered(11);
         std::vector<std::thread> racers;
         for (int i = 0; i < 4; ++i)
         {
-            racers.emplace_back([&ingress, &key] {
-                while (!ingress.try_push(proposal_for(key, std::byte { 0x08 })))
+            racers.emplace_back([&ingress, &key, &cognition] {
+                auto proposal = proposal_for(key, std::byte { 0x0B });
+                proposal.activation_receipts.push_back(activation_for(cognition, key, 12));
+                while (!ingress.try_push(std::move(proposal)))
                 {
                     std::this_thread::sleep_for(std::chrono::microseconds(50));
                 }
@@ -382,11 +542,15 @@ int main()
         TransactionMinter minter;
         Executor pool { 4, 64 };
         BoundedIngressQueue ingress { 128 };
-        ControlCore core { minter, pool, succeed_resolver(), cognition, qiven::runtime::StructuralFacts {} };
+        ControlCore core { minter, pool, registry, succeed_mechanism(), cognition,
+                           qiven::runtime::StructuralFacts {} };
 
         for (u64 n = 100; n < 150; ++n)
         {
-            QIVEN_VERIFY(ingress.try_push(proposal_for(key_numbered(n), std::byte { static_cast<unsigned char>(n) })));
+            const auto key = key_numbered(n);
+            auto proposal  = proposal_for(key, std::byte { static_cast<unsigned char>(n) });
+            proposal.activation_receipts.push_back(activation_for(cognition, key, 1000 + n));
+            QIVEN_VERIFY(ingress.try_push(std::move(proposal)));
         }
         drain_until(core, ingress, settled);
         QIVEN_VERIFY(core.transaction_count() == 50);

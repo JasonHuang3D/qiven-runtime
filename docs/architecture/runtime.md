@@ -1,3 +1,13 @@
+> **STATUS (2026-09-22, ADR-0047 / MVP-0): HISTORICAL.** This document
+> describes the superseded process-execution architecture of
+> `qiven-runtime`. The current governing architecture is the
+> [Runtime Production MVP Architecture](runtime-production-mvp-architecture.md)
+> (vertical slice under `zcode-jason-context-record-mvp`, SQLite control
+> journal, MVP-0..MVP-7 delivery order; component semantics per
+> [runtime-component-adl.md](runtime-component-adl.md)). This file is
+> retained as history and must not be used to justify conflicting
+> repository missions.
+
 # Qiven Runtime Architecture
 
 `qiven-runtime` owns shared native execution-runtime semantics above Qiven Foundation and below native products.

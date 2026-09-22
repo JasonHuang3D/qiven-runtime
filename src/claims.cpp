@@ -44,4 +44,28 @@ std::vector<ClassGovernanceReport> governance_claims(const profile::DeploymentPr
 
     return reports;
 }
+
+ScopeGovernanceReport scope_governance(const profile::DeploymentProfile& profile,
+                                       const ResourceScope& scope,
+                                       const std::string& target)
+{
+    ScopeGovernanceReport report;
+    report.scope_declared  = !scope.empty();
+    report.target_coverage = scope.covers(target);
+
+    // write-class mediation: every FileSystemWrite producer in the
+    // universe must carry a real interception path for a hard claim on
+    // the scope (§3.3)
+    report.write_classes_mediated                    = true;
+    const std::vector<ClassGovernanceReport> classes = governance_claims(profile);
+    for (const ClassGovernanceReport& class_report : classes)
+    {
+        if (class_report.operation_class == adapter::OperationClass::FileSystemWrite &&
+            class_report.governance != ClassGovernance::FullyGoverned)
+        {
+            report.write_classes_mediated = false;
+        }
+    }
+    return report;
+}
 } // namespace qiven::runtime

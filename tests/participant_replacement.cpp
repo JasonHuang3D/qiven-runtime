@@ -14,6 +14,7 @@
 #include <qiven/runtime/admission.hpp>
 #include <qiven/runtime/failure.hpp>
 #include <qiven/runtime/port/cognition_port.hpp>
+#include <qiven/runtime/scope.hpp>
 #include <qiven/runtime/state.hpp>
 
 #include <qiven/context/persistence.hpp>
@@ -122,13 +123,31 @@ Outcome run_participant(u64 actor_token, const qiven::runtime::port::PinnedCogni
     TransactionMinter minter;
     Executor pool { 2, 8 };
     BoundedIngressQueue ingress { 16 };
-    ControlCore core { minter, pool,
-                       [](const qiven::runtime::RequirementIdentity& identity) {
-                           return std::make_optional(qiven::runtime::resolver::make_evidence_receipt(
-                               identity, qiven::runtime::resolver::ResolverIdentity { "loopback", 1 }, identity.subject,
-                               "participant-proof", std::span<const std::byte>()));
-                       },
-                       cognition, StructuralFacts {} };
+
+    qiven::runtime::resolver::ResolverBinding binding;
+    binding.key.kind           = RequirementKind::MandatoryRecall;
+    binding.key.type           = qiven::runtime::resolver::ResolverType::CanonicalRecall;
+    binding.key.version        = 1;
+    binding.key.cognition_view = "default";
+    binding.resolver           = qiven::runtime::resolver::ResolverIdentity { "loopback", 1 };
+    binding.accepted_evidence  = qiven::runtime::resolver::EvidenceType::CanonicalRecord;
+    binding.trust              = qiven::runtime::resolver::TrustDomain::Mechanism;
+    auto registry              = qiven::runtime::resolver::RequirementResolverRegistry::Builder {}
+                        .add(binding)
+                        .build();
+    QIVEN_VERIFY(registry.is_ok());
+
+    qiven::runtime::ResolverMechanism mechanism = [](const qiven::runtime::resolver::ResolverBinding&,
+                                                     const qiven::runtime::RequirementIdentity& identity,
+                                                     const qiven::runtime::resolver::ReceiptContext& context) {
+        return std::make_optional(qiven::runtime::resolver::make_evidence_receipt(
+            identity, qiven::runtime::resolver::ResolverIdentity { "loopback", 1 },
+            qiven::runtime::resolver::ResolverType::CanonicalRecall,
+            qiven::runtime::resolver::EvidenceType::CanonicalRecord, identity.subject, "participant-proof",
+            std::span<const std::byte>(), context));
+    };
+
+    ControlCore core { minter, pool, registry.value(), std::move(mechanism), cognition, StructuralFacts {} };
 
     IngressMessage proposal;
     proposal.kind        = IngressMessage::Kind::Proposal;
@@ -143,6 +162,20 @@ Outcome run_participant(u64 actor_token, const qiven::runtime::port::PinnedCogni
                                                      qiven::runtime::ActorInstanceId { actor_token },
                                                      qiven::runtime::CapabilityId { 1 }, "op", "target",
                                                      std::span<const std::byte>(blob, 1));
+
+    // §8.2: the participant presents cognition injected BEFORE the
+    // judgment — a valid activation receipt pre-satisfies the
+    // BeforeJudgment requirement at proposal time
+    qiven::runtime::port::ActivationReceipt activation;
+    activation.kind               = qiven::runtime::port::ActivationKind::SessionStart;
+    activation.subject            = "policy context";
+    activation.canonical_revision = cognition.revision;
+    activation.injected_digest    = cognition.snapshot_digest_sha256;
+    activation.generation         = proposal.correlation.generation;
+    activation.actor_token        = actor_token;
+    activation.session_token      = 1;
+    activation.injection_event    = 1;
+    proposal.activation_receipts.push_back(activation);
     QIVEN_VERIFY(ingress.try_push(std::move(proposal)));
 
     for (int spin = 0; spin < 400; ++spin)
@@ -150,7 +183,8 @@ Outcome run_participant(u64 actor_token, const qiven::runtime::port::PinnedCogni
         core.drain(ingress);
         const auto views = core.views();
         if (!views.empty() && (views[0].phase == TransactionPhase::CognitiveAllowed ||
-                               views[0].phase == TransactionPhase::Denied))
+                               views[0].phase == TransactionPhase::Denied ||
+                               views[0].phase == TransactionPhase::ReDeliberationRequired))
         {
             Outcome outcome;
             outcome.allowed         = views[0].phase == TransactionPhase::CognitiveAllowed;
@@ -270,19 +304,68 @@ int main()
         // and the admission coordinator refuses the mismatched pair
         qiven::runtime::port::NullExecutionAuthority authority;
         qiven::runtime::ReconciliationBarrier barriers;
-        DecisionLedger ledger;
 
-        qiven::runtime::ExecutionDecision decision;
-        decision.action_digest = qiven::runtime::action_digest_of(action_a);
-        decision.disposition   = Disposition::Allow;
-        decision.token         = qiven::runtime::DecisionToken { 9001 };
+        // a REAL single-use authorization for A's exact action (MVP-0:
+        // tokens are cryptographic; hand-made tokens no longer consume)
+        qiven::runtime::auth::SecretKey secret {};
+        for (usize i = 0; i < secret.size(); ++i)
+        {
+            secret[i] = static_cast<std::byte>(0x77U ^ i);
+        }
+        DecisionLedger ledger { secret };
+
+        TransactionMinter tx_minter;
+        qiven::runtime::SortableIdMinter id_minter;
+        qiven::runtime::profile::ProfileBuilder profile_builder;
+        qiven::runtime::profile::GovernedActorSet actors;
+        qiven::runtime::profile::ActorBinding binding;
+        binding.adapter          = qiven::runtime::AdapterInstanceId { 1 };
+        binding.session_token    = 1;
+        binding.credential_token = 1;
+        actors.actors.push_back(binding);
+        auto profile = profile_builder.set_name("participant-decision")
+                           .set_revision(qiven::runtime::ProfileRevision { 1 })
+                           .set_actor_set(std::move(actors))
+                           .set_conformance_evidence("mvp-0-local")
+                           .build();
+        QIVEN_VERIFY(profile.is_ok());
+        qiven::runtime::GenerationMinter generation_minter;
+        const auto generation = generation_minter.mint(std::move(profile).value(), {}, {});
+        auto scope            = qiven::runtime::ResourceScope::Builder().add_path("target").build();
+        QIVEN_VERIFY(scope.is_ok());
+
+        auto intents = qiven::runtime::make_intent_set(
+            { qiven::runtime::IntentClassification { qiven::context::ActionIntent {},
+                                                     qiven::runtime::ClassificationBasis::Mechanical } });
+        QIVEN_VERIFY(intents.is_ok());
+        qiven::context::PreparationPacket packet;
+        auto transaction = qiven::runtime::begin_control_transaction(
+            tx_minter.next(), std::nullopt,
+            qiven::runtime::CorrelationKey { qiven::runtime::RuntimeGenerationId { 1 },
+                                             qiven::runtime::AdapterInstanceId { 1 },
+                                             qiven::runtime::HarnessSessionId { 1 },
+                                             qiven::runtime::ActorInstanceId { 101 },
+                                             qiven::runtime::HarnessActionId { 1 } },
+            action_a, std::move(intents).value(), qiven::runtime::port::PinnedCognition {}, std::move(packet));
+        QIVEN_VERIFY(qiven::runtime::evaluate_before_judgment(transaction));
+        QIVEN_VERIFY(qiven::runtime::evaluate_before_execution(transaction));
+
+        auto bound = qiven::runtime::bind_allow(transaction, generation, scope.value().digest(), 1, {}, secret,
+                                                id_minter, 1'000'000, 3'600'000);
+        QIVEN_VERIFY(bound.is_ok());
+
         qiven::runtime::FreshnessFacts facts;
-        facts.action_digest = decision.action_digest; // A's facts are consistent...
-        const auto consumed = ledger.consume(decision, facts);
+        facts.action_digest              = bound.value().action_digest;
+        facts.generation                 = bound.value().generation;
+        facts.cognition_revision         = bound.value().cognition_revision;
+        facts.profile                    = bound.value().profile;
+        facts.resolver_registry_revision = bound.value().resolver_registry_revision;
+        facts.resource_scope_digest      = bound.value().resource_scope_digest;
+        const auto consumed              = ledger.consume(bound.value(), facts, 1'000'001);
         QIVEN_VERIFY(consumed.outcome == qiven::runtime::ConsumeOutcome::Consumed);
 
         const auto result = qiven::runtime::ActionAdmissionCoordinator { authority, barriers }
-                                .compose(decision, consumed, action_b, // ...but B's ACTION is presented
+                                .compose(bound.value(), consumed, action_b, // ...but B's ACTION is presented
                                          qiven::runtime::CorrelationKey { qiven::runtime::RuntimeGenerationId { 1 },
                                                                           qiven::runtime::AdapterInstanceId { 1 },
                                                                           qiven::runtime::HarnessSessionId { 1 },
