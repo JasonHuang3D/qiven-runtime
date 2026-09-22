@@ -33,10 +33,15 @@ The MVP explicitly excludes a general-purpose agent platform, a general event bu
 
 | Artifact | Exact baseline | Role in this design |
 |---|---|---|
-| `qiven-runtime` | [`43c0535d3df35d0721485d8483a6195df1fc13f6`](https://github.com/JasonHuang3D/qiven-runtime/tree/43c0535d3df35d0721485d8483a6195df1fc13f6) | Current C++ implementation and test baseline |
-| `qiven-context` | [`505f7443951fe99cd8005c28e12a70222d5112d2`](https://github.com/JasonHuang3D/qiven-context/tree/505f7443951fe99cd8005c28e12a70222d5112d2) | Current production semantics, record formats, validators, and real-hook evidence |
-| `qiven-context-draft` | `73a4bfa2a9068b6c3e37319585732ac1f89f5ef7` | The frozen-v4 dependency currently pinned by `qiven-runtime` |
-| Engineering proposal | [`runtime-production-activation-proposal.md`](https://github.com/JasonHuang3D/qiven-runtime/blob/43c0535d3df35d0721485d8483a6195df1fc13f6/docs/architecture/runtime-production-activation-proposal.md) | Input describing product pressure and possible delivery batches; not an architectural authority |
+| `qiven-runtime` | `43c0535d3df35d0721485d8483a6195df1fc13f6` (design-time); **refreshed 2026-09-22/23: MVP-0 landed at merge `eba554a`, main continues from there** | C++ implementation and test baseline |
+| `qiven-context` | `505f7443951fe99cd8005c28e12a70222d5112d2` (design-time); refreshed to `c190a4c` (ADR-0047 accepted) | Production semantics, record formats, validators, and real-hook evidence |
+| `qiven-context-draft` | `73a4bfa2a9068b6c3e37319585732ac1f89f5ef7` (design-time); pinned consumption now `de7f0e1` (docs-only descendant chain; v4 semantics unchanged) | The frozen-v4 dependency pinned by `qiven-runtime` |
+| Engineering proposal | [`legacy/runtime-production-activation-proposal.md`](legacy/runtime-production-activation-proposal.md) | Historical input (product pressure and delivery thinking); delivery order superseded — legacy since 2026-09-23 |
+
+Baseline-refresh law (cold-boot drift fix, 2026-09-23): when a ref cited
+above advances, the accepting batch updates this table in the same
+transaction, so a cold boot never sees design-time refs presented as
+current baselines. Design-time originals stay recorded for provenance.
 
 ### 1.2 What has already been demonstrated
 

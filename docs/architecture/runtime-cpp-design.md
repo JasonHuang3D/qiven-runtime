@@ -1,7 +1,12 @@
 # Runtime C++ Detailed Design — Cognitive Control Runtime Types and Ports
 
-Status: **accepted design** (owner-directed 2026-09-21, one turn with
-the layer contracts). Implements Component ADL §90 against the frozen v4
+Status: **accepted design for the RCA-era component layer** (owner-
+directed 2026-09-21). Since 2026-09-23 the production path is governed
+by [runtime-production-mvp-cpp-design.md](runtime-production-mvp-cpp-design.md)
+under [runtime-production-mvp-architecture.md](runtime-production-mvp-architecture.md)
+(ADR-0047). This document remains authoritative for the pure component
+types and ports the MVP did not correct; where the two conflict, the
+MVP design wins (its §1 records the supersession rule). Implements Component ADL §90 against the frozen v4
 semantics (`qiven-context-draft` @ `4cbc995`) and conforms to
 `qiven-foundation/docs/architecture/cpp-architecture.md`. Satisfies
 every ADR-0038 requirement; the compliance map is §14.
