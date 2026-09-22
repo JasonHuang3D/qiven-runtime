@@ -1,6 +1,6 @@
 # Implementation Standard
 
-This document defines implementation quality expected from `jason-worker`. Read it with the root `AGENTS.md`, the current CTO feature specification, and applicable repository architecture.
+This document defines the implementation quality expected from implementation work in this repository, regardless of who performs it (single-session unified engineering, ADR-0044). Read it with the root `AGENTS.md`, the current task/feature specification, and applicable repository architecture.
 
 ## 1. Engineering objective
 
@@ -10,7 +10,7 @@ Do not hide meaningful cost or failure behind convenience APIs.
 
 ## 2. Scope discipline
 
-The CTO feature specification defines the permitted change surface. Before editing, identify required behavior, allowed public contract changes, expected modules/files, explicit out-of-scope work, stop conditions, and validation profile.
+The task specification defines the permitted change surface. Before editing, identify required behavior, allowed public contract changes, expected modules/files, explicit out-of-scope work, stop conditions, and validation profile.
 
 Distinguish work required for correctness/integration from unrelated improvement opportunities. If an unrelated defect blocks the feature, report it; do not silently broaden scope.
 
@@ -24,7 +24,7 @@ Registries, plugin systems, generic factories, reflection, serialization framewo
 
 Public APIs should be small, explicit, difficult to misuse, clear about ownership/lifetime/failure, predictable in cost, and portable unless intentionally platform-specific.
 
-Avoid convenience overloads without concrete need, Boolean parameters that obscure meaning, and public implementation details. If public naming or API shape materially changes the contract and the feature specification did not decide it, request CTO review.
+Avoid convenience overloads without concrete need, Boolean parameters that obscure meaning, and public implementation details. If public naming or API shape materially changes the contract and the task specification did not decide it, raise an owner/architecture decision point.
 
 ## 5. Ownership and lifetime
 
@@ -44,7 +44,7 @@ Use established checked primitives when they fit. Do not cast solely to silence 
 
 Do not conflate caller programming errors, invariant violations, recoverable runtime failures, and environmental failures. Assertions are not substitutes for recoverable error channels.
 
-Do not swallow failures, convert them into silent defaults, invent ambiguous sentinels, or introduce exceptions into a non-throwing contract. If failure category/channel affects the public contract and is unclear, escalate.
+Do not swallow failures, convert them into silent defaults, invent ambiguous sentinels, or introduce exceptions into a non-throwing contract. If failure category/channel affects the public contract and is unclear, raise an owner/architecture decision point.
 
 Use `noexcept` only when the full implementation can uphold it as a real semantic guarantee.
 
@@ -68,7 +68,7 @@ When a new public header is added, update the repository's header-check/build re
 
 ## 11. Naming, comments, and formatting
 
-Follow established naming unless the feature specification deliberately changes it. Names should communicate semantics, not implementation history.
+Follow established naming unless the task specification deliberately changes it. Names should communicate semantics, not implementation history.
 
 Comments are for non-obvious intent, invariants, platform quirks, ownership/lifetime constraints, or important trade-offs. Do not narrate syntax or write tutorial essays in source files.
 
@@ -82,7 +82,9 @@ CMake is the build-system source of truth for the generated C++ library template
 
 When performance materially affects design, identify the cost being controlled. Prefer predictable complexity, avoid hidden allocation, virtual dispatch, and synchronization unless required, and keep hot-path work explicit.
 
-Thread-safety is part of the contract. Do not add locks "just in case". If correctness requires a new concurrency contract, stop for CTO review.
+Thread-safety is part of the contract. Do not add locks "just in case". If correctness requires a new concurrency contract, stop and raise an owner/architecture decision point.
+
+Performance claims carry measurements: state the build configuration, the before/after numbers, and the measurement method (see the Devkit build-performance convention) rather than asserting improvement without evidence.
 
 ## 14. Diff quality
 
@@ -92,4 +94,6 @@ A feature diff should tell one coherent story.
 
 ## 15. Done means understood
 
-Do not consider a feature complete merely because it compiles. Before handoff, be able to explain the invariant, ownership/lifetime behavior, failure behavior, meaningful edge cases, what was tested, what local validation could not prove, and why the implementation stays inside architecture and scope.
+Do not consider a feature complete merely because it compiles. Before requesting review or publication, be able to explain the invariant, ownership/lifetime behavior, failure behavior, meaningful edge cases, what was tested, what local validation could not prove, and why the implementation stays inside architecture and scope.
+
+Exact-delta self-review is the authoring session's own duty: read the complete diff against the specification before presenting it for acceptance. A passing gate is evidence about the validated properties, not semantic acceptance.

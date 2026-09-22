@@ -1,48 +1,42 @@
 # qiven-runtime Engineering Protocol
 
-This directory contains the shared repository-level engineering protocol used by `jason-worker` and by humans reviewing Work-mode implementation.
+This directory contains the shared repository-level engineering protocol.
+It applies to every implementer — human or AI session — unchanged
+(single-session unified engineering, ADR-0044 in `JasonHuang3D/qiven-context`).
 
 Repository architecture remains repository-owned. These documents define **how** implementation work is performed safely and consistently; they do not replace domain or architectural contracts.
 
 ## Documents
 
 - `implementation-standard.md` — implementation quality, scope discipline, C++ design, dependency, portability, and review rules.
-- `testing-standard.md` — semantic test design, validation profiles, and local evidence requirements.
-- `worker-protocol.md` — Work-mode branch, batch, commit, validation, stopping, blocker, and handoff procedure.
-- `feature-spec.md` — contract used by `jason-brother` to assign implementation-ready work to `jason-worker`.
+- `testing-standard.md` — semantic test design, validation profiles, adversarial/concurrency posture, and local evidence requirements.
+- `execution-protocol.md` — branch, batch, commit, validation, publication, stopping, blocker, and escalation procedure.
+- `feature-spec.md` — the specification contract used to define implementation-ready work before implementation begins (owner-authored or session-authored alike).
 
-## Roles
-
-### jason-brother
-
-CTO, architect, reviewer, feature planner, GitHub/CI reviewer, and merge/release gate. The CTO decides what should be built, the architectural contract, the feature order, and whether a result is accepted.
-
-### jason-worker
-
-Work-mode implementation engineer. The worker converts approved feature specifications into high-quality local code, tests, and coherent commits. It does not push or merge by default and does not independently expand architecture.
-
-## Normal flow
+## The single-session engineering loop
 
 ```text
-Chat / jason-brother
-    define ordered feature queue
-            |
-            v
-Work / jason-worker
-    feature A -> local validation -> local commit
-        |
-        v
-    feature B -> local validation -> local commit
-        |
-        v
-    STOP + structured handoff
-            |
-            v
-Chat / jason-brother + user
-    remote review -> CI as required -> merge/release gate
+authorize task (owner)
+    -> specify (feature-spec discipline: semantics, scope, validation profile)
+    -> implement (implementation-standard) and design tests (testing-standard)
+    -> validate at the exact head (execution-protocol profiles)
+    -> review of the exact delta (owner H2, or delegated reviewer)
+    -> publish (push / PR / merge) and reconcile
+    -> record durable cognition (context transaction when material)
 ```
 
-The Work batch is intentionally local. This separates high-throughput implementation from cross-platform validation and release authority.
+One session performs the whole loop. There are no role-stage handoffs
+inside it; publication authority separates at the owner boundary (typed
+handoffs H1-H4), not between agent roles. Cross-session continuity is
+owned by the canonical qiven-context cold boot plus session checkpoints,
+never by role-to-role handoffs.
+
+## Standard engineering posture
+
+- **Maximum reasoning depth is the default.** Shallowness is a defect, not a conservation measure.
+- **Think beyond the literal instruction.** When the instruction as stated would produce a suboptimal or fragile outcome, say so, explain why, and propose the better alternative. Proactively flag risks, edge cases, and design smells the requester may not have considered. Silence about a known problem is a defect.
+- **Semantic ownership first.** Before implementing a capability, determine where it naturally belongs in the dependency hierarchy; improve the lower owner rather than copying a weaker local version (canonical `software-engineering-philosophy.md`).
+- **Evidence over claims.** Never claim `PASS`, `CLEAN` or `NONE` without verification; report what was run, at which exact head, with what result and what remained unproven.
 
 ## Instruction precedence
 
