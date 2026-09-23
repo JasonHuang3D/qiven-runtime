@@ -189,6 +189,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/ipc/framing.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/ipc/protocol.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/ipc/named_pipe_server.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/ipc/pipe_service.hpp
 )
 
 set(
@@ -237,6 +238,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ipc/framing.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ipc/protocol.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ipc/named_pipe_server.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ipc/pipe_service.cpp
 )
 
 target_sources(

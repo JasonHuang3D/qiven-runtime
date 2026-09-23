@@ -16,6 +16,7 @@
 // advisory events.
 // ============================================================================
 
+#include <qiven/error.hpp>
 #include <qiven/types.hpp>
 
 #include <cstddef>
@@ -36,6 +37,16 @@ inline constexpr i32 hook_reason_host_unavailable  = 116;
 inline constexpr i32 hook_reason_cognition_expired = 117;
 inline constexpr i32 hook_reason_payload           = 118;
 inline constexpr i32 hook_reason_shutting_down     = 119;
+// Transport diagnosability split (2026-09-24 corrective lane; the deny-116
+// incident: every transport cause collapsed into one undifferentiated
+// code). The classes are DISJOINT; 116 remains only for genuinely unknown
+// host-unavailability shapes (post-connect silent death, unexpected reply
+// shapes) and never silently absorbs a classable cause.
+inline constexpr i32 hook_reason_no_listener  = 120; // pipe connect: no host serving
+inline constexpr i32 hook_reason_admission    = 121; // host rejected the client image
+inline constexpr i32 hook_reason_version_skew = 122; // protocol version mismatch
+inline constexpr i32 hook_reason_secret_skew  = 123; // HMAC fails (stale/different root)
+inline constexpr i32 hook_reason_timeout      = 124; // no reply within the deadline
 
 struct HookRun
 {
@@ -68,4 +79,11 @@ struct HookOutcome
 // The whole hook lifecycle as one call: main() reads stdin, resolves the
 // root, calls this, writes stderr_text, exits with exit_code.
 [[nodiscard]] HookOutcome run_zcode_hook(const HookRun& run);
+
+// Classify an IPC transport/handshake failure into the diagnosable deny
+// code (120-124; 116 for genuinely unknown shapes). Exposed for the
+// conformance regression table. The mapping is honest string evidence:
+// the messages matched are produced by this repository's ipc layer.
+[[nodiscard]] i32 classify_transport_failure(const qiven::Error& error,
+                                             bool read_deadline_expired = false);
 } // namespace qiven::runtime::adapter
