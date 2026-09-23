@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import ctypes
 from dataclasses import dataclass, asdict
 import json
 import os
@@ -118,40 +119,353 @@ def _git(*args: str) -> subprocess.CompletedProcess[str]:
     return _run_capture(["git", *args])
 
 
-# ---------------------------------------------------------------------------
-# exec: supervised detached execution for LLM-invoked commands (the hang
-# contract's mechanical answer). The child runs in its own process group,
-# detached, writing to a durable log; the operator heartbeats while it
-# supervises and bounds ITS OWN wait (--timeout). If the operator's caller
-# dies — or the operator times out — the child keeps running; exec status
-# re-attaches cheaply. An exit code no living supervisor observed is
-# reported as indeterminate, never guessed.
+# ===========================================================================
+# Windows process/job custody layer (exec v2, 2026-09-23 incident redesign)
 #
-# Window discipline (2026-09-23 fix): the child is spawned with
-# CREATE_NO_WINDOW — a HIDDEN console — never DETACHED_PROCESS. A detached
-# child has NO console, so any descendant that needs one (cmd.exe batch
-# chains, vcvars, build tools) allocates a NEW VISIBLE console: popup
-# windows flash on screen and their output goes to that console instead of
-# the run log (empty-log symptom), and console-DLL initialization can fail
-# outright (child exit 0xC0000142, observed with vcvars64.bat). With
-# CREATE_NO_WINDOW every console in the tree is invisible and stdio stays
-# on the redirected handles.
-# ---------------------------------------------------------------------------
+# Production invariants enforced here (docs/design/exec-custody.md):
+#   I1 bounded lifetime  - every tree dies by its deadline, kernel-enforced
+#   I2 custody on death  - the custodian's death kills its tree instantly
+#   I4 tree completeness - the whole tree is one Job Object, no breakaway
+#
+# The layer is standard-library-only (ctypes). Every helper fails closed:
+# a custody primitive that cannot be created means the child is NOT
+# spawned (never uncustodied children).
+# ===========================================================================
+
+WIN_CREATE_SUSPENDED = 0x00000004
+WIN_CREATE_NEW_PROCESS_GROUP = 0x00000200
+WIN_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+WIN_CREATE_NO_WINDOW = 0x08000000
+WIN_WAIT_OBJECT_0 = 0x00000000
+WIN_WAIT_TIMEOUT = 0x00000102
+WIN_JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
+WIN_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+WIN_JOB_OBJECT_EXTENDED_LIMIT = 9  # JobObjectExtendedLimitInformation class
+WIN_JOB_OBJECT_TERMINATE = 0x0008  # access right for OpenJobObject
+WIN_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+WIN_SYNCHRONIZE = 0x00100000
+# defense-in-depth cap for runaway recursive fan-out inside one run/task
+CUSTODY_ACTIVE_PROCESS_CAP = 512
+# grace between primary exit and job termination: bounded window for late
+# output flush from straggler writers (stderr shares the stdout handle,
+# so no offset interleaving hazard exists)
+CUSTODY_REAP_GRACE_SECONDS = 1.5
+
+
+def _load_kernel32():
+    import ctypes
+    from ctypes import wintypes
+
+    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+            ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.BYTE),
+            ("SchedulingClass", wintypes.BYTE),
+        ]
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    class STARTUPINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("lpReserved", wintypes.LPWSTR),
+            ("lpDesktop", wintypes.LPWSTR),
+            ("lpTitle", wintypes.LPWSTR),
+            ("dwX", wintypes.DWORD),
+            ("dwY", wintypes.DWORD),
+            ("dwXSize", wintypes.DWORD),
+            ("dwYSize", wintypes.DWORD),
+            ("dwXCountChars", wintypes.DWORD),
+            ("dwYCountChars", wintypes.DWORD),
+            ("dwFillAttribute", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("wShowWindow", wintypes.WORD),
+            ("cbReserved2", wintypes.WORD),
+            ("lpReserved2", ctypes.c_void_p),
+            ("hStdInput", wintypes.HANDLE),
+            ("hStdOutput", wintypes.HANDLE),
+            ("hStdError", wintypes.HANDLE),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD
+    ]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.OpenJobObjectW.restype = wintypes.HANDLE
+    kernel32.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.ResumeThread.restype = wintypes.DWORD
+    kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.argtypes = []
+    return kernel32, JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+
+
+_KERNEL32_CACHE: Any = None
+
+
+def _win_kernel32():
+    global _KERNEL32_CACHE
+    if _KERNEL32_CACHE is None:
+        _KERNEL32_CACHE = _load_kernel32()
+    return _KERNEL32_CACHE
+
+
+def _win_last_error() -> str:
+    import ctypes
+
+    code = ctypes.get_last_error()
+    return f"WinError {code}"
+
+
+def _job_create(name: str | None = None) -> int:
+    """Create a custody Job Object: KILL_ON_JOB_CLOSE + process cap.
+    Raises OperatorError on failure (fail-closed: no job, no child)."""
+    kernel32, info_class = _win_kernel32()
+    handle = kernel32.CreateJobObjectW(None, name)
+    if not handle:
+        raise OperatorError(f"CreateJobObjectW failed: {_win_last_error()}")
+    info = info_class()
+    info.BasicLimitInformation.LimitFlags = (
+        WIN_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | WIN_JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+    )
+    info.BasicLimitInformation.ActiveProcessLimit = CUSTODY_ACTIVE_PROCESS_CAP
+    if not kernel32.SetInformationJobObject(
+        handle, WIN_JOB_OBJECT_EXTENDED_LIMIT, ctypes.byref(info), ctypes.sizeof(info)
+    ):
+        kernel32.CloseHandle(handle)
+        raise OperatorError(f"SetInformationJobObject failed: {_win_last_error()}")
+    return handle
+
+
+def _job_terminate(handle: int, exit_code: int) -> bool:
+    kernel32, _ = _win_kernel32()
+    return bool(kernel32.TerminateJobObject(handle, exit_code))
+
+
+def _job_open_terminate_by_name(name: str, exit_code: int) -> tuple[bool, str]:
+    """Terminate a named job from another process. Returns (terminated, note).
+    An unopenable job means no handle exists anywhere, which under
+    KILL_ON_JOB_CLOSE means the tree is already dead — reported as success
+    with that reason, never as a hang."""
+    kernel32, _ = _win_kernel32()
+    handle = kernel32.OpenJobObjectW(WIN_JOB_OBJECT_TERMINATE, False, name)
+    if not handle:
+        return True, f"job object {name} not openable (tree already dead): {_win_last_error()}"
+    try:
+        if not kernel32.TerminateJobObject(handle, exit_code):
+            return False, f"TerminateJobObject failed: {_win_last_error()}"
+        return True, "job terminated"
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _win_spawn(argv: list[str], cwd: Path, env: dict[str, str], stdout_fd: int,
+               stdin_fd: int, creationflags: int) -> tuple[int, int, int]:
+    """Spawn a custodied child through _winapi.CreateProcess — the same
+    battle-tested path subprocess itself uses. Returns (process_handle,
+    thread_handle, pid); caller resumes+closes the thread and closes the
+    process handle when done. The std fds MUST already be inheritable
+    (PEP 446: os.open fds are non-inheritable by default); this function
+    asserts that contract rather than silently spawning blind children.
+    Raises OSError on failure."""
+    import _winapi
+    import msvcrt
+
+    os.set_inheritable(stdin_fd, True)
+    os.set_inheritable(stdout_fd, True)
+    # bInheritHandles=TRUE hands the child EVERY inheritable handle of
+    # this process, not just the std trio — including OUR OWN stdout/stdin
+    # when the caller supervises us through a pipe. Descendants then keep
+    # that pipe open and the caller blocks until the whole run tree exits
+    # (observed live: a 1-second supervision budget took 13.8 s to return).
+    # De-inherit our stdio first so only the intended handles propagate.
+    for std_fd in (0, 1, 2):
+        try:
+            if os.get_inheritable(std_fd):
+                os.set_inheritable(std_fd, False)
+        except (OSError, ValueError):
+            pass
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= _winapi.STARTF_USESTDHANDLES
+    # hStd* fields carry HANDLES; an fd number there is silently invalid
+    # (the child loses its redirected output — the empty-log defect class)
+    startup.hStdInput = msvcrt.get_osfhandle(stdin_fd)
+    startup.hStdOutput = msvcrt.get_osfhandle(stdout_fd)
+    startup.hStdError = msvcrt.get_osfhandle(stdout_fd)
+    handle, thread, pid, _tid = _winapi.CreateProcess(
+        None,
+        subprocess.list2cmdline(argv),
+        None,
+        None,
+        True,
+        creationflags,
+        env,
+        str(cwd) if cwd else None,
+        startup,
+    )
+    return handle, thread, pid
+
+
+def _wait_handle(handle: int, milliseconds: int) -> str:
+    """'signaled' | 'timeout' | 'failed' — wait-object liveness without the
+    STILL_ACTIVE(259) exit-code ambiguity."""
+    kernel32, _ = _win_kernel32()
+    result = kernel32.WaitForSingleObject(handle, milliseconds)
+    if result == WIN_WAIT_OBJECT_0:
+        return "signaled"
+    if result == WIN_WAIT_TIMEOUT:
+        return "timeout"
+    return "failed"
+
+
+def _exit_code_of_handle(handle: int) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32, _ = _win_kernel32()
+    code = wintypes.DWORD()
+    if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+        raise OperatorError(f"GetExitCodeProcess failed: {_win_last_error()}")
+    return int(code.value)
+
+
+def _process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        kernel32, _ = _win_kernel32()
+        handle = kernel32.OpenProcess(WIN_PROCESS_QUERY_LIMITED_INFORMATION | WIN_SYNCHRONIZE, False, pid)
+        if not handle:
+            return False
+        try:
+            # wait-based check: a process that exited with code 259 is DEAD
+            # (the old GetExitCodeProcess==STILL_ACTIVE check misread it)
+            return _wait_handle(handle, 0) == "timeout"
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _utc_timestamp_seconds(stamp: object) -> float | None:
+    """Parse an RFC3339-UTC second stamp; None when absent or malformed."""
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    import calendar
+
+    try:
+        parsed = time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+    return float(calendar.timegm(parsed))
+
+
+def _utc_now_seconds() -> float:
+    import calendar
+
+    return float(calendar.timegm(time.gmtime()))
+
+
+def _heartbeat_age_seconds(record: dict[str, Any]) -> float | None:
+    seconds = _utc_timestamp_seconds(record.get("heartbeat_utc") or record.get("started_utc"))
+    if seconds is None:
+        return None
+    return max(0.0, _utc_now_seconds() - seconds)
+
+
+# ===========================================================================
+# exec v2: supervised detached execution under bounded process custody.
+#
+# Front-end (qiven exec start): builds the run record, spawns the WATCHDOG
+# detached, monitors with heartbeats until its own --timeout budget
+# (exit 124 = still running), and returns. The watchdog is the custodian:
+# it creates the run's Job Object (KILL_ON_JOB_CLOSE), joins the job
+# itself (so its death kills the tree by kernel action), spawns the child
+# born into the job, enforces the deadline lease, reaps tree leftovers
+# after the primary exits (the MSBuild node-reuse leak class), and
+# terminates the job — itself included — with the child's exit code.
+#
+# Window discipline (2026-09-23 law, unchanged): children and watchdog use
+# CREATE_NO_WINDOW, never DETACHED_PROCESS; .cmd/.bat targets run through
+# an explicit `cmd.exe /d /c call <abs path>`; path-like argv[0] resolves
+# against ROOT before spawning (MEM-20260923T212000Z-D4E5F6).
+# ===========================================================================
 EXEC_DEFAULT_TIMEOUT_SECONDS = 120.0
+EXEC_DEFAULT_MAX_LIFETIME_SECONDS = 3600.0
+EXEC_MAX_LIFETIME_CEILING_SECONDS = 86400.0
+EXEC_MAX_LIFETIME_FLOOR_SECONDS = 10.0
 EXEC_EXIT_STILL_RUNNING = 124
+EXEC_WATCHDOG_STARTUP_BUDGET_SECONDS = 15.0
+EXEC_HEARTBEAT_STALE_SECONDS = 45.0
 _BATCH_SUFFIXES = (".cmd", ".bat")
+_REDACTED_ENV_KEYS = ()
 
 
 def _exec_creationflags(breakaway: bool = True) -> int:
-    """Windows creation flags for supervised detached exec (see the window
-    discipline note above). breakaway=False is the retry path when the
-    ancestor job forbids CREATE_BREAKAWAY_FROM_JOB."""
+    """Windows creation flags for the detached WATCHDOG spawn. breakaway is
+    best-effort survival across a caller's job death; custody never depends
+    on it (the lease does)."""
     if os.name != "nt":
         return 0
-    flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    flags = WIN_CREATE_NO_WINDOW | WIN_CREATE_NEW_PROCESS_GROUP
     if breakaway:
-        flags |= subprocess.CREATE_BREAKAWAY_FROM_JOB
+        flags |= WIN_CREATE_BREAKAWAY_FROM_JOB
     return flags
+
+
+def _child_creationflags() -> int:
+    """Creation flags for a CUSTODIED child: hidden console + own group; NO
+    breakaway (the child must stay inside the run's job — tree
+    completeness, invariant I4)."""
+    if os.name != "nt":
+        return 0
+    return WIN_CREATE_NO_WINDOW | WIN_CREATE_NEW_PROCESS_GROUP
 
 
 def _exec_prepare_argv(argv: list[str]) -> list[str]:
@@ -200,36 +514,38 @@ def _exec_log_path(exec_id: str) -> Path:
     return _exec_dir() / f"{exec_id}.log"
 
 
-def _process_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        import ctypes
-
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        STILL_ACTIVE = 259
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            return False
-        try:
-            code = ctypes.c_ulong()
-            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return code.value == STILL_ACTIVE
-            return False
-        finally:
-            kernel32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+RECORD_WRITE_ATTEMPTS = 10
+RECORD_WRITE_RETRY_SECONDS = 0.02
 
 
 def _write_exec_record(record: dict[str, Any]) -> None:
+    """Atomic record rewrite (tmp + os.replace) with reader-collision
+    retry. On Windows the replace fails with Access Denied while another
+    process (the supervising front-end polls every 50 ms) briefly holds
+    the file open — Python readers cannot request FILE_SHARE_DELETE, so
+    the WRITER must retry. A write that still fails after the retries
+    degrades to a truncating direct write (torn-read risk beats losing
+    the custodian: record writes must never crash a live watchdog)."""
     path = _exec_record_path(str(record.get("id")))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True, indent=1), encoding="utf-8")
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    tmp.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True, indent=1), encoding="utf-8")
+    for attempt in range(RECORD_WRITE_ATTEMPTS):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt + 1 == RECORD_WRITE_ATTEMPTS:
+                path.write_text(
+                    json.dumps(record, ensure_ascii=False, sort_keys=True, indent=1),
+                    encoding="utf-8",
+                )
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                return
+            time.sleep(RECORD_WRITE_RETRY_SECONDS)
 
 
 def _read_exec_record(exec_id: str) -> dict[str, Any]:
@@ -242,32 +558,75 @@ def _read_exec_record(exec_id: str) -> dict[str, Any]:
         raise OperatorError(f"corrupt exec record: {path}") from exc
 
 
+def _read_exec_record_path(path: Path) -> dict[str, Any] | None:
+    """Best-effort record read for observers (sweeps, lists, monitors).
+    A momentary PermissionError is the Windows rename-collision surface,
+    not corruption — retry briefly before concluding the record unreadable."""
+    last_error: OSError | None = None
+    for attempt in range(5):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except PermissionError as exc:
+            last_error = exc
+            time.sleep(0.01)
+            continue
+        except (json.JSONDecodeError, OSError):
+            return None
+        return record if isinstance(record, dict) else None
+    del last_error
+    return None
+
+
+_TERMINAL_STATES = frozenset({"done", "stopped", "expired", "error", "indeterminate"})
+
+
+def _exec_state(record: dict[str, Any]) -> str:
+    """Terminal states come from the record; live states are computed from
+    custody evidence (watchdog/pid liveness + heartbeat freshness). Never
+    guesses an exit code for an unobserved exit. Schema-v1 records (no
+    status field) are honored: an observed exit_code means done."""
+    if record.get("exit_code") is not None:
+        return "done"
+    status = str(record.get("status") or "")
+    if status in _TERMINAL_STATES:
+        return status
+    if status == "starting":
+        return "starting"
+    pid = int(record.get("pid") or 0)
+    watchdog_pid = int(record.get("watchdog_pid") or 0)
+    watchdog_alive = _process_alive(watchdog_pid)
+    primary_alive = _process_alive(pid)
+    if watchdog_alive:
+        return "running" if primary_alive else "reaping"
+    if primary_alive:
+        # custody anomaly: kill-on-close should have reaped the tree when
+        # the watchdog died; sweep will taskkill it as defense in depth
+        return "orphaned"
+    return "indeterminate"
+
+
 def _exec_snapshot(record: dict[str, Any]) -> dict[str, Any]:
     pid = int(record.get("pid") or 0)
-    alive = _process_alive(pid)
     log_path = Path(str(record.get("log") or ""))
     log_size = log_path.stat().st_size if log_path.is_file() else 0
-    exit_code = record.get("exit_code")
-    if exit_code is None:
-        if record.get("status") == "stopped":
-            state = "stopped"
-        elif alive:
-            state = "running"
-        else:
-            # no supervisor observed the exit: the code is genuinely unknown
-            state = "indeterminate"
-    else:
-        state = "done"
+    state = _exec_state(record)
+    heartbeat_age = _heartbeat_age_seconds(record)
     return {
         "id": record.get("id"),
         "pid": pid,
+        "watchdog_pid": int(record.get("watchdog_pid") or 0),
+        "job_name": record.get("job_name"),
         "state": state,
-        "exit_code": exit_code,
+        "exit_code": record.get("exit_code"),
         "argv": record.get("argv"),
         "log": str(log_path),
         "log_bytes": log_size,
         "started_utc": record.get("started_utc"),
         "finished_utc": record.get("finished_utc"),
+        "deadline_utc": record.get("deadline_utc"),
+        "heartbeat_age_seconds": None if heartbeat_age is None else round(heartbeat_age, 1),
     }
 
 
@@ -282,111 +641,425 @@ def _tail_text(path: Path, limit_bytes: int) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def _exec_supervise(argv: list[str], timeout_seconds: float, console: Console) -> tuple[dict[str, Any], int]:
+def _child_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    # node-reuse is the observed leak amplifier (v19 incident): even where
+    # custody is somehow unavailable, our children never leave MSBuild
+    # worker nodes behind
+    env["MSBUILDDISABLENODEREUSE"] = "1"
+    return env
+
+
+def _clamp_lifetime(value: float) -> float:
+    return min(EXEC_MAX_LIFETIME_CEILING_SECONDS, max(EXEC_MAX_LIFETIME_FLOOR_SECONDS, value))
+
+
+# --- watchdog (the custodian) ---------------------------------------------
+
+
+def _watchdog_run(record_path: str) -> int:
+    """`python qiven_operator.py --exec-watchdog <record>`: supervise one
+    exec run under kernel custody. Owns the run record while running.
+    Exit code mirrors the child's; 2 for operator errors before spawn."""
+    record = _read_exec_record_path(Path(record_path))
+    if record is None:
+        sys.stderr.write(f"[watchdog] unreadable record: {record_path}\n")
+        return 2
+    log_path = Path(str(record.get("log")))
+    job_name = str(record.get("job_name"))
+    try:
+        max_lifetime = float(record.get("max_lifetime_seconds") or 0.0)
+    except (TypeError, ValueError):
+        max_lifetime = 0.0
+    if max_lifetime <= 0.0:
+        record["status"] = "error"
+        record["error"] = "watchdog record lacks max_lifetime_seconds"
+        _write_exec_record(record)
+        return 2
+
+    if os.name == "nt":
+        try:
+            job = _job_create(job_name)
+            kernel32, _ = _win_kernel32()
+            # join our own job: every descendant is born inside it, and our
+            # death (any cause) closes the last handle -> kernel tree-kill
+            if not kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess()):
+                raise OperatorError(
+                    f"AssignProcessToJobObject(self) failed: {_win_last_error()}"
+                )
+        except OperatorError as exc:
+            record["status"] = "error"
+            record["error"] = str(exc)
+            _write_exec_record(record)
+            sys.stderr.write(f"[watchdog] {exc}\n")
+            return 2
+
+    spawn_argv = _exec_prepare_argv(list(record.get("argv") or []))
+    if not spawn_argv:
+        record["status"] = "error"
+        record["error"] = "exec requires a command after --"
+        _write_exec_record(record)
+        return 2
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    process_handle = None
+    try:
+        if os.name == "nt":
+            log_fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+            nul_fd = os.open("NUL", os.O_RDWR)
+            try:
+                process_handle, thread_handle, pid = _win_spawn(
+                    spawn_argv, ROOT, _child_environment(), log_fd, nul_fd,
+                    _child_creationflags(),
+                )
+            finally:
+                os.close(log_fd)
+                os.close(nul_fd)
+            kernel32, _ = _win_kernel32()
+            kernel32.ResumeThread(thread_handle)
+            kernel32.CloseHandle(thread_handle)
+        else:
+            with log_path.open("wb") as log:
+                process = subprocess.Popen(
+                    spawn_argv, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL, env=_child_environment(),
+                    start_new_session=True,
+                )
+            pid = process.pid
+    except OSError as exc:
+        record["status"] = "error"
+        record["error"] = f"could not start exec process: {exc}"
+        record["spawn_argv"] = spawn_argv
+        _write_exec_record(record)
+        return 2
+
+    record["pid"] = pid
+    record["spawn_argv"] = spawn_argv
+    record["status"] = "running"
+    record["started_utc"] = _utc_now()
+    record["watchdog_pid"] = os.getpid()
+    record["heartbeat_utc"] = _utc_now()
+    _write_exec_record(record)
+
+    next_heartbeat = time.monotonic() + HEARTBEAT_SECONDS
+    deadline_monotonic = time.monotonic() + max_lifetime
+    while True:
+        if os.name == "nt":
+            state = _wait_handle(process_handle, 100)
+            finished = state == "signaled"
+            if state == "failed":
+                record["status"] = "error"
+                record["error"] = "WaitForSingleObject failed on child handle"
+                _write_exec_record(record)
+                return 2
+        else:
+            finished = process.poll() is not None
+            time.sleep(0.1)
+        now = time.monotonic()
+        if finished:
+            break
+        if now >= deadline_monotonic:
+            # lease enforcement: terminal record FIRST (durable before we
+            # terminate ourselves inside the job), then kernel kill
+            record["status"] = "expired"
+            record["finished_utc"] = _utc_now()
+            record["heartbeat_utc"] = _utc_now()
+            _write_exec_record(record)
+            if os.name == "nt":
+                _job_terminate(job, EXEC_EXIT_STILL_RUNNING)
+                return EXEC_EXIT_STILL_RUNNING  # if the job-kill self did not land
+            import signal
+
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                pass
+            return EXEC_EXIT_STILL_RUNNING
+        if now >= next_heartbeat:
+            record["heartbeat_utc"] = _utc_now()
+            _write_exec_record(record)
+            next_heartbeat = now + HEARTBEAT_SECONDS
+
+    if os.name == "nt":
+        exit_code = _exit_code_of_handle(process_handle)
+    else:
+        exit_code = int(process.returncode)
+    duration = time.monotonic() - started
+    # terminal record BEFORE terminating the job (the termination also
+    # ends this watchdog — the record must already be durable)
+    record["status"] = "done"
+    record["exit_code"] = exit_code
+    record["finished_utc"] = _utc_now()
+    record["duration_seconds"] = round(duration, 3)
+    record["heartbeat_utc"] = _utc_now()
+    _write_exec_record(record)
+    # completion reaps: bounded grace for straggler writers (MSBuild node
+    # reuse class), then the whole tree — leftovers and this watchdog —
+    # exits with the child's code
+    time.sleep(CUSTODY_REAP_GRACE_SECONDS)
+    if os.name == "nt":
+        _job_terminate(job, exit_code)
+        kernel32, _ = _win_kernel32()
+        kernel32.CloseHandle(process_handle)
+        return exit_code
+    import signal
+
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    return exit_code
+
+
+# --- exec front-end --------------------------------------------------------
+
+
+def _spawn_watchdog(record_path: Path, diag_path: Path) -> int:
+    """Spawn the watchdog detached; returns its pid. Diagnostics land in a
+    durable side log for postmortems (empty logs are a defect class)."""
+    argv = [sys.executable, str(Path(__file__).resolve()), "--exec-watchdog", str(record_path)]
+    if os.name == "nt":
+        diag_fd = os.open(str(diag_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+        nul_fd = os.open("NUL", os.O_RDWR)
+        try:
+            flags = _exec_creationflags(breakaway=True)
+            try:
+                handle, thread, pid = _win_spawn(argv, ROOT, _child_environment(), diag_fd, nul_fd, flags)
+            except OSError:
+                # restrictive ancestor job forbids breakaway: retry without
+                # it — custody never depended on breakaway anyway
+                handle, thread, pid = _win_spawn(
+                    argv, ROOT, _child_environment(), diag_fd, nul_fd,
+                    _exec_creationflags(breakaway=False),
+                )
+        finally:
+            os.close(diag_fd)
+            os.close(nul_fd)
+        kernel32, _ = _win_kernel32()
+        kernel32.ResumeThread(thread)
+        kernel32.CloseHandle(thread)
+        kernel32.CloseHandle(handle)
+        return pid
+    with diag_path.open("wb") as diag:
+        process = subprocess.Popen(
+            argv, cwd=ROOT, stdout=diag, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, env=_child_environment(), start_new_session=True,
+        )
+    return process.pid
+
+
+def _exec_terminal_response(exec_id: str, current: dict[str, Any], console: Console) -> tuple[dict[str, Any], int]:
+    """Map a terminal run state to its front-end payload and exit code."""
+    state = _exec_state(current)
+    snapshot = _exec_snapshot(current)
+    if state == "done":
+        code = int(current.get("exit_code") or 0)
+        console.emit("ok" if code == 0 else "fail",
+                     f"exec {exec_id}: exit {code} ({current.get('duration_seconds', 0)}s)")
+        return dict(snapshot, status="done"), code
+    if state == "expired":
+        console.emit("fail", f"exec {exec_id}: lease expired at {current.get('deadline_utc')} (tree killed, code unknown)")
+        return dict(snapshot, status="expired"), 1
+    if state == "error":
+        detail = str(current.get("error") or "watchdog error")
+        console.emit("fail", f"exec {exec_id}: {detail}")
+        return dict(snapshot, status="error"), 2
+    if state == "stopped":
+        console.emit("ok", f"exec {exec_id}: stopped")
+        return dict(snapshot, status="stopped"), 0
+    console.emit("wait", f"exec {exec_id}: indeterminate exit (no living supervisor observed it)")
+    return dict(snapshot, status="indeterminate"), EXEC_EXIT_STILL_RUNNING
+
+
+def _exec_start_frontend(argv: list[str], timeout_seconds: float, max_lifetime: float,
+                         console: Console) -> tuple[dict[str, Any], int]:
     if not argv:
         raise OperatorError("exec requires a command after --")
+    max_lifetime = _clamp_lifetime(max_lifetime)
+    timeout_seconds = max(1.0, min(timeout_seconds, max_lifetime))
     exec_id = _new_exec_id()
     log_path = _exec_log_path(exec_id)
+    record_path = _exec_record_path(exec_id)
+    diag_path = _exec_dir() / f"{exec_id}.watchdog.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    spawn_argv = _exec_prepare_argv(argv)
-    popen_kwargs: dict[str, Any] = {}
-    if os.name == "nt":
-        popen_kwargs["creationflags"] = _exec_creationflags(breakaway=True)
-    else:
-        popen_kwargs["start_new_session"] = True
+    deadline_utc = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(_utc_now_seconds() + max_lifetime)
+    )
+    record: dict[str, Any] = {
+        "schema": 2,
+        "id": exec_id,
+        "argv": list(argv),
+        "log": str(log_path),
+        "job_name": f"qiven-exec-{exec_id}",
+        "started_utc": _utc_now(),
+        "timeout_seconds": timeout_seconds,
+        "max_lifetime_seconds": max_lifetime,
+        "deadline_utc": deadline_utc,
+        "status": "starting",
+    }
+    _write_exec_record(record)
+
+    try:
+        watchdog_pid = _spawn_watchdog(record_path, diag_path)
+    except OSError as exc:
+        record["status"] = "error"
+        record["error"] = f"could not spawn watchdog: {exc}"
+        _write_exec_record(record)
+        detail = f"exec start failed (watchdog spawn): {exc}"
+        console.emit("fail", detail)
+        return {"status": "error", "error": detail, "argv": argv}, 2
+    # from here the WATCHDOG owns the record: its first write carries pid,
+    # watchdog_pid and state=running. A front-end rewrite here would race
+    # that write and could regress the record to "starting".
+    console.emit("run", f"exec {exec_id}: watchdog pid {watchdog_pid}, lease {max_lifetime:.0f}s, log {log_path}")
 
     started = time.monotonic()
-    try:
-        with log_path.open("wb") as log:
+
+    # phase 1: wait for the watchdog to signal (record gains pid + state)
+    while True:
+        current = _read_exec_record_path(record_path) or record
+        state = _exec_state(current)
+        if state != "starting":
+            record = current
+            break
+        if time.monotonic() - started >= EXEC_WATCHDOG_STARTUP_BUDGET_SECONDS:
+            detail = (f"watchdog {watchdog_pid} did not signal within "
+                      f"{EXEC_WATCHDOG_STARTUP_BUDGET_SECONDS:.0f}s "
+                      f"(diagnostics: {diag_path})")
+            console.emit("fail", f"exec {exec_id}: {detail}")
+            current = _read_exec_record_path(record_path) or record
+            current["status"] = "error"
+            current["error"] = detail
+            _write_exec_record(current)
+            _kill_tree_hard(watchdog_pid)
+            return {"status": "error", "error": detail, "id": exec_id, "argv": argv}, 2
+        time.sleep(POLL_SECONDS)
+
+    # phase 2: supervise until a terminal state or the front-end budget.
+    # The run itself is bounded by the LEASE, never by this loop: when the
+    # budget elapses the watchdog keeps custody and enforces the deadline.
+    next_heartbeat = time.monotonic() + HEARTBEAT_SECONDS
+    while True:
+        current = _read_exec_record_path(record_path) or record
+        record = current
+        state = _exec_state(current)
+        if state in _TERMINAL_STATES:
+            return _exec_terminal_response(exec_id, current, console)
+        now = time.monotonic()
+        if now - started >= timeout_seconds:
+            snapshot = _exec_snapshot(current)
+            console.emit(
+                "wait",
+                f"exec {exec_id}: still running after {timeout_seconds:.0f}s "
+                f"(log {snapshot['log_bytes']} bytes); operator returns; lease {deadline_utc}",
+            )
+            return dict(snapshot, status="still-running"), EXEC_EXIT_STILL_RUNNING
+        if now >= next_heartbeat:
+            log_bytes = log_path.stat().st_size if log_path.is_file() else 0
+            age = _heartbeat_age_seconds(current)
+            console.emit(
+                "wait",
+                f"exec {exec_id}: running for {now - started:.0f}s, log {log_bytes} bytes"
+                + (f", custodian beat {age:.0f}s ago" if age is not None else ""),
+            )
+            next_heartbeat = now + HEARTBEAT_SECONDS
+        time.sleep(POLL_SECONDS)
+
+
+def _kill_tree_hard(pid: int) -> None:
+    """Last-resort tree kill (sweep defense in depth; not the primary
+    custody path)."""
+    if pid <= 0:
+        return
+    if os.name == "nt":
+        _run_capture(["taskkill", "/T", "/F", "/PID", str(pid)])
+    else:
+        import signal
+
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except OSError:
             try:
-                process = subprocess.Popen(spawn_argv, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **popen_kwargs)
-            except OSError as exc:
-                # CREATE_BREAKAWAY_FROM_JOB fails outright when the ancestor
-                # job forbids breakaway; retry without it — survival of the
-                # child across CALLER death is best-effort, never a lie.
-                if os.name == "nt":
-                    popen_kwargs["creationflags"] = _exec_creationflags(breakaway=False)
-                try:
-                    process = subprocess.Popen(spawn_argv, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **popen_kwargs)
-                except OSError as second:
-                    detail = f"could not start exec process: {second}"
-                    console.emit("fail", detail)
-                    return {"status": "error", "error": detail, "argv": argv}, 2
-
-            record = {
-                "id": exec_id,
-                "argv": argv,
-                "spawn_argv": spawn_argv,
-                "pid": process.pid,
-                "log": str(log_path),
-                "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "timeout_seconds": timeout_seconds,
-            }
-            _write_exec_record(record)
-
-            console.emit("run", f"exec {exec_id}: pid {process.pid}, log {log_path}")
-            next_heartbeat = time.monotonic() + HEARTBEAT_SECONDS
-            while True:
-                returncode = process.poll()
-                if returncode is not None:
-                    break
-                now = time.monotonic()
-                if now - started >= timeout_seconds:
-                    snapshot = _exec_snapshot(record)
-                    console.emit(
-                        "wait",
-                        f"exec {exec_id}: still running after {timeout_seconds:.0f}s "
-                        f"(log {snapshot['log_bytes']} bytes); operator returns, child continues",
-                    )
-                    payload = dict(snapshot, status="still-running")
-                    return payload, EXEC_EXIT_STILL_RUNNING
-                if now >= next_heartbeat:
-                    log_bytes = log_path.stat().st_size if log_path.is_file() else 0
-                    console.emit("wait", f"exec {exec_id}: running for {now - started:.0f}s, log {log_bytes} bytes")
-                    next_heartbeat = now + HEARTBEAT_SECONDS
-                time.sleep(POLL_SECONDS)
-
-            duration = time.monotonic() - started
-            record["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            record["exit_code"] = returncode
-            _write_exec_record(record)
-            snapshot = _exec_snapshot(record)
-            snapshot["duration_seconds"] = round(duration, 3)
-            console.emit("ok" if returncode == 0 else "fail", f"exec {exec_id}: exit {returncode} ({duration:.2f}s)")
-            payload = dict(snapshot, status="done")
-            return payload, returncode
-    finally:
-        pass
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
 
 
 def _exec_stop(record: dict[str, Any], console: Console) -> tuple[dict[str, Any], int]:
-    pid = int(record.get("pid") or 0)
-    if not _process_alive(pid):
+    exec_id = str(record.get("id"))
+    state = _exec_state(record)
+    if state in _TERMINAL_STATES:
         snapshot = _exec_snapshot(record)
-        snapshot["status"] = "not-running"
+        snapshot["status"] = "not-running" if state == "indeterminate" else state
+        console.emit("ok", f"exec stop {exec_id}: already {state}")
         return snapshot, 0
-    if os.name == "nt":
-        completed = _run_capture(["taskkill", "/T", "/F", "/PID", str(pid)])
+    job_name = str(record.get("job_name") or "")
+    # durable terminal record FIRST, then the kernel action
+    record["status"] = "stopped"
+    record["finished_utc"] = _utc_now()
+    _write_exec_record(record)
+    note = "no job name on record"
+    if os.name == "nt" and job_name:
+        terminated, note = _job_open_terminate_by_name(job_name, 130)
     else:
-        try:
-            import signal
-
-            os.killpg(pid, signal.SIGTERM)
-            completed_returncode = 0
-        except OSError:
-            completed_returncode = 1
-        from types import SimpleNamespace
-
-        completed = SimpleNamespace(returncode=completed_returncode, stdout="")
-    if completed.returncode == 0:
-        record["status"] = "stopped"
-        record["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        _write_exec_record(record)
+        _kill_tree_hard(int(record.get("pid") or 0))
+        terminated, note = True, "tree killed"
     snapshot = _exec_snapshot(record)
-    snapshot["status"] = "stopped" if completed.returncode == 0 else "stop-failed"
-    console.emit("ok" if completed.returncode == 0 else "fail", f"exec stop {record.get('id')}: {snapshot['status']}")
-    return snapshot, 0 if completed.returncode == 0 else 1
+    snapshot["stop_note"] = note
+    snapshot["status"] = "stopped"
+    console.emit("ok" if terminated else "fail", f"exec stop {exec_id}: stopped ({note})")
+    return snapshot, 0 if terminated else 1
+
+
+def _sweep_exec_records(console: Console | None = None, *, quiet: bool = True) -> list[dict[str, Any]]:
+    """Dead-man insurance, piggybacked on every operator invocation:
+    terminate runs past their lease, hard-kill custody anomalies, finalize
+    stale records. Never raises; never touches healthy runs."""
+    actions: list[dict[str, Any]] = []
+    directory = _exec_dir()
+    if not directory.is_dir():
+        return actions
+    now_seconds = _utc_now_seconds()
+    for record_path in sorted(directory.glob("*.json")):
+        record = _read_exec_record_path(record_path)
+        if record is None:
+            continue
+        status = str(record.get("status") or "")
+        if status in _TERMINAL_STATES:
+            continue
+        state = _exec_state(record)
+        if state == "orphaned":
+            _kill_tree_hard(int(record.get("pid") or 0))
+            record["status"] = "stopped"
+            record["finished_utc"] = _utc_now()
+            record["stop_note"] = "sweep: custody anomaly hard-killed"
+            _write_exec_record(record)
+            actions.append({"id": record.get("id"), "action": "hard-killed"})
+        elif state == "indeterminate":
+            record["status"] = "indeterminate"
+            record["finished_utc"] = _utc_now()
+            _write_exec_record(record)
+            actions.append({"id": record.get("id"), "action": "finalized-indeterminate"})
+        else:
+            deadline = _utc_timestamp_seconds(str(record.get("deadline_utc") or ""))
+            if deadline is not None and now_seconds > deadline:
+                job_name = str(record.get("job_name") or "")
+                if os.name == "nt" and job_name:
+                    _job_open_terminate_by_name(job_name, EXEC_EXIT_STILL_RUNNING)
+                else:
+                    _kill_tree_hard(int(record.get("pid") or 0))
+                record["status"] = "expired"
+                record["finished_utc"] = _utc_now()
+                _write_exec_record(record)
+                actions.append({"id": record.get("id"), "action": "expired"})
+    if actions and console is not None and not quiet:
+        for action in actions:
+            console.emit("wait", f"exec sweep: {action['action']} {action['id']}")
+    return actions
 
 
 def _toolchain() -> dict[str, str]:
@@ -448,6 +1121,11 @@ def _argv_for_task(spec: dict[str, Any]) -> list[str]:
 
 
 def _run_process(name: str, spec: dict[str, Any], console: Console) -> Result:
+    """Run ONE declared task child under per-task process custody: a Job
+    Object (KILL_ON_JOB_CLOSE + process cap) held by this operator. The
+    tree cannot outlive the task: on primary exit, leftovers (the MSBuild
+    node-reuse class) are terminated after the output grace; if THIS
+    operator dies mid-task, the kernel kills the tree via handle close."""
     started = time.monotonic()
     console.emit("run", name)
     try:
@@ -456,31 +1134,70 @@ def _run_process(name: str, spec: dict[str, Any], console: Console) -> Result:
         console.emit("fail", f"{name}: {exc}")
         return Result(name, "fail", 2, detail=str(exc))
 
-    env = os.environ.copy()
-    env.setdefault("PYTHONUTF8", "1")
-    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env = _child_environment()
+    log_fd = None
+    job = None
+    process_handle = None
+    process = None
+    returncode: int | None = None
     with tempfile.NamedTemporaryFile(prefix="qiven-operator-", suffix=".log", delete=False) as handle:
         log_path = Path(handle.name)
     try:
-        with log_path.open("w", encoding="utf-8", errors="replace") as log:
+        if os.name == "nt":
+            job = _job_create()
+            log_fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+            nul_fd = os.open("NUL", os.O_RDWR)
             try:
-                process = subprocess.Popen(argv, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, text=True)
-            except OSError as exc:
-                detail = f"could not start process: {exc}"
-                console.emit("fail", f"{name}: {detail}")
-                return Result(name, "fail", 2, time.monotonic() - started, detail=detail)
-            next_heartbeat = time.monotonic() + HEARTBEAT_SECONDS
-            while True:
+                # CREATE_SUSPENDED -> assign -> resume: zero-race custody
+                # (no grandchild can be born before the primary is in the
+                # job, unlike the Popen-then-assign pattern)
+                process_handle, thread_handle, _pid = _win_spawn(
+                    argv, ROOT, env, log_fd, nul_fd,
+                    _child_creationflags() | WIN_CREATE_SUSPENDED,
+                )
+            finally:
+                os.close(log_fd)
+                os.close(nul_fd)
+            kernel32, _ = _win_kernel32()
+            kernel32.AssignProcessToJobObject(job, process_handle)
+            kernel32.ResumeThread(thread_handle)
+            kernel32.CloseHandle(thread_handle)
+        else:
+            with log_path.open("wb") as log:
+                process = subprocess.Popen(
+                    argv, cwd=ROOT, env=env, stdout=log,
+                    stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+        next_heartbeat = time.monotonic() + HEARTBEAT_SECONDS
+        while True:
+            if os.name == "nt":
+                if _wait_handle(process_handle, 100) == "signaled":
+                    returncode = _exit_code_of_handle(process_handle)
+                    break
+            else:
                 returncode = process.poll()
                 if returncode is not None:
                     break
-                now = time.monotonic()
-                if now >= next_heartbeat:
-                    console.emit("wait", f"{name}: running for {now - started:.0f}s")
-                    next_heartbeat = now + HEARTBEAT_SECONDS
-                time.sleep(POLL_SECONDS)
+                time.sleep(0.1)
+            now = time.monotonic()
+            if now >= next_heartbeat:
+                console.emit("wait", f"{name}: running for {now - started:.0f}s")
+                next_heartbeat = now + HEARTBEAT_SECONDS
         duration = time.monotonic() - started
+        # completion reaps the task tree (bounded grace for late flush)
+        time.sleep(CUSTODY_REAP_GRACE_SECONDS)
         output = log_path.read_text(encoding="utf-8", errors="replace")
+        if os.name == "nt":
+            _job_terminate(job, int(returncode))
+        else:
+            import signal
+
+            try:
+                os.killpg(int(process.pid), signal.SIGKILL)
+            except OSError:
+                pass
+        assert returncode is not None
         if returncode == 0:
             console.emit("ok", f"{name} ({duration:.2f}s)")
             if console.verbose:
@@ -488,8 +1205,18 @@ def _run_process(name: str, spec: dict[str, Any], console: Console) -> Result:
             return Result(name, "pass", 0, duration, output=output)
         console.emit("fail", f"{name}: exit {returncode} ({duration:.2f}s)")
         console.block(output)
-        return Result(name, "fail", returncode, duration, output=output)
+        return Result(name, "fail", int(returncode), duration, output=output)
+    except OSError as exc:
+        detail = f"could not start process: {exc}"
+        console.emit("fail", f"{name}: {detail}")
+        return Result(name, "fail", 2, time.monotonic() - started, detail=detail)
     finally:
+        if os.name == "nt":
+            kernel32, _ = _win_kernel32()
+            if process_handle:
+                kernel32.CloseHandle(process_handle)
+            if job:
+                kernel32.CloseHandle(job)
         try:
             log_path.unlink()
         except OSError:
@@ -566,7 +1293,7 @@ def _record_duration(result: Result, kind: str) -> None:
         path = ROOT / ".generated-temp" / "operator" / "task-durations.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         event = {
-            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "at": _utc_now(),
             "kind": kind,
             "task": result.name,
             "status": result.status,
@@ -626,7 +1353,7 @@ def _write_gate_receipt(payload: dict[str, Any]) -> None:
             "gate": payload.get("gate"),
             "head": payload.get("head"),
             "status": payload.get("status"),
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "timestamp": _utc_now(),
             "tasks": [
                 {"name": r.get("name"), "status": r.get("status"),
                  "duration_seconds": r.get("duration_seconds")}
@@ -825,23 +1552,33 @@ def _parser() -> argparse.ArgumentParser:
     ci_start = ci_sub.add_parser("start", help="dispatch CI and return immediately", parents=[_common_flags()])
     ci_start.add_argument("profile", help="declared CI profile")
     exec_parser = sub.add_parser(
-        "exec", help="supervised detached command execution (hang-contract answer)", parents=[_common_flags()]
+        "exec", help="supervised detached command execution under bounded process custody", parents=[_common_flags()]
     )
     exec_sub = exec_parser.add_subparsers(dest="exec_command", required=True)
-    exec_start = exec_sub.add_parser("start", help="run a command detached with heartbeat; bounded supervision", parents=[_common_flags()])
-    exec_start.add_argument("--timeout", type=float, default=EXEC_DEFAULT_TIMEOUT_SECONDS, help="operator supervision ceiling in seconds (the child survives past it)")
+    exec_start = exec_sub.add_parser("start", help="run a command under watchdog custody with heartbeat", parents=[_common_flags()])
+    exec_start.add_argument("--timeout", type=float, default=EXEC_DEFAULT_TIMEOUT_SECONDS,
+                            help="front-end supervision budget in seconds (exit 124 when it elapses; the run continues under its lease)")
+    exec_start.add_argument("--max-lifetime", type=float, default=EXEC_DEFAULT_MAX_LIFETIME_SECONDS,
+                            help=f"hard lease on the run's process tree in seconds (default {EXEC_DEFAULT_MAX_LIFETIME_SECONDS:.0f}, clamped to [{EXEC_MAX_LIFETIME_FLOOR_SECONDS:.0f}, {EXEC_MAX_LIFETIME_CEILING_SECONDS:.0f}])")
     exec_start.add_argument("command_args", nargs=argparse.REMAINDER, help="command after '--' to execute")
-    exec_status = exec_sub.add_parser("status", help="snapshot one run: state, liveness, log tail", parents=[_common_flags()])
+    exec_status = exec_sub.add_parser("status", help="snapshot one run: state, custody, log tail", parents=[_common_flags()])
     exec_status.add_argument("run_id", help="exec run id")
     exec_status.add_argument("--tail", type=int, default=2000, help="log tail bytes to include")
     exec_stop = exec_sub.add_parser("stop", help="terminate a run's process tree", parents=[_common_flags()])
     exec_stop.add_argument("run_id", help="exec run id")
-    exec_list = exec_sub.add_parser("list", help="list known runs with state", parents=[_common_flags()])
+    exec_list = exec_sub.add_parser("list", help="list known runs with state and lease", parents=[_common_flags()])
+    exec_sweep = exec_sub.add_parser("sweep", help="terminate expired runs, finalize stale records", parents=[_common_flags()])
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    raw = list(sys.argv[1:]) if argv is None else list(argv)
+    if raw and raw[0] == "--exec-watchdog":
+        if len(raw) != 2:
+            sys.stderr.write("usage: qiven_operator.py --exec-watchdog RECORD\n")
+            return 2
+        return _watchdog_run(raw[1])
+    args = _parser().parse_args(raw)
     json_mode = bool(getattr(args, "json", False))
     verbose_mode = bool(getattr(args, "verbose", False))
     no_color_mode = bool(getattr(args, "no_color", False))
@@ -850,6 +1587,12 @@ def main(argv: list[str] | None = None) -> int:
     args.no_color = no_color_mode
     console = Console(json_mode=json_mode, verbose=verbose_mode, no_color=no_color_mode)
     try:
+        # dead-man insurance rides every invocation (never blocks, never
+        # raises into the caller's command)
+        try:
+            _sweep_exec_records(console, quiet=not verbose_mode)
+        except Exception:
+            pass
         config = _load_config()
         if args.command == "info":
             payload = {
@@ -933,7 +1676,9 @@ def main(argv: list[str] | None = None) -> int:
                     command = command[1:]
                 if not command:
                     raise OperatorError("exec start requires a command after '--'")
-                payload, exit_code = _exec_supervise(command, float(args.timeout), console)
+                payload, exit_code = _exec_start_frontend(
+                    command, float(args.timeout), float(args.max_lifetime), console
+                )
                 if args.json:
                     _print_json(payload)
                 return exit_code
@@ -949,7 +1694,8 @@ def main(argv: list[str] | None = None) -> int:
                         "ok" if snapshot["state"] == "done" else "wait",
                         f"exec {snapshot['id']}: {snapshot['state']}"
                         + (f", exit {snapshot['exit_code']}" if snapshot["exit_code"] is not None else "")
-                        + f", log {snapshot['log_bytes']} bytes",
+                        + f", log {snapshot['log_bytes']} bytes"
+                        + (f", lease {snapshot['deadline_utc']}" if snapshot["deadline_utc"] else ""),
                     )
                     if tail:
                         console.block(tail)
@@ -965,20 +1711,26 @@ def main(argv: list[str] | None = None) -> int:
                 directory = _exec_dir()
                 if directory.is_dir():
                     for record_path in sorted(directory.glob("*.json")):
-                        try:
-                            runs.append(_exec_snapshot(json.loads(record_path.read_text(encoding="utf-8"))))
-                        except (json.JSONDecodeError, OSError):
-                            continue
+                        record = _read_exec_record_path(record_path)
+                        if record is not None:
+                            runs.append(_exec_snapshot(record))
                 payload = {"status": "ok", "runs": runs}
                 if args.json:
                     _print_json(payload)
                 else:
                     for snapshot in runs:
                         console.emit(
-                            "wait" if snapshot["state"] == "running" else "ok",
+                            "wait" if snapshot["state"] in ("running", "reaping", "orphaned") else "ok",
                             f"exec {snapshot['id']}: {snapshot['state']}"
-                            + (f", exit {snapshot['exit_code']}" if snapshot["exit_code"] is not None else ""),
+                            + (f", exit {snapshot['exit_code']}" if snapshot["exit_code"] is not None else "")
+                            + (f", lease {snapshot['deadline_utc']}" if snapshot["deadline_utc"] else ""),
                         )
+                return 0
+            if args.exec_command == "sweep":
+                actions = _sweep_exec_records(console, quiet=False)
+                payload = {"status": "ok", "actions": actions}
+                if args.json:
+                    _print_json(payload)
                 return 0
 
         raise OperatorError("unsupported command")
