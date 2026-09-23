@@ -159,7 +159,27 @@ int main(int argc, char** argv)
                                 nullptr);
         }
     }
-    auto allowed_clients = qiven::runtime::ipc::ClientRecord::ensure(runtime_root, { self_narrow });
+    // The installation's own-tool allowlist: the host itself plus the
+    // sibling clients deployed in the same directory (same installation
+    // unit; the owner-only DACL stays the trust boundary). Boot MERGES
+    // missing images — the 2026-09-24 preflight found deployments where
+    // only the host was recorded and every hook client denied admission.
+    std::vector<std::string> install_images { self_narrow };
+    {
+        const std::filesystem::path host_dir =
+            std::filesystem::path(self_narrow).parent_path();
+        for (const char* sibling :
+             { "qiven-zcode-hook.exe", "qiven-runtimectl.exe", "qiven-adapter-bridge.exe" })
+        {
+            const std::filesystem::path image = host_dir / sibling;
+            if (std::filesystem::exists(image))
+            {
+                install_images.push_back(image.string());
+            }
+        }
+    }
+    auto allowed_clients =
+        qiven::runtime::ipc::ClientRecord::ensure(runtime_root, install_images);
     if (!allowed_clients.is_ok())
     {
         std::cerr << "client record unavailable: " << allowed_clients.reason().message << "\n";
