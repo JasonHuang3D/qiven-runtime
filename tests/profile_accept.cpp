@@ -198,16 +198,41 @@ int main()
         QIVEN_VERIFY(loaded.value().cognition.policy_path == "runtime/invocation-policy.yaml");
         QIVEN_VERIFY(loaded.value().git_executable.string().find("git.exe") !=
                      std::string::npos);
-        // Day-one honesty: raw ZCode tool classes stay Unmediated.
-        bool saw_unmediated = false;
+        // Revision 2 (MVP-4): the raw ZCode tool classes are MEDIATED
+        // (ActionInterception) and the complete-mediation claim is data —
+        // the tool inventory enumerates every write-capable entry point
+        // with its extraction and detector scope.
+        QIVEN_VERIFY(loaded.value().revision == 2);
         for (const auto& entry : loaded.value().built.mediation.entries)
         {
-            if (entry.kind == qiven::runtime::profile::MediationKind::Unmediated)
+            QIVEN_VERIFY(entry.kind == qiven::runtime::profile::MediationKind::ActionInterception);
+        }
+        QIVEN_VERIFY(loaded.value().tool_inventory.size() == 3);
+        bool saw_bash_conservative = false;
+        bool saw_write_exact       = false;
+        bool saw_edit_exact        = false;
+        for (const auto& row : loaded.value().tool_inventory)
+        {
+            if (row.tool == "Bash" && row.extraction == "command" &&
+                row.detector == "conservative_text_reference")
             {
-                saw_unmediated = true;
+                saw_bash_conservative = true;
+            }
+            if (row.tool == "Write" && row.extraction == "file_path" &&
+                row.detector == "exact_path")
+            {
+                saw_write_exact = true;
+            }
+            if (row.tool == "Edit" && row.extraction == "file_path" &&
+                row.detector == "exact_path")
+            {
+                saw_edit_exact = true;
             }
         }
-        QIVEN_VERIFY(saw_unmediated);
+        QIVEN_VERIFY(saw_bash_conservative);
+        QIVEN_VERIFY(saw_write_exact);
+        QIVEN_VERIFY(saw_edit_exact);
+        QIVEN_VERIFY(loaded.value().record_launcher.find("qiven-record") != std::string::npos);
     }
 
     std::printf("[ OK ] profile-accept\n");

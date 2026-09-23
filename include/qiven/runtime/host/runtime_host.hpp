@@ -28,14 +28,16 @@
 
 #include <ctime>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
 
 namespace qiven::runtime::host
 {
-inline constexpr i32 err_singleton  = 101;
-inline constexpr i32 err_generation = 102;
-inline constexpr i32 err_quarantine = 103;
+inline constexpr i32 err_singleton         = 101;
+inline constexpr i32 err_generation        = 102;
+inline constexpr i32 err_quarantine        = 103;
+inline constexpr i32 err_cognition_expired = 66; // MVP-4 H-2 deny path (IPC 60-69)
 
 struct HostBoot
 {
@@ -82,6 +84,31 @@ public:
 private:
     RuntimeHost() = default;
 
+    // MVP-4 hook surface (batch design section 3.4). One registry entry
+    // per harness session handle; the host — never the client — owns the
+    // runtime session identity and the action counter (ARCH section 12.2).
+    struct HookSession
+    {
+        u64 journal_row = 0;     // open_session row id
+        std::string id_hex;      // rendered runtime session id
+        u64 action_next = 1;     // per-session action counter
+        bool degraded   = false; // tool-inventory/scope mismatch (113)
+        std::string degraded_detail;
+        struct Outstanding
+        {
+            std::string action_hex;
+            ControlTransactionId transaction {};
+        };
+        std::map<std::string, Outstanding> outstanding; // one pre per tool
+    };
+
+    [[nodiscard]] ipc::Reply handle_hook_event(const ipc::Request& request, u64 now_ms);
+    [[nodiscard]] ipc::Reply handle_session_start(const ipc::Request& request, u64 now_ms);
+    [[nodiscard]] ipc::Reply handle_pre_tool(const ipc::Request& request, u64 now_ms);
+    [[nodiscard]] ipc::Reply handle_post_tool(const ipc::Request& request, u64 now_ms);
+    [[nodiscard]] bool refresh_cognition(u64 now_ms, std::string& refresh_state,
+                                         std::string& detail);
+
     journal::RuntimeJournal* journal() const noexcept
     {
         return m_journal.get();
@@ -97,6 +124,16 @@ private:
     std::string m_failure_detail;
     bool m_quarantined      = false;
     void* m_singleton_mutex = nullptr; // named-mutex HANDLE, held for life
+    // MVP-4 members
+    std::filesystem::path m_repo_root;
+    std::filesystem::path m_profile_file;
+    std::filesystem::path m_git_executable;
+    ContentDigest m_active_bundle_digest {};
+    SortableIdMinter m_minter; // session/decision ids (never-repeating)
+    std::map<std::string, HookSession> m_hook_sessions;
+    u64 m_last_refresh_ok_ms  = 0; // last successful bounded fetch/publish
+    u64 m_freshness_window_ms = 0;
+    bool m_shutting_down      = false;
 };
 
 // Wall clock in ms UTC for callers that need "now" (journal-comparable).

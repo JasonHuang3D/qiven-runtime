@@ -204,6 +204,8 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/manifest.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/loopback.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/bridge.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/zcode_event.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/adapter/zcode_hook.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/claims.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/generation.cpp
@@ -341,6 +343,20 @@ set_target_properties(
 )
 target_link_libraries(qiven-runtimectl PRIVATE qiven::runtime)
 target_compile_features(qiven-runtimectl PRIVATE cxx_std_20)
+
+# qiven-zcode-hook: the production thin ZCode hook client (MVP-4; ARCH
+# section 6.2 — one-shot per hook invocation, verdict mapping only).
+add_executable(qiven-zcode-hook apps/zcode_hook_main.cpp)
+add_executable(qiven::zcode_hook ALIAS qiven-zcode-hook)
+set_target_properties(
+    qiven-zcode-hook
+    PROPERTIES
+        CXX_EXTENSIONS OFF
+        FOLDER "Apps"
+        VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(qiven-zcode-hook PRIVATE qiven::runtime)
+target_compile_features(qiven-zcode-hook PRIVATE cxx_std_20)
 
 if(QIVEN_RUNTIME_BUILD_TESTS)
     enable_testing()

@@ -322,9 +322,15 @@ tool_inventory:
 ```
 
 — plus the mediation-claim honesty note (boundary complete, Bash
-detector scope explicit). The loader validates: every
-FileSystemWrite capability has an inventory row (complete-mediation
-precondition), unknown detector/extraction values reject. The
+detector scope explicit). The loader validates: every inventory row
+references a declared, ActionInterception-mediated FileSystemWrite
+capability, and unknown detector/extraction values reject.
+(Batch-time correction of this section's original wording, found by
+profile_accept: a DOWNWARD completeness rule — "every FileSystemWrite
+capability has an inventory row" — is not well typed, because
+capabilities 1-3 are the mediated qiven-record path, not harness tool
+surfaces; harness-surface completeness is the inventory enumeration
+itself plus the H1 real-tool proof.) The
 `qiven-record` grammar pointer (ARCH §6.3): `record_launcher:
 qiven-record --request-file <path> | --stdin` recorded as accepted
 grammar surface (the executable itself is MVP-5).

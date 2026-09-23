@@ -35,7 +35,9 @@ struct Request
         Hello,
         Status,
         Doctor,
-        Mutation, // MVP-3 placeholder: always HostRecovering
+        Mutation,  // MVP-3 placeholder: always HostRecovering
+        HookEvent, // MVP-4: the ZCode hook adapter events
+        Shutdown,  // MVP-4 H-4: operator-initiated drain + exit
     };
 
     Kind kind       = Kind::Status;
@@ -44,6 +46,16 @@ struct Request
     std::string client_kind; // hello
     u64 client_build = 0;    // hello
     std::string body;        // mutation payload (unused in MVP-3)
+    // hook_event fields (MVP-4 design section 3.2)
+    std::string event;          // session_start | pre_tool | post_tool
+    std::string session_handle; // harness session id — evidence only
+    std::string tool_name;
+    std::string payload_sha256; // hex digest of the verbatim stdin bytes
+    u64 payload_bytes = 0;
+    std::string command;        // Bash extraction (when present)
+    std::string file_path;      // Write/Edit extraction (when present)
+    std::string mediated_tools; // session_start: "Bash,Write,Edit"
+    u64 grace_ms = 0;           // shutdown: drain bound
 };
 
 struct Reply
@@ -54,6 +66,8 @@ struct Reply
         StatusView,
         DoctorView,
         ErrorView,
+        HookAck,
+        ShutdownAck,
     };
 
     Kind kind      = Kind::ErrorView;
@@ -75,6 +89,15 @@ struct Reply
     // error view
     i32 error_code = 0;
     std::string error_detail;
+    // hook_ack view (MVP-4)
+    std::string verdict;    // allow | deny | not_governed | degraded
+    std::string session_id; // host-assigned runtime session id (hex)
+    std::string action_id;  // host-assigned action id (hex)
+    i64 reason_code = 0;
+    std::string reason_detail;
+    std::string refresh; // session_start: current | local_fallback | expired
+    // shutdown_ack view
+    bool draining = false;
 };
 
 // Body layout (all kinds): {"kind": "<name>", "request_id": N,

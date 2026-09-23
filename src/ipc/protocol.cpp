@@ -29,7 +29,12 @@ qiven::Result<Request, ProtocolError> decode_request(std::string_view body)
     {
         if (member.first != "kind" && member.first != "request_id" &&
             member.first != "deadline_ms" && member.first != "client_kind" &&
-            member.first != "client_build" && member.first != "body")
+            member.first != "client_build" && member.first != "body" &&
+            member.first != "event" && member.first != "session_handle" &&
+            member.first != "tool_name" && member.first != "payload_sha256" &&
+            member.first != "payload_bytes" && member.first != "command" &&
+            member.first != "file_path" && member.first != "mediated_tools" &&
+            member.first != "grace_ms")
         {
             return qiven::Result<Request, ProtocolError>::fail(
                 bad("unknown request field '" + member.first + "'"));
@@ -66,6 +71,39 @@ qiven::Result<Request, ProtocolError> decode_request(std::string_view body)
         request.kind = Request::Kind::Mutation;
         request.body = value.string_or("body", "");
     }
+    else if (kind == "hook_event")
+    {
+        request.kind           = Request::Kind::HookEvent;
+        request.event          = value.string_or("event", "");
+        request.session_handle = value.string_or("session_handle", "");
+        request.tool_name      = value.string_or("tool_name", "");
+        request.payload_sha256 = value.string_or("payload_sha256", "");
+        request.payload_bytes  = value.number_or("payload_bytes", 0);
+        request.command        = value.string_or("command", "");
+        request.file_path      = value.string_or("file_path", "");
+        request.mediated_tools = value.string_or("mediated_tools", "");
+        if (request.event != "session_start" && request.event != "pre_tool" &&
+            request.event != "post_tool")
+        {
+            return qiven::Result<Request, ProtocolError>::fail(
+                bad("hook_event requires a known event"));
+        }
+        if (request.session_handle.empty() || request.payload_sha256.empty())
+        {
+            return qiven::Result<Request, ProtocolError>::fail(
+                bad("hook_event requires session_handle and payload_sha256"));
+        }
+    }
+    else if (kind == "shutdown")
+    {
+        request.kind     = Request::Kind::Shutdown;
+        request.grace_ms = value.number_or("grace_ms", 3000);
+        if (request.grace_ms == 0 || request.grace_ms > 30000)
+        {
+            return qiven::Result<Request, ProtocolError>::fail(
+                bad("grace_ms must be in (0, 30000]"));
+        }
+    }
     else
     {
         return qiven::Result<Request, ProtocolError>::fail(bad("unknown request kind '" + kind + "'"));
@@ -73,10 +111,16 @@ qiven::Result<Request, ProtocolError> decode_request(std::string_view body)
 
     request.request_id  = value.number_or("request_id", 0);
     request.deadline_ms = value.number_or("deadline_ms", 3000);
-    if (request.deadline_ms == 0 || request.deadline_ms > 5000)
+    // SessionStart may ask for a refresh-grade budget (MVP-4 H-2); every
+    // other kind stays inside the 5 s interaction ceiling.
+    const u64 ceiling =
+        (request.kind == Request::Kind::HookEvent && request.event == "session_start")
+            ? 10000
+            : 5000;
+    if (request.deadline_ms == 0 || request.deadline_ms > ceiling)
     {
         return qiven::Result<Request, ProtocolError>::fail(
-            bad("deadline_ms must be in (0, 5000]"));
+            bad("deadline_ms must be in (0, " + std::to_string(ceiling) + "]"));
     }
     return qiven::Result<Request, ProtocolError>(std::move(request));
 }
@@ -127,6 +171,25 @@ std::string encode_reply(const Reply& reply)
         object.emplace_back("error", JsonValue::make_object(std::move(error)));
         break;
     }
+    case Reply::Kind::HookAck:
+    {
+        object.emplace_back("kind", JsonValue::make_string("hook_ack"));
+        object.emplace_back("verdict", JsonValue::make_string(reply.verdict));
+        object.emplace_back("session_id", JsonValue::make_string(reply.session_id));
+        object.emplace_back("action_id", JsonValue::make_string(reply.action_id));
+        object.emplace_back("reason_code",
+                            JsonValue::make_number(static_cast<u64>(reply.reason_code)));
+        object.emplace_back("reason_detail", JsonValue::make_string(reply.reason_detail));
+        object.emplace_back("refresh", JsonValue::make_string(reply.refresh));
+        object.emplace_back("generation", JsonValue::make_number(reply.generation));
+        break;
+    }
+    case Reply::Kind::ShutdownAck:
+    {
+        object.emplace_back("kind", JsonValue::make_string("shutdown_ack"));
+        object.emplace_back("draining", JsonValue::make_bool(reply.draining));
+        break;
+    }
     }
     return jsonx::write(JsonValue::make_object(std::move(object)));
 }
@@ -158,6 +221,23 @@ std::string encode_request_body(const Request& request)
         object.emplace_back("kind", JsonValue::make_string("mutation"));
         object.emplace_back("body", JsonValue::make_string(request.body));
         break;
+    case Request::Kind::HookEvent:
+    {
+        object.emplace_back("kind", JsonValue::make_string("hook_event"));
+        object.emplace_back("event", JsonValue::make_string(request.event));
+        object.emplace_back("session_handle", JsonValue::make_string(request.session_handle));
+        object.emplace_back("tool_name", JsonValue::make_string(request.tool_name));
+        object.emplace_back("payload_sha256", JsonValue::make_string(request.payload_sha256));
+        object.emplace_back("payload_bytes", JsonValue::make_number(request.payload_bytes));
+        object.emplace_back("command", JsonValue::make_string(request.command));
+        object.emplace_back("file_path", JsonValue::make_string(request.file_path));
+        object.emplace_back("mediated_tools", JsonValue::make_string(request.mediated_tools));
+        break;
+    }
+    case Request::Kind::Shutdown:
+        object.emplace_back("kind", JsonValue::make_string("shutdown"));
+        object.emplace_back("grace_ms", JsonValue::make_number(request.grace_ms));
+        break;
     }
     object.emplace_back("request_id", JsonValue::make_number(request.request_id));
     object.emplace_back("deadline_ms", JsonValue::make_number(request.deadline_ms));
@@ -186,7 +266,11 @@ qiven::Result<Reply, ProtocolError> decode_reply(std::string_view body)
             member.first != "generation" && member.first != "bundle_revision" &&
             member.first != "journal_events" && member.first != "quarantined" &&
             member.first != "integrity_ok" && member.first != "audit_chain_ok" &&
-            member.first != "bundle_active_ok" && member.first != "findings" && member.first != "error")
+            member.first != "bundle_active_ok" && member.first != "findings" &&
+            member.first != "error" && member.first != "verdict" &&
+            member.first != "session_id" && member.first != "action_id" &&
+            member.first != "reason_code" && member.first != "reason_detail" &&
+            member.first != "refresh" && member.first != "draining")
         {
             return ReplyResult::fail(bad("unknown reply field '" + member.first + "'"));
         }
@@ -247,6 +331,28 @@ qiven::Result<Reply, ProtocolError> decode_reply(std::string_view body)
         {
             return ReplyResult::fail(bad("error reply requires an error object"));
         }
+    }
+    else if (kind == "hook_ack")
+    {
+        reply.kind          = Reply::Kind::HookAck;
+        reply.verdict       = value.string_or("verdict", "");
+        reply.session_id    = value.string_or("session_id", "");
+        reply.action_id     = value.string_or("action_id", "");
+        reply.reason_code   = static_cast<i64>(value.number_or("reason_code", 0));
+        reply.reason_detail = value.string_or("reason_detail", "");
+        reply.refresh       = value.string_or("refresh", "");
+        reply.generation    = value.number_or("generation", 0);
+        if (reply.verdict != "allow" && reply.verdict != "deny" &&
+            reply.verdict != "not_governed" && reply.verdict != "degraded")
+        {
+            return ReplyResult::fail(bad("hook_ack carries an unknown verdict"));
+        }
+    }
+    else if (kind == "shutdown_ack")
+    {
+        reply.kind     = Reply::Kind::ShutdownAck;
+        reply.draining = value.is("draining", JsonValue::Kind::Bool) &&
+                         value.find("draining")->bool_value;
     }
     else
     {
