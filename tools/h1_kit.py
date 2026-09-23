@@ -372,13 +372,23 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
     import subprocess as sp
     import time
 
-    bin_dir = kit_dir / "bin"
-    host_exe = bin_dir / "qiven-runtime-host.exe"
-    hook_exe = bin_dir / "qiven-zcode-hook.exe"
-    ctl_exe = bin_dir / "qiven-runtimectl.exe"
+    # Exercise the exes the TRIAL will actually run: the kit's cmd files and
+    # the live config invoke the REPO build-dir binaries (kit bin/ carries
+    # pinned reference copies). Admission checks the client IMAGE PATH
+    # against the install record — probing with the kit-bin copy would (and
+    # did, 2026-09-24) deny 121 by design. Found by the preflight itself.
+    repo_bin = REPO_ROOT / "build" / "vs2022-x64" / "Release"
+    host_exe = repo_bin / "qiven-runtime-host.exe"
+    hook_exe = repo_bin / "qiven-zcode-hook.exe"
+    ctl_exe = repo_bin / "qiven-runtimectl.exe"
+    kit_bin = kit_dir / "bin"
     for exe in (host_exe, hook_exe, ctl_exe):
         if not exe.exists():
-            print(f"[FAIL] kit binary missing: {exe}")
+            print(f"[FAIL] release binary missing: {exe} - run build-release first")
+            return EXIT_FAIL
+    for name in ("qiven-runtime-host.exe", "qiven-zcode-hook.exe", "qiven-runtimectl.exe"):
+        if not (kit_bin / name).exists():
+            print(f"[FAIL] kit reference copy missing: {kit_bin / name}")
             return EXIT_FAIL
 
     probe_payload = json.dumps({
