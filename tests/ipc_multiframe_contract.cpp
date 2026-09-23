@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <string>
 #include <thread>
+#include <windows.h>
 
 namespace
 {
