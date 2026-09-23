@@ -79,6 +79,7 @@ Request hook_request(qiven::u64 id)
     request.kind           = Request::Kind::HookEvent;
     request.event          = "pre_tool";
     request.tool_name      = "Bash";
+    request.session_handle = "contract-test-session";
     request.request_id     = id;
     request.deadline_ms    = 2000;
     request.payload_sha256 = std::string(64, 'a');
@@ -118,11 +119,48 @@ int main()
     const SecretKey key = test_key();
     const FrameCodec codec(key);
 
+    // Pure encode/decode round trip of both request shapes (no pipes).
+    {
+        const Request hello     = hello_request(1);
+        const std::string wire1 = codec.encode(FrameHeader {},
+                                               qiven::runtime::ipc::encode_request_body(hello));
+        auto v1                 = codec.decode(wire1);
+        QIVEN_VERIFY(v1.is_ok());
+        auto r1 = qiven::runtime::ipc::decode_request(v1.value().body);
+        QIVEN_VERIFY(r1.is_ok());
+        const Request hook      = hook_request(2);
+        const std::string wire2 = codec.encode(FrameHeader {},
+                                               qiven::runtime::ipc::encode_request_body(hook));
+        auto v2                 = codec.decode(wire2);
+        if (!v2.is_ok())
+        {
+            std::printf("[diag] frame-2 codec.decode failed: code=%d msg=%s\n",
+                        v2.reason().code, v2.reason().message.c_str());
+        }
+        QIVEN_VERIFY(v2.is_ok());
+        auto r2 = qiven::runtime::ipc::decode_request(v2.value().body);
+        if (!r2.is_ok())
+        {
+            std::printf("[diag] frame-2 decode_request failed: code=%d detail=%s\n",
+                        r2.reason().code, r2.reason().detail.c_str());
+        }
+        QIVEN_VERIFY(r2.is_ok());
+        std::printf("[ OK ] pure round trip of both request shapes\n");
+    }
+
     // --- Test 1: TWO frames on ONE connection (the hook client's shape) ---
     {
         auto server = qiven::runtime::ipc::NamedPipeServer::create(
             unique_install_id("mfc1"));
         QIVEN_VERIFY(server.is_ok());
+
+        // Deterministic connection order (host_lifecycle precedent): the
+        // client connects to the FIRST instance BEFORE accept() stands up
+        // the next one — otherwise CreateFile may land on the next instance
+        // that nobody serves (an instance-selection race, not mediation).
+        auto client = PipeClient::connect(
+            qiven::runtime::ipc::pipe_name(unique_install_id("mfc1")));
+        QIVEN_VERIFY(client.is_ok());
 
         qiven::runtime::ipc::ServeStats stats;
         std::thread server_thread([&]() {
@@ -133,9 +171,6 @@ int main()
                 [](const Request& request) { return canned_reply(request); });
         });
 
-        auto client = PipeClient::connect(
-            qiven::runtime::ipc::pipe_name(unique_install_id("mfc1")));
-        QIVEN_VERIFY(client.is_ok());
         QIVEN_VERIFY(write_request(client.value(), codec, hello_request(1), 1));
         {
             auto frame = client.value().read_frame(2000);
@@ -151,9 +186,11 @@ int main()
             QIVEN_VERIFY(reply.kind == Reply::Kind::HookAck);
             QIVEN_VERIFY(reply.verdict == "allow");
         }
+        client = qiven::Result<PipeClient>::fail(qiven::Error {}); // close: EOF, not idle
         server_thread.join();
         QIVEN_VERIFY(stats.admitted);
         QIVEN_VERIFY(stats.frames_served == 2);
+        QIVEN_VERIFY(stats.client_closed);
         QIVEN_VERIFY(!stats.seq_violation && !stats.frame_error && !stats.idle_closed);
         std::printf("[ OK ] multiframe: hello + event on one connection\n");
     }
@@ -163,6 +200,10 @@ int main()
         auto server = qiven::runtime::ipc::NamedPipeServer::create(
             unique_install_id("mfc2"));
         QIVEN_VERIFY(server.is_ok());
+
+        auto client = PipeClient::connect(
+            qiven::runtime::ipc::pipe_name(unique_install_id("mfc2")));
+        QIVEN_VERIFY(client.is_ok());
 
         std::thread server_thread([&]() {
             auto connection = server.value().accept();
@@ -174,9 +215,6 @@ int main()
             QIVEN_VERIFY(stats.frames_served == 0);
         });
 
-        auto client = PipeClient::connect(
-            qiven::runtime::ipc::pipe_name(unique_install_id("mfc2")));
-        QIVEN_VERIFY(client.is_ok());
         QIVEN_VERIFY(write_request(client.value(), codec, hello_request(1), 1));
         {
             // Prior implementation: SILENT drop — this read timed out/EOF'd
@@ -198,6 +236,10 @@ int main()
             unique_install_id("mfc3"));
         QIVEN_VERIFY(server.is_ok());
 
+        auto client = PipeClient::connect(
+            qiven::runtime::ipc::pipe_name(unique_install_id("mfc3")));
+        QIVEN_VERIFY(client.is_ok());
+
         std::thread server_thread([&]() {
             auto connection = server.value().accept();
             QIVEN_VERIFY(connection.is_ok());
@@ -207,15 +249,11 @@ int main()
             QIVEN_VERIFY(stats.seq_violation);
         });
 
-        auto client = PipeClient::connect(
-            qiven::runtime::ipc::pipe_name(unique_install_id("mfc3")));
-        QIVEN_VERIFY(client.is_ok());
         QIVEN_VERIFY(write_request(client.value(), codec, hello_request(1), 5));
         {
             auto frame = client.value().read_frame(2000);
             QIVEN_VERIFY(frame.has_value());
-            QIVEN_VERIFY(decode_client_reply(codec, frame.value()).kind ==
-                         Reply::Kind::HelloAck);
+            QIVEN_VERIFY(decode_client_reply(codec, frame.value()).kind == Reply::Kind::HelloAck);
         }
         // Sequence REUSE (5 again): replay-class protocol violation.
         QIVEN_VERIFY(write_request(client.value(), codec, hook_request(2), 5));
@@ -236,6 +274,10 @@ int main()
             unique_install_id("mfc4"));
         QIVEN_VERIFY(server.is_ok());
 
+        auto client = PipeClient::connect(
+            qiven::runtime::ipc::pipe_name(unique_install_id("mfc4")));
+        QIVEN_VERIFY(client.is_ok());
+
         qiven::runtime::ipc::ServeStats stats;
         std::thread server_thread([&]() {
             auto connection = server.value().accept();
@@ -247,9 +289,6 @@ int main()
                 [](const Request& request) { return canned_reply(request); }, options);
         });
 
-        auto client = PipeClient::connect(
-            qiven::runtime::ipc::pipe_name(unique_install_id("mfc4")));
-        QIVEN_VERIFY(client.is_ok());
         // Say nothing; the server must close within a bounded idle window.
         server_thread.join(); // prior implementation: this join never returned
         QIVEN_VERIFY(stats.idle_closed);

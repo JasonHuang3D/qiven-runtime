@@ -95,6 +95,11 @@ public:
     // The connected client's image path (QueryFullProcessImageNameW).
     [[nodiscard]] qiven::Result<std::string> client_image() const;
 
+    // Connectivity probe that CONSUMES NOTHING (PeekNamedPipe): true while
+    // the peer is still connected, false once it closes/disconnects or the
+    // handle is gone. Used by the error-frame linger (pipe_service).
+    [[nodiscard]] bool peer_connected() const noexcept;
+
     [[nodiscard]] bool valid() const noexcept
     {
         return m_handle != nullptr;

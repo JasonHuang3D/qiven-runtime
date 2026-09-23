@@ -347,6 +347,18 @@ bool PipeConnection::write_bytes(std::string_view bytes)
     return write_all(static_cast<HANDLE>(m_handle), bytes.data(), bytes.size());
 }
 
+bool PipeConnection::peer_connected() const noexcept
+{
+    if (m_handle == nullptr)
+    {
+        return false;
+    }
+    DWORD available = 0;
+    return PeekNamedPipe(static_cast<HANDLE>(m_handle), nullptr, 0, nullptr, &available,
+                         nullptr) !=
+           FALSE;
+}
+
 qiven::Result<std::string> PipeConnection::client_image() const
 {
     using ImageResult = qiven::Result<std::string>;
