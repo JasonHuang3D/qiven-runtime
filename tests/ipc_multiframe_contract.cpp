@@ -34,8 +34,8 @@ using qiven::runtime::auth::SecretKey;
 using qiven::runtime::ipc::FrameCodec;
 using qiven::runtime::ipc::FrameHeader;
 using qiven::runtime::ipc::PipeClient;
-using qiven::runtime::ipc::Request;
 using qiven::runtime::ipc::Reply;
+using qiven::runtime::ipc::Request;
 
 SecretKey test_key()
 {
@@ -75,11 +75,11 @@ Request hello_request(qiven::u64 id)
 Request hook_request(qiven::u64 id)
 {
     Request request;
-    request.kind         = Request::Kind::HookEvent;
-    request.event        = "pre_tool";
-    request.tool_name    = "Bash";
-    request.request_id   = id;
-    request.deadline_ms  = 2000;
+    request.kind           = Request::Kind::HookEvent;
+    request.event          = "pre_tool";
+    request.tool_name      = "Bash";
+    request.request_id     = id;
+    request.deadline_ms    = 2000;
     request.payload_sha256 = std::string(64, 'a');
     request.payload_bytes  = 8;
     return request;
@@ -114,7 +114,7 @@ qiven::runtime::ipc::Reply decode_client_reply(const FrameCodec& codec, const st
 
 int main()
 {
-    const SecretKey key    = test_key();
+    const SecretKey key = test_key();
     const FrameCodec codec(key);
 
     // --- Test 1: TWO frames on ONE connection (the hook client's shape) ---
@@ -241,7 +241,7 @@ int main()
             QIVEN_VERIFY(connection.is_ok());
             qiven::runtime::ipc::ServeOptions options;
             options.idle_timeout_ms = 200;
-            stats = qiven::runtime::ipc::serve_connection(
+            stats                   = qiven::runtime::ipc::serve_connection(
                 connection.value(), codec, [] { return std::string(""); },
                 [](const Request& request) { return canned_reply(request); }, options);
         });

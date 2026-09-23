@@ -7,7 +7,7 @@ namespace
 void write_error_frame(PipeConnection& connection, const FrameCodec& codec, u64 request_id,
                        i32 code, const std::string& detail)
 {
-    const Reply error  = make_error(request_id, code, detail);
+    const Reply error      = make_error(request_id, code, detail);
     const std::string body = encode_reply(error);
     FrameHeader header;
     header.request_id = request_id;
@@ -89,7 +89,7 @@ ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec,
             return stats;
         }
 
-        Reply reply       = handle(request.value());
+        Reply reply = handle(request.value());
         FrameHeader reply_header;
         reply_header.request_id     = verified.value().header.request_id;
         reply_header.connection_seq = verified.value().header.connection_seq;

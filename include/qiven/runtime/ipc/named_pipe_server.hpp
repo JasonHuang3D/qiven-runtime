@@ -101,8 +101,8 @@ public:
     }
 
 private:
-    void* m_handle              = nullptr;
-    bool m_last_read_timed_out  = false;
+    void* m_handle             = nullptr;
+    bool m_last_read_timed_out = false;
 };
 
 class NamedPipeServer

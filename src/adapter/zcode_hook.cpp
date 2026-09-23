@@ -138,9 +138,9 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
         // Typed host rejection at the handshake: the admission surface is a
         // real reply now (pipe_service), so the class is diagnosable.
         const std::string& detail = hello_reply.value().error_detail;
-        const i32 code = detail.rfind("admission rejected", 0) == 0
-                             ? hook_reason_admission
-                             : static_cast<i32>(hello_reply.value().error_code);
+        const i32 code            = detail.rfind("admission rejected", 0) == 0
+                                        ? hook_reason_admission
+                                        : static_cast<i32>(hello_reply.value().error_code);
         return ReplyResult::fail(
             qiven::Error::make(qiven::error_category::unavailable, code,
                                "handshake rejected by host: " + detail));

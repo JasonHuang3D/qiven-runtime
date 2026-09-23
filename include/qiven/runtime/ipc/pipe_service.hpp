@@ -46,14 +46,14 @@ struct ServeOptions
 
 struct ServeStats
 {
-    u64 frames_served   = 0;
-    bool admitted       = false;
+    u64 frames_served       = 0;
+    bool admitted           = false;
     bool admission_rejected = false; // typed 62 error frame written, closed
-    bool seq_violation  = false;     // typed 63 error frame written, closed
-    bool frame_error    = false;     // typed codec/protocol error, closed
-    bool budget_closed  = false;     // typed frame-budget error, closed
-    bool idle_closed    = false;     // no frame within the idle timeout
-    bool client_closed  = false;     // clean disconnect / transport end
+    bool seq_violation      = false; // typed 63 error frame written, closed
+    bool frame_error        = false; // typed codec/protocol error, closed
+    bool budget_closed      = false; // typed frame-budget error, closed
+    bool idle_closed        = false; // no frame within the idle timeout
+    bool client_closed      = false; // clean disconnect / transport end
 };
 
 // Admission: return an EMPTY string to admit the connection; any non-empty

@@ -42,11 +42,11 @@ inline constexpr i32 hook_reason_shutting_down     = 119;
 // code). The classes are DISJOINT; 116 remains only for genuinely unknown
 // host-unavailability shapes (post-connect silent death, unexpected reply
 // shapes) and never silently absorbs a classable cause.
-inline constexpr i32 hook_reason_no_listener   = 120; // pipe connect: no host serving
-inline constexpr i32 hook_reason_admission     = 121; // host rejected the client image
-inline constexpr i32 hook_reason_version_skew  = 122; // protocol version mismatch
-inline constexpr i32 hook_reason_secret_skew   = 123; // HMAC fails (stale/different root)
-inline constexpr i32 hook_reason_timeout       = 124; // no reply within the deadline
+inline constexpr i32 hook_reason_no_listener  = 120; // pipe connect: no host serving
+inline constexpr i32 hook_reason_admission    = 121; // host rejected the client image
+inline constexpr i32 hook_reason_version_skew = 122; // protocol version mismatch
+inline constexpr i32 hook_reason_secret_skew  = 123; // HMAC fails (stale/different root)
+inline constexpr i32 hook_reason_timeout      = 124; // no reply within the deadline
 
 struct HookRun
 {
