@@ -522,4 +522,7 @@ four properties of the first cut; all four are fixed in this batch:
   500 ms admission linger can still lose an error frame to a client
   whose read is delayed beyond the bound (the frame loss window is
   bounded and the class then degrades to 116-with-honest-text, never a
-  false allow).
+  false allow). One open verification gap, recorded honestly: the
+  accept-vanish retry path (M2) is code-verified by review but has no
+  automated regression yet — pre-MVP-5 hardening obligation alongside
+  the replay-window wiring.
