@@ -1,5 +1,5 @@
 // ============================================================================
-// apps/zcode_hook_main.cpp — qiven-zcode-hook, the production thin ZCode
+// apps/zcode_hook_main.cpp -- qiven-zcode-hook, the production thin ZCode
 // hook client (MVP-4 batch design section 3.3; ARCH section 6.2)
 //
 //   qiven-zcode-hook --event <session_start|pre_tool|post_tool>
@@ -8,8 +8,8 @@
 // Reads the harness event from stdin (VERBATIM: the payload digest binds
 // the exact bytes), transacts one authenticated round-trip with the
 // RuntimeHost, maps the verdict to the ZCode exit contract, and exits:
-//   exit 0 — allow / not_governed / degraded-advisory (stderr note only)
-//   exit 2 — deny (stderr: "[qiven] deny <code>: <detail>")
+//   exit 0 -- allow / not_governed / degraded-advisory (stderr note only)
+//   exit 2 -- deny (stderr: "[qiven] deny <code>: <detail>")
 //
 // The hook NEVER classifies, counts, decides, or converts a failure into
 // an allow. --root may come from QIVEN_CONTEXT_ROOT when the flag is

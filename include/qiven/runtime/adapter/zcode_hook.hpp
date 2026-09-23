@@ -20,8 +20,8 @@
 
 #include <cstddef>
 #include <filesystem>
-#include <span>
 #include <string>
+#include <vector>
 
 namespace qiven::runtime::adapter
 {
@@ -41,8 +41,13 @@ struct HookRun
 {
     std::filesystem::path runtime_root; // <governed checkout>/.qiven/runtime
     std::string event;                  // session_start | pre_tool | post_tool
-    std::span<const std::byte> payload; // stdin bytes, verbatim
-    u64 deadline_ms = 4500;             // ZCode budget minus the 250 ms margin
+    // OWNED stdin bytes, verbatim (2026-09-23 trial-2 incident: a span
+    // member over a caller's temporary vector dangled and fed freed-heap
+    // pointers to the extractor — the deny-118 recurrence; captured by
+    // the kit's --dump-stdin probe). The run OWNS the payload: this bug
+    // class is now unconstructible.
+    std::vector<std::byte> payload;
+    u64 deadline_ms = 4500; // ZCode budget minus the 250 ms margin
     u64 now_ms      = 0;
     std::string mediated_tools; // session_start manifest note
     // Trusted registration template (2026-09-23 deny-118 correction): the

@@ -1,11 +1,11 @@
 // ============================================================================
-// apps/runtime_host_main.cpp — qiven-runtime-host, the production
+// apps/runtime_host_main.cpp -- qiven-runtime-host, the production
 // composition root entrypoint (MVP-3; ARCH section 6.1)
 //
 // Serves the owner-scoped named pipe: accept → client identity validation
 // → frame verify (HMAC/replay) → protocol handle → framed reply. Status
 // and doctor serve from boot; mutation kinds deny typed 61 (HostRecovering
-// / not-implemented-until-MVP-5) — fail closed, never a hang inside the
+// / not-implemented-until-MVP-5) -- fail closed, never a hang inside the
 // request deadline. Ctrl+C or console close drains and checkpoints.
 //
 // Exit codes: 0 clean shutdown, 1 boot failure, 2 usage.
@@ -100,7 +100,7 @@ int main(int argc, char** argv)
     // Human-facing output law (qiven-context human-facing-executable-
     // contract + operator human output law): staged markers, every
     // durable path the boot writes, observable state only, and a serving
-    // heartbeat — a console window must never look dead while healthy
+    // heartbeat -- a console window must never look dead while healthy
     // (the 2026-09-23 owner direction after the MVP-4 H1 kit incident).
     const std::filesystem::path runtime_root = repo_root / ".qiven" / "runtime";
     std::printf("[ RUN] qiven-runtime-host boot\n");
@@ -177,7 +177,7 @@ int main(int argc, char** argv)
     replay.note_wall_clock(boot.now_ms);
     std::printf("[ OK ] ipc: pipe %ls\n",
                 qiven::runtime::ipc::pipe_name(status.install_id).c_str());
-    std::printf("[ OK ] serving — Ctrl+C stops the host (drain + journal checkpoint)\n");
+    std::printf("[ OK ] serving -- Ctrl+C stops the host (drain + journal checkpoint)\n");
     std::fflush(stdout);
 
     // Serving heartbeat (human-facing law): a watching owner must be able
@@ -249,7 +249,7 @@ int main(int argc, char** argv)
         connection.value().write_bytes(codec.encode(reply_header, body));
 
         // One observable line per request (kind + outcome), then the
-        // periodic heartbeat — healthy silence never exceeds ~30 s.
+        // periodic heartbeat -- healthy silence never exceeds ~30 s.
         std::string request_label = "request";
         if (request.value().kind == qiven::runtime::ipc::Request::Kind::HookEvent &&
             !request.value().event.empty())
