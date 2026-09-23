@@ -237,6 +237,30 @@ qiven::Result<std::vector<std::string>> ClientRecord::ensure(
     std::filesystem::create_directories(runtime_root);
     const std::filesystem::path file = runtime_root / "clients.json";
 
+    // The record is the installation's own-tool allowlist: exes deployed in
+    // the SAME directory as the host are the same installation unit (the
+    // owner-only DACL + same-user pipe remain the trust boundary). Boot
+    // MERGES missing images (idempotent): the 2026-09-24 preflight found
+    // real deployments where only the host was recorded and every hook
+    // client denied admission — the second root cause hiding behind the
+    // trial-3 connection-model defect (silent drop made it look like 116).
+    auto write_record = [&](const std::vector<std::string>& entries) -> RecordResult {
+        jsonx::JsonObject object;
+        std::vector<jsonx::JsonValue> values;
+        for (const auto& image : entries)
+        {
+            values.push_back(jsonx::JsonValue::make_string(image));
+        }
+        object.emplace_back("clients", jsonx::JsonValue::make_array(std::move(values)));
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out << jsonx::write(jsonx::JsonValue::make_object(std::move(object)));
+        if (!out)
+        {
+            return RecordResult::fail(os_error(err_auth, "client record write failed"));
+        }
+        return RecordResult(entries);
+    };
+
     std::vector<std::string> images;
     if (std::filesystem::exists(file))
     {
@@ -263,23 +287,31 @@ qiven::Result<std::vector<std::string>> ClientRecord::ensure(
             return RecordResult::fail(
                 os_error(err_auth, "the client install record is malformed"));
         }
-        return RecordResult(std::move(images));
     }
 
-    jsonx::JsonObject object;
-    std::vector<jsonx::JsonValue> entries;
+    bool changed = false;
     for (const auto& image : first_boot)
     {
-        entries.push_back(jsonx::JsonValue::make_string(image));
+        bool known = false;
+        for (const auto& existing : images)
+        {
+            if (existing == image)
+            {
+                known = true;
+                break;
+            }
+        }
+        if (!known)
+        {
+            images.push_back(image);
+            changed = true;
+        }
     }
-    object.emplace_back("clients", jsonx::JsonValue::make_array(std::move(entries)));
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    out << jsonx::write(jsonx::JsonValue::make_object(std::move(object)));
-    if (!out)
+    if (!std::filesystem::exists(file) || changed)
     {
-        return RecordResult::fail(os_error(err_auth, "client record write failed"));
+        return write_record(images);
     }
-    return RecordResult(first_boot);
+    return RecordResult(std::move(images));
 }
 
 bool ClientRecord::image_allowed(const std::vector<std::string>& allowed,
