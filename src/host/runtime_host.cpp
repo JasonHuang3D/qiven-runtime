@@ -99,7 +99,7 @@ void append_event(journal::RuntimeJournal& journal, std::string_view kind,
                   std::string_view payload, u64 now_ms)
 {
     // The caller's clock is the time authority (injected, DESIGN section
-    // 4) — never the ambient stamp the port append would apply.
+    // 4) -- never the ambient stamp the port append would apply.
     (void)journal.append_audit_at(kind, audit_bytes(std::string(kind) + "|" + std::string(payload)),
                                   now_ms);
 }
@@ -137,7 +137,7 @@ void append_event(journal::RuntimeJournal& journal, std::string_view kind,
 
 // Lexical path normalization for the governed-scope test: forward slashes,
 // collapsed separators, trailing-slash trim. Traversal/reparse rejection is
-// the caller's deny (ARCH section 12.3 — no bypass through traversal).
+// the caller's deny (ARCH section 12.3 -- no bypass through traversal).
 [[nodiscard]] std::string normalize_hook_path(const std::string& raw)
 {
     std::string out;
@@ -171,7 +171,7 @@ qiven::Result<std::unique_ptr<RuntimeHost>> RuntimeHost::boot(const HostBoot& bo
 
     // Journal first: the install identity names the singleton and the pipe.
     // First boot creates; later boots open (a corruption never yields a
-    // fresh mutating database — the MVP-1 fresh-database guard).
+    // fresh mutating database -- the MVP-1 fresh-database guard).
     const std::filesystem::path runtime_root = boot.repo_root / ".qiven" / "runtime";
     std::filesystem::create_directories(runtime_root);
     const std::filesystem::path journal_file = runtime_root / "journal.sqlite3";
@@ -233,7 +233,7 @@ qiven::Result<std::unique_ptr<RuntimeHost>> RuntimeHost::boot(const HostBoot& bo
     }
 
     // 4. Accepted profile (+ its file digest as the generation's profile
-    //    identity — the ACCEPTED instance, content-identified).
+    //    identity -- the ACCEPTED instance, content-identified).
     std::ifstream profile_bytes_in(boot.profile_file, std::ios::binary);
     std::string profile_bytes((std::istreambuf_iterator<char>(profile_bytes_in)),
                               std::istreambuf_iterator<char> {});
@@ -304,7 +304,7 @@ qiven::Result<std::unique_ptr<RuntimeHost>> RuntimeHost::boot(const HostBoot& bo
 
     // MVP-4 members: the hook surface needs the boot facts, the active
     // bundle identity, and the durable freshness clock (last successful
-    // publish — boot publishes from the authorized LOCAL ref; a remote
+    // publish -- boot publishes from the authorized LOCAL ref; a remote
     // refresh confirms currency at SessionStart, ARCH section 7.4).
     host->m_repo_root            = boot.repo_root;
     host->m_profile_file         = boot.profile_file;
@@ -648,7 +648,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
         ack.verdict       = "deny";
         ack.reason_code   = static_cast<i64>(hook_reason_unknown_tool);
         ack.reason_detail = "tool '" + tool +
-                            "' is not in the accepted tool inventory — fail closed";
+                            "' is not in the accepted tool inventory -- fail closed";
         append_event(*m_journal, "hook_deny_unknown_tool", tool, now_ms);
         return ack;
     }
@@ -667,7 +667,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
         ack.reason_code   = static_cast<i64>(hook_reason_correlation);
         ack.reason_detail = "a previous '" + tool +
                             "' action awaits its PostToolUse observation "
-                            "(one outstanding pre per tool — complete correlation)";
+                            "(one outstanding pre per tool -- complete correlation)";
         append_event(*m_journal, "hook_deny_outstanding", tool, now_ms);
         return ack;
     }
@@ -680,11 +680,11 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
         if (request.file_path.empty())
         {
             // An extraction-shaped tool whose target could not be located
-            // is unclassifiable — fail closed, never allow-blind.
+            // is unclassifiable -- fail closed, never allow-blind.
             ack.verdict       = "deny";
             ack.reason_code   = static_cast<i64>(adapter::hook_reason_payload);
             ack.reason_detail = "tool '" + tool +
-                                "' exposed no file_path — target unverifiable, fail closed";
+                                "' exposed no file_path - target unverifiable, fail closed";
             append_event(*m_journal, "hook_deny_no_target", tool, now_ms);
             return ack;
         }
@@ -720,7 +720,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
             ack.verdict       = "deny";
             ack.reason_code   = static_cast<i64>(adapter::hook_reason_payload);
             ack.reason_detail = "tool '" + tool +
-                                "' exposed no command — target unverifiable, fail closed";
+                                "' exposed no command - target unverifiable, fail closed";
             append_event(*m_journal, "hook_deny_no_target", tool, now_ms);
             return ack;
         }
@@ -751,7 +751,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
     }
 
     // Host-assigned action identity (unique per call: session ids never
-    // repeat and the counter is per session — exit gate row 4).
+    // repeat and the counter is per session -- exit gate row 4).
     const SortableId128 action = m_minter.next();
     const std::string action_hex =
         cognition::hex_lower(std::span<const std::byte>(action.bytes.data(), action.bytes.size()));
@@ -779,7 +779,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
         ack.verdict       = "deny";
         ack.reason_code   = static_cast<i64>(reason);
         ack.reason_detail = detail + "; governed writes use the mediated record path "
-                                     "(qiven-record; arrives with MVP-5) — re-deliberate there";
+                                     "(qiven-record; arrives with MVP-5) -- re-deliberate there";
         append_event(*m_journal, "hook_deny_governed",
                      std::to_string(reason) + "|" + detail + "|" + action_hex, now_ms);
         return ack;
@@ -787,7 +787,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
 
     // not_governed allow: bind + consume a single-use decision at admit
     // (the allow is consumed the moment ZCode is told "allow"; the journal
-    // state machine carries single-use — DESIGN section 3.4 delta 5).
+    // state machine carries single-use -- DESIGN section 3.4 delta 5).
     journal::DecisionBind bind;
     bind.id = m_minter.next();
     bind.token_hash.value =
@@ -839,11 +839,11 @@ ipc::Reply RuntimeHost::handle_post_tool(const ipc::Request& request, u64 now_ms
     auto outstanding = session.outstanding.find(request.tool_name);
     if (outstanding == session.outstanding.end())
     {
-        // Unmatched post: Indeterminate, typed 115-class — never guessed.
+        // Unmatched post: Indeterminate, typed 115-class -- never guessed.
         ack.verdict       = "degraded";
         ack.reason_code   = static_cast<i64>(adapter::hook_reason_correlation);
         ack.reason_detail = "no outstanding pre observation for '" + request.tool_name +
-                            "' — outcome Indeterminate";
+                            "' -- outcome Indeterminate";
         append_event(*m_journal, "hook_outcome_unmatched",
                      request.tool_name, now_ms);
         return ack;
@@ -961,7 +961,7 @@ bool RuntimeHost::refresh_cognition(u64 now_ms, std::string& refresh_state,
     }
     refresh_state = "expired";
     detail        = "cognition expired: fetch failed (" + detail +
-             ") and the freshness window is exhausted — governed mutations deny";
+             ") and the freshness window is exhausted -- governed mutations deny";
     append_event(*m_journal, "cognition_expired", "window-exhausted", now_ms);
     return false;
 }

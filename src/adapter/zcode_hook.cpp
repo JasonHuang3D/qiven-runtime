@@ -21,12 +21,27 @@ HookOutcome allow_silent()
 
 HookOutcome advisory_note(std::string text)
 {
-    return HookOutcome { 0, "[qiven] " + std::move(text) };
+    return HookOutcome { 0, "[qiven-hook] " + std::move(text) };
 }
 
-HookOutcome deny(i32 reason, std::string detail)
+// Source-tagged deny (2026-09-23 owner direction after trial 2): the
+// owner reading the session must be able to tell WHERE the verdict came
+// from -- a hook-client-side failure never contacted the host, so the
+// host console rightly shows nothing for it.
+HookOutcome deny_client(i32 reason, std::string detail)
 {
-    return HookOutcome { 2, "[qiven] deny " + std::to_string(reason) + ": " + std::move(detail) };
+    return HookOutcome {
+        2, "[qiven-hook] deny " + std::to_string(reason) +
+               " (hook-client; no host verdict): " + std::move(detail)
+    };
+}
+
+HookOutcome deny_host(i32 reason, std::string detail)
+{
+    return HookOutcome {
+        2, "[qiven-hook] deny " + std::to_string(reason) +
+               " (host verdict): " + std::move(detail)
+    };
 }
 
 qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
@@ -162,26 +177,26 @@ HookOutcome run_zcode_hook(const HookRun& run)
     {
         if (pre_tool)
         {
-            return deny(hook_reason_payload,
-                        "hook payload oversize or unreadable (digest unavailable)");
+            return deny_client(hook_reason_payload,
+                               "hook payload oversize or unreadable (digest unavailable)");
         }
         if (is_advisory)
         {
             return advisory_note(run.event + ": payload not readable; event unregistered");
         }
-        return deny(hook_reason_payload, "unknown event kind");
+        return deny_client(hook_reason_payload, "unknown event kind");
     }
     const ZcodeEventFields& fields = payload_result.value();
 
     // Registration-template authority (deny-118 correction): the template
     // supplies the identity; payload fields only corroborate. A payload
-    // tool_name that CONTRADICTS the template is a misregistration — deny.
+    // tool_name that CONTRADICTS the template is a misregistration -- deny.
     if (pre_tool && !run.tool.empty() && !fields.tool_name.empty() &&
         fields.tool_name != run.tool)
     {
-        return deny(hook_reason_payload,
-                    "payload tool '" + fields.tool_name + "' contradicts the registered tool '" +
-                        run.tool + "' (misregistration)");
+        return deny_client(hook_reason_payload,
+                           "payload tool '" + fields.tool_name + "' contradicts the registered tool '" +
+                               run.tool + "' (misregistration)");
     }
 
     auto reply = transact(run, fields);
@@ -189,12 +204,12 @@ HookOutcome run_zcode_hook(const HookRun& run)
     {
         if (pre_tool)
         {
-            return deny(hook_reason_host_unavailable,
-                        reply.reason().message +
-                            " — cannot classify — fail-closed deny (nothing is governed "
-                            "while the host is unreachable)");
+            return deny_client(hook_reason_host_unavailable,
+                               reply.reason().message +
+                                   " -- cannot classify -- fail-closed deny (nothing is governed "
+                                   "while the host is unreachable)");
         }
-        return advisory_note(run.event + ": host unreachable — " + reply.reason().message +
+        return advisory_note(run.event + ": host unreachable -- " + reply.reason().message +
                              (run.event == "session_start"
                                   ? "; session NOT registered"
                                   : "; outcome unobserved"));
@@ -203,9 +218,9 @@ HookOutcome run_zcode_hook(const HookRun& run)
     {
         if (pre_tool)
         {
-            return deny(static_cast<i32>(reply.value().error_code), reply.value().error_detail);
+            return deny_host(static_cast<i32>(reply.value().error_code), reply.value().error_detail);
         }
-        return advisory_note(run.event + ": host denied — " +
+        return advisory_note(run.event + ": host denied -- " +
                              std::to_string(reply.value().error_code) + ": " +
                              reply.value().error_detail);
     }
@@ -213,7 +228,7 @@ HookOutcome run_zcode_hook(const HookRun& run)
     {
         if (pre_tool)
         {
-            return deny(hook_reason_host_unavailable, "unexpected reply shape");
+            return deny_client(hook_reason_host_unavailable, "unexpected reply shape");
         }
         return advisory_note(run.event + ": unexpected reply shape");
     }
@@ -221,7 +236,7 @@ HookOutcome run_zcode_hook(const HookRun& run)
     const auto& ack = reply.value();
     if (ack.verdict == "deny")
     {
-        return deny(static_cast<i32>(ack.reason_code), ack.reason_detail);
+        return deny_host(static_cast<i32>(ack.reason_code), ack.reason_detail);
     }
     if (run.event == "session_start" && !ack.refresh.empty() && ack.refresh != "current")
     {
