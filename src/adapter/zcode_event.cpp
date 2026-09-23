@@ -410,16 +410,11 @@ qiven::Result<ZcodeEventFields, i32> extract_zcode_event(std::span<const std::by
     {
         return Result::fail(hook_err_payload_unreadable); // trailing garbage
     }
-    if (!out.have_session || !out.have_event || !out.have_tool)
-    {
-        // SessionStart payloads carry tool_name as an empty string or omit
-        // it; the event cross-check tolerates that, but session identity is
-        // mandatory for every event the runtime admits.
-        if (!out.have_session)
-        {
-            return Result::fail(hook_err_payload_unreadable);
-        }
-    }
+    // 2026-09-23 deny-118 incident correction: NO field is required. The
+    // real payload carries tool_input.command (router-verified live) but
+    // no stable session/event identity (RCA-14 H1 evidence); identity
+    // comes from the trusted registration template. A digestable,
+    // bounded payload always submits.
     return Result(std::move(out.fields));
 }
 } // namespace qiven::runtime::adapter

@@ -43,10 +43,14 @@ struct ZcodeEventFields
     usize payload_bytes = 0;
 };
 
-// Locate-grade scan. session_handle/event_name/tool_name are required:
-// their absence fails closed (the caller cannot build a request).
-// command/file_path are located inside the tool_input object when
-// present; absent optional fields stay empty, which is not an error.
+// Locate-grade scan. NO payload field is required (2026-09-23 deny-118
+// incident correction): the real ZCode payload carries tool_input.command
+// (router-verified live) but no stable session/event identity field
+// (RCA-14 H1 evidence). The event kind, tool name, and session handle
+// come from the TRUSTED REGISTRATION TEMPLATE (--event/--tool/
+// --session-handle on the hook command line); payload fields are
+// corroborating evidence only. The digest always binds the verbatim
+// bytes, so an unreadable-but-bounded payload still submits.
 [[nodiscard]] qiven::Result<ZcodeEventFields, i32> extract_zcode_event(
     std::span<const std::byte> raw);
 } // namespace qiven::runtime::adapter

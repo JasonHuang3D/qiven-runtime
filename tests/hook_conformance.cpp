@@ -127,13 +127,20 @@ int main()
         // signed/float values in unneeded fields did not break extraction.
     }
     {
-        // Missing required session identity fails closed.
-        const std::string payload = "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\"}";
-        const auto bytes          = std::vector<std::byte>(
+        // Deny-118 incident regression (2026-09-23): the REAL ZCode payload
+        // carries NO session identity field -- extraction must SUCCEED with
+        // an empty handle (identity comes from the registration template),
+        // and the digest still binds the verbatim bytes.
+        const std::string payload =
+            "{\"tool_input\":{\"command\":\"echo hi\"},\"unrelated\":-1.5}";
+        const auto bytes = std::vector<std::byte>(
             reinterpret_cast<const std::byte*>(payload.data()),
             reinterpret_cast<const std::byte*>(payload.data()) + payload.size());
         auto fields = extract_zcode_event(bytes);
-        QIVEN_VERIFY(!fields.is_ok());
+        QIVEN_VERIFY(fields.is_ok());
+        QIVEN_VERIFY(fields.value().session_handle.empty());
+        QIVEN_VERIFY(fields.value().command == "echo hi");
+        QIVEN_VERIFY(fields.value().payload_bytes == payload.size());
     }
 
     // --- client-side fail-closed mapping (exit gate rows 3/5) --------------

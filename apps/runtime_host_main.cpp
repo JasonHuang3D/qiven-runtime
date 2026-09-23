@@ -19,6 +19,7 @@
 
 #include <windows.h>
 
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <iostream>
@@ -96,28 +97,49 @@ int main(int argc, char** argv)
     boot.build_id       = build_id;
     boot.now_ms         = qiven::runtime::host::wall_now_ms();
 
+    // Human-facing output law (qiven-context human-facing-executable-
+    // contract + operator human output law): staged markers, every
+    // durable path the boot writes, observable state only, and a serving
+    // heartbeat — a console window must never look dead while healthy
+    // (the 2026-09-23 owner direction after the MVP-4 H1 kit incident).
+    const std::filesystem::path runtime_root = repo_root / ".qiven" / "runtime";
+    std::printf("[ RUN] qiven-runtime-host boot\n");
+    std::printf("       root     : %s\n", repo_root.string().c_str());
+    std::printf("       profile  : %s\n", profile.string().c_str());
+    std::printf("       state at : %s\n",
+                (runtime_root).string().c_str()); // journal.sqlite3, bundles/, install.id
+    std::fflush(stdout);
+
     auto host = qiven::runtime::host::RuntimeHost::boot(boot);
     if (!host.is_ok())
     {
-        std::cerr << "RuntimeHost boot failed: " << host.reason().message << "\n";
+        std::printf("[FAIL] boot: %s\n", host.reason().message.c_str());
         return 1;
     }
     const auto status = host.value()->status();
     if (status.state != "running")
     {
-        std::cerr << "RuntimeHost is not running: " << status.failure_detail << "\n";
+        std::printf("[FAIL] boot: host is not running: %s\n", status.failure_detail.c_str());
         return 1;
     }
-    std::cout << "[qiven-runtime-host] running: install " << status.install_id << ", generation "
-              << status.generation << ", bundle " << status.bundle_revision.substr(0, 12)
-              << ", journal events " << status.journal_events << "\n";
+    std::printf("[ OK ] boot: install %s, boot epoch %llu, generation %llu\n",
+                status.install_id.c_str(), static_cast<unsigned long long>(status.boot_epoch),
+                static_cast<unsigned long long>(status.generation));
+    std::printf("       cognition bundle: %s (journal events: %llu)\n",
+                status.bundle_revision.substr(0, 12).c_str(),
+                static_cast<unsigned long long>(status.journal_events));
+    std::printf("       journal   : %s\n",
+                (runtime_root / "journal.sqlite3").string().c_str());
+    std::printf("       bundles   : %s\n", (runtime_root / "bundles").string().c_str());
+    std::fflush(stdout);
 
     SetConsoleCtrlHandler(console_handler, TRUE);
 
     // The installation secret is shared with same-user clients via DPAPI;
     // the client install record governs connect authorization.
-    const std::filesystem::path runtime_root = repo_root / ".qiven" / "runtime";
-    auto secret                              = qiven::runtime::ipc::InstallationSecret::ensure(runtime_root);
+    std::printf("[ RUN] ipc surface\n");
+    std::fflush(stdout);
+    auto secret = qiven::runtime::ipc::InstallationSecret::ensure(runtime_root);
     if (!secret.is_ok())
     {
         std::cerr << "installation secret unavailable: " << secret.reason().message << "\n";
@@ -153,6 +175,16 @@ int main(int argc, char** argv)
 
     qiven::runtime::ipc::ReplayGuard replay;
     replay.note_wall_clock(boot.now_ms);
+    std::printf("[ OK ] ipc: pipe %ls\n",
+                qiven::runtime::ipc::pipe_name(status.install_id).c_str());
+    std::printf("[ OK ] serving — Ctrl+C stops the host (drain + journal checkpoint)\n");
+    std::fflush(stdout);
+
+    // Serving heartbeat (human-facing law): a watching owner must be able
+    // to tell healthy silence from a hang. Observable state only.
+    const auto serving_started    = std::chrono::steady_clock::now();
+    auto last_beat                = serving_started;
+    qiven::u64 connections_served = 0;
     while (!g_stop)
     {
         auto connection = server.value().accept();
@@ -162,9 +194,11 @@ int main(int argc, char** argv)
             {
                 break;
             }
-            std::cerr << "accept failed: " << connection.reason().message << "\n";
+            std::printf("[FAIL] accept: %s\n", connection.reason().message.c_str());
+            std::fflush(stdout);
             break;
         }
+        connections_served += 1;
 
         // Client identity from the connection, never the payload.
         auto image = connection.value().client_image();
@@ -213,9 +247,41 @@ int main(int argc, char** argv)
         reply_header.connection_seq = verified.value().header.connection_seq;
         const std::string body      = qiven::runtime::ipc::encode_reply(reply);
         connection.value().write_bytes(codec.encode(reply_header, body));
+
+        // One observable line per request (kind + outcome), then the
+        // periodic heartbeat — healthy silence never exceeds ~30 s.
+        std::string request_label = "request";
+        if (request.value().kind == qiven::runtime::ipc::Request::Kind::HookEvent &&
+            !request.value().event.empty())
+        {
+            request_label = request.value().event;
+        }
+        std::string outcome_label = "ok";
+        if (reply.kind == qiven::runtime::ipc::Reply::Kind::ErrorView)
+        {
+            outcome_label = "error " + std::to_string(reply.error_code);
+        }
+        else if (reply.kind == qiven::runtime::ipc::Reply::Kind::HookAck)
+        {
+            outcome_label = reply.verdict;
+        }
+        std::printf("[conn] %s -> %s\n", request_label.c_str(), outcome_label.c_str());
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_beat >= std::chrono::seconds(30))
+        {
+            last_beat         = now;
+            const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
+                now - serving_started);
+            std::printf("[beat] serving %llus, connections %llu, journal events %llu\n",
+                        static_cast<unsigned long long>(uptime.count()),
+                        static_cast<unsigned long long>(connections_served),
+                        static_cast<unsigned long long>(host.value()->status().journal_events));
+        }
+        std::fflush(stdout);
     }
 
     host.value()->request_shutdown();
-    std::cout << "[qiven-runtime-host] stopped cleanly\n";
+    std::printf("[ OK ] stopped cleanly (journal checkpointed)\n");
+    std::fflush(stdout);
     return 0;
 }
