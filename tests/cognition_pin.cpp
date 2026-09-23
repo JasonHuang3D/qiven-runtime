@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <windows.h>
 
 namespace
 {
@@ -24,8 +25,13 @@ using qiven::runtime::port::PinResult;
 class TempFile
 {
 public:
+    // Fixed temp filenames race when test-debug and test-release run in
+    // parallel (one process's destructor remove() deletes the file the
+    // other's pin() is reading - the MEM-20260923T224200Z-F8A9B0 shared-
+    // fixture class; observed twice as the suite-level cognition-pin
+    // flake). Per-process names, per the ipc_multiframe precedent.
     explicit TempFile(std::string name) :
-    m_path(std::filesystem::temp_directory_path() / name)
+    m_path(std::filesystem::temp_directory_path() / (name + "-" + std::to_string(GetCurrentProcessId()) + ".bin"))
     {
         std::error_code ignored;
         std::filesystem::remove(m_path, ignored);
@@ -69,7 +75,7 @@ int main()
         snapshot.invocation.rules.push_back(rule);
 
         const Bytes canonical = bytes_of(snapshot);
-        TempFile file("qiven-rca3-pin-ok.bin");
+        TempFile file("qiven-rca3-pin-ok");
         file.write(canonical);
 
         DraftSnapshotReader reader;
@@ -99,7 +105,7 @@ int main()
     {
         Snapshot snapshot;
         snapshot.invocation.present = true;
-        TempFile file("qiven-rca3-pin-stable.bin");
+        TempFile file("qiven-rca3-pin-stable");
         file.write(bytes_of(snapshot));
 
         DraftSnapshotReader reader;
@@ -123,8 +129,8 @@ int main()
         rule.subject = "changes the policy preimage";
         ruled.invocation.rules.push_back(rule);
 
-        TempFile plain_file("qiven-rca3-pin-plain.bin");
-        TempFile ruled_file("qiven-rca3-pin-ruled.bin");
+        TempFile plain_file("qiven-rca3-pin-plain");
+        TempFile ruled_file("qiven-rca3-pin-ruled");
         plain_file.write(bytes_of(plain));
         ruled_file.write(bytes_of(ruled));
 
@@ -158,7 +164,7 @@ int main()
             }
         }
 
-        TempFile file("qiven-rca3-pin-corrupt.bin");
+        TempFile file("qiven-rca3-pin-corrupt");
         file.write(corrupt);
 
         DraftSnapshotReader reader;
@@ -172,7 +178,7 @@ int main()
     // (DigestMismatch), not a warning
     {
         Snapshot snapshot;
-        TempFile file("qiven-rca3-pin-digest.bin");
+        TempFile file("qiven-rca3-pin-digest");
         file.write(bytes_of(snapshot));
 
         DraftSnapshotReader reader;
@@ -185,7 +191,7 @@ int main()
     // not the implementation)
     {
         Snapshot snapshot;
-        TempFile file("qiven-rca3-pin-port.bin");
+        TempFile file("qiven-rca3-pin-port");
         file.write(bytes_of(snapshot));
 
         DraftSnapshotReader reader;

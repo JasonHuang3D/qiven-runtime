@@ -26,7 +26,7 @@ endif()
 # Foundation pin (cross-repo-cmake.md law; owner direction 2026-09-23:
 # full SHA-pin coverage - the v2 standard's recorded gap is closed, not
 # deferred; upgrades are an explicit re-pin with re-validation).
-set(QIVEN_FOUNDATION_PINNED_SHA "79e67895a2a02a206d07660de1a483a856bc2612")
+set(QIVEN_FOUNDATION_PINNED_SHA "b15d17c7e316bed51531ead62b1a33540fdd965c")
 find_package(Git REQUIRED)
 execute_process(
     COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
