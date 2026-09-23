@@ -48,6 +48,9 @@
     },
     "third-party-verify": {
       "argv": ["python", "tools/third_party_verify.py"]
+    },
+    "h1-kit": {
+      "argv": ["python", "tools/h1_kit.py"]
     }
   },
   "gates": {

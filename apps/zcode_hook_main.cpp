@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <string>
@@ -49,6 +50,9 @@ std::vector<std::byte> read_stdin_verbatim()
 int main(int argc, char** argv)
 {
     std::string event;
+    std::string tool;
+    std::string session_handle;
+    std::string dump_target;
     std::filesystem::path root;
     for (int i = 1; i + 1 < argc; i += 2)
     {
@@ -60,6 +64,18 @@ int main(int argc, char** argv)
         else if (flag == "--root")
         {
             root = argv[i + 1];
+        }
+        else if (flag == "--tool")
+        {
+            tool = argv[i + 1];
+        }
+        else if (flag == "--session-handle")
+        {
+            session_handle = argv[i + 1];
+        }
+        else if (flag == "--dump-stdin")
+        {
+            dump_target = argv[i + 1];
         }
     }
     if (root.empty())
@@ -75,7 +91,8 @@ int main(int argc, char** argv)
     {
         std::fprintf(stderr,
                      "usage: qiven-zcode-hook --event <session_start|pre_tool|post_tool> "
-                     "--root <governed checkout>\n");
+                     "--root <governed checkout> [--tool <name>] [--session-handle <token>] "
+                     "[--dump-stdin <file>]\n");
         return 2;
     }
 
@@ -86,6 +103,21 @@ int main(int argc, char** argv)
     run.deadline_ms    = event == "session_start" ? 9750 : 4750; // minus the 250 ms margin
     run.mediated_tools = "Bash,Write,Edit";                      // the declared manifest surface (profile-checked)
     run.now_ms         = static_cast<qiven::u64>(0);             // transport stamps time; host uses its clock
+    run.tool           = tool;
+    run.session_handle = session_handle;
+
+    // Payload probe (H1 kit diagnostics): capture the verbatim payload so
+    // real-harness field names become recorded evidence, never a guess.
+    if (!dump_target.empty())
+    {
+        std::filesystem::path dump(dump_target);
+        std::error_code ec;
+        std::filesystem::create_directories(dump.parent_path(), ec);
+        std::ofstream out(dump, std::ios::binary | std::ios::app);
+        out.write(reinterpret_cast<const char*>(run.payload.data()),
+                  static_cast<std::streamsize>(run.payload.size()));
+        out << "\n---qiven-hook-dump-boundary---\n";
+    }
 
     const auto outcome = qiven::runtime::adapter::run_zcode_hook(run);
     if (!outcome.stderr_text.empty())

@@ -100,10 +100,11 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     }
 
     ipc::Request request;
-    request.kind           = ipc::Request::Kind::HookEvent;
-    request.event          = run.event;
-    request.session_handle = fields.session_handle;
-    request.tool_name      = fields.tool_name;
+    request.kind  = ipc::Request::Kind::HookEvent;
+    request.event = run.event;
+    request.session_handle =
+        run.session_handle.empty() ? fields.session_handle : run.session_handle;
+    request.tool_name      = run.tool.empty() ? fields.tool_name : run.tool;
     request.payload_sha256 = cognition::hex_lower(
         std::span<const std::byte>(fields.payload_digest.sha256.data(),
                                    fields.payload_digest.sha256.size()));
@@ -171,6 +172,17 @@ HookOutcome run_zcode_hook(const HookRun& run)
         return deny(hook_reason_payload, "unknown event kind");
     }
     const ZcodeEventFields& fields = payload_result.value();
+
+    // Registration-template authority (deny-118 correction): the template
+    // supplies the identity; payload fields only corroborate. A payload
+    // tool_name that CONTRADICTS the template is a misregistration — deny.
+    if (pre_tool && !run.tool.empty() && !fields.tool_name.empty() &&
+        fields.tool_name != run.tool)
+    {
+        return deny(hook_reason_payload,
+                    "payload tool '" + fields.tool_name + "' contradicts the registered tool '" +
+                        run.tool + "' (misregistration)");
+    }
 
     auto reply = transact(run, fields);
     if (!reply.is_ok())

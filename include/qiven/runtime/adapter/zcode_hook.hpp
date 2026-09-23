@@ -45,6 +45,13 @@ struct HookRun
     u64 deadline_ms = 4500;             // ZCode budget minus the 250 ms margin
     u64 now_ms      = 0;
     std::string mediated_tools; // session_start manifest note
+    // Trusted registration template (2026-09-23 deny-118 correction): the
+    // identity fields come from the hook COMMAND LINE the workspace config
+    // pins per matcher entry — never from payload fields, which are
+    // corroborating evidence only (the real payload carries no stable
+    // session/event identity; RCA-14 H1 evidence).
+    std::string session_handle; // --session-handle (evidence-grade token)
+    std::string tool;           // --tool (the matcher's tool name)
 };
 
 struct HookOutcome
