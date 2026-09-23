@@ -9,6 +9,7 @@
 #include <wincrypt.h>
 #include <windows.h>
 
+#include <chrono>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -83,6 +84,39 @@ std::optional<std::string> read_bounded(HANDLE handle)
     }
     header.append(tail);
     return header;
+}
+
+// Bounded wait for the first incoming bytes (deadline discipline,
+// 2026-09-24 corrective lane): polls PeekNamedPipe so a silent client
+// cannot wedge a synchronous serve loop, and a slow host is a DIAGNOSABLE
+// timeout on the client side rather than an undifferentiated "no reply".
+enum class WaitStatus
+{
+    Readable,
+    Broken,
+    TimedOut,
+};
+
+WaitStatus wait_readable(HANDLE handle, u64 timeout_ms)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (true)
+    {
+        DWORD available = 0;
+        if (!PeekNamedPipe(handle, nullptr, 0, nullptr, &available, nullptr))
+        {
+            return WaitStatus::Broken; // pipe broken/closing
+        }
+        if (available > 0)
+        {
+            return WaitStatus::Readable;
+        }
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            return WaitStatus::TimedOut;
+        }
+        Sleep(5);
+    }
 }
 } // namespace
 
@@ -277,6 +311,28 @@ std::optional<std::string> PipeConnection::read_frame()
 {
     if (m_handle == nullptr)
     {
+        return std::nullopt;
+    }
+    m_last_read_timed_out = false;
+    return read_bounded(static_cast<HANDLE>(m_handle));
+}
+
+std::optional<std::string> PipeConnection::read_frame(u64 timeout_ms)
+{
+    if (m_handle == nullptr)
+    {
+        return std::nullopt;
+    }
+    m_last_read_timed_out = false;
+    switch (wait_readable(static_cast<HANDLE>(m_handle), timeout_ms))
+    {
+    case WaitStatus::Readable:
+        break;
+    case WaitStatus::TimedOut:
+        m_last_read_timed_out = true;
+        return std::nullopt;
+    case WaitStatus::Broken:
+    default:
         return std::nullopt;
     }
     return read_bounded(static_cast<HANDLE>(m_handle));
@@ -530,6 +586,28 @@ std::optional<std::string> PipeClient::read_frame()
 {
     if (m_handle == nullptr)
     {
+        return std::nullopt;
+    }
+    m_last_read_timed_out = false;
+    return read_bounded(static_cast<HANDLE>(m_handle));
+}
+
+std::optional<std::string> PipeClient::read_frame(u64 timeout_ms)
+{
+    if (m_handle == nullptr)
+    {
+        return std::nullopt;
+    }
+    m_last_read_timed_out = false;
+    switch (wait_readable(static_cast<HANDLE>(m_handle), timeout_ms))
+    {
+    case WaitStatus::Readable:
+        break;
+    case WaitStatus::TimedOut:
+        m_last_read_timed_out = true;
+        return std::nullopt;
+    case WaitStatus::Broken:
+    default:
         return std::nullopt;
     }
     return read_bounded(static_cast<HANDLE>(m_handle));

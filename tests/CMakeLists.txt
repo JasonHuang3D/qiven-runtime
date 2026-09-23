@@ -332,9 +332,13 @@ qiven_runtime_add_journal_test(pipe-frame-security pipe_frame_security.cpp)
 qiven_runtime_add_journal_test(process-runner-bounds process_runner_bounds.cpp)
 qiven_runtime_add_journal_test(host-lifecycle host_lifecycle.cpp)
 
-# --- MVP-4 hook adapter tests (design docs/design/mvp4-hook-adapter.md §6)
+# --- MVP-4 hook adapter tests (design docs/design/mvp4-hook-adapter.md §6) ---
 
 qiven_runtime_add_journal_test(hook-conformance hook_conformance.cpp)
+
+# --- MVP-4 corrective lane (2026-09-24 deny-116 incident regressions) ------
+
+qiven_runtime_add_journal_test(ipc-multiframe-contract ipc_multiframe_contract.cpp)
 
 # The crash test needs the crash hooks live INSIDE the process that dies:
 # it compiles the journal sources directly with the test-guard macro

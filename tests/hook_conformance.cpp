@@ -159,10 +159,13 @@ int main()
                                payload.size());
         const auto outcome = run_zcode_hook(run);
         QIVEN_VERIFY(outcome.exit_code == 2);
-        QIVEN_VERIFY(outcome.stderr_text.find("deny 116") != std::string::npos);
+        // 2026-09-24 taxonomy split: an absent host is the DISJOINT
+        // no-listener class (120), never the undifferentiated 116 the
+        // deny-116 incident made every transport failure wear.
+        QIVEN_VERIFY(outcome.stderr_text.find("deny 120") != std::string::npos);
         QIVEN_VERIFY(outcome.stderr_text.find("no host verdict") != std::string::npos);
         // Gate 5 honesty: the text claims NO governed status.
-        QIVEN_VERIFY(outcome.stderr_text.find("cannot classify") != std::string::npos);
+        QIVEN_VERIFY(outcome.stderr_text.find("fail-closed deny") != std::string::npos);
     }
 
     // --- host fixture: real workroot, real journal, profile revision 2 -----

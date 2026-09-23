@@ -143,10 +143,25 @@ denies honestly (never claims governed status).
 1. Open Explorer at:  `{config_target}`   (file `{config_name}`)
 2. Copy this kit's `{config_name}` OVER that file (a backup of the
    current file is next to it already: `{backup_name}` in this kit).
-3. In the ZCode UI, review and approve the changed hook configuration
-   (Settings -> Hooks). NOTHING is enabled until you approve it there.
+3. In the ZCode UI, review the changed hook configuration
+   (Settings -> Hooks) - but do NOT approve yet: run Step 1.5 first.
 
-## Step 2 - start the RuntimeHost (double-click)
+## Step 1.5 - pre-flight self-check (run BEFORE approving; ~1 minute)
+
+Double-click:  `{preflight}`
+
+It boots the kit's own host, proves a REAL pipe verdict round trip in this
+environment, stops the host again, and verifies that with no host the hook
+denies `120` (no listener) with honest fail-closed text. EXPECT the final
+line `[ OK ] PREFLIGHT PASS`. If any `[FAIL]` appears, do NOT approve the
+config - paste the window's text back to the session instead. This check is
+NOT an availability guarantee: after enablement, host loss still denies
+fail-closed (that is the design).
+
+## Step 2 - approve the config and start the RuntimeHost
+
+1. In the ZCode UI, approve the hook configuration (Settings -> Hooks).
+2. Double-click:  `{run_host}`
 
 Double-click:  `{run_host}`
 
@@ -186,9 +201,10 @@ send these messages ONE AT A TIME and note what the tools return:
 
   P6  Close the RuntimeHost window (or double-click `{stop_host}`),
       then: Please run in Bash: echo late > /d/JasonWork/qiven-context/state/h1-late.md
-      -> EXPECT: BLOCKED with `[qiven] deny 116 ... cannot classify ...
-         fail-closed deny` - and the text must NOT claim anything is
-         governed (the honesty row)
+      -> EXPECT: BLOCKED with `[qiven] deny 120 ... no host verdict ...
+         no RuntimeHost listener ... fail-closed deny` - the typed
+         no-listener class (the 2026-09-24 taxonomy split), and the text
+         must NOT claim anything is governed (the honesty row)
 
 ## Step 4 - seal and relay the evidence
 
@@ -293,11 +309,26 @@ def build_kit(out_root: Path, gate: str, token: str) -> int:
         "pause",
     ]) + "\n", encoding="utf-8", newline="\n")
 
+    # Enable-gated functional pre-flight (2026-09-24 corrective lane): the
+    # owner runs this BEFORE approving the config in the ZCode UI; it boots
+    # the kit host, proves a real-pipe verdict round trip, stops the host,
+    # and verifies the typed no-listener deny (120) with honest text.
+    preflight = kit_dir / "preflight.cmd"
+    preflight.write_text("\n".join([
+        "@echo off",
+        "echo [ RUN] MVP-4 H1 pre-flight self-check (enable-gated)",
+        f"\"{sys.executable}\" \"{REPO_ROOT / 'tools' / 'h1_kit.py'}\" preflight "
+        f"--kit \"{kit_dir}\" --session-token {token}",
+        "echo [ OK ] preflight command returned (exit %errorlevel%)",
+        "pause",
+    ]) + "\n", encoding="utf-8", newline="\n")
+
     guide = GUIDE_TEMPLATE.format(
         head=head, gate=gate, receipt_name=receipt.name,
         config_target=WORKSPACE_CONFIG.parent, config_name="config.json",
         backup_name="config.pre-h1.json", run_host=run_host, stop_host=stop_host,
-        collect_evidence=collect, evidence_dir=evidence_dir, rollback=rollback)
+        collect_evidence=collect, evidence_dir=evidence_dir, rollback=rollback,
+        preflight=preflight)
     (kit_dir / "GUIDE.md").write_text(guide, encoding="utf-8", newline="\n")
 
     files = []
@@ -323,7 +354,127 @@ def build_kit(out_root: Path, gate: str, token: str) -> int:
     return EXIT_OK
 
 
+def cmd_preflight(kit_dir: Path, token: str) -> int:
+    """Enable-gated functional self-check (2026-09-24 corrective lane).
+
+    Runs BEFORE the owner approves the hook config in the ZCode UI (the UI
+    review is the enable gate). Proves in the TARGET environment:
+      1. the kit binaries boot a host (or an existing host answers),
+      2. a REAL pipe round trip completes (hello + pre_tool verdict),
+      3. with the host stopped, the hook denies 120 (no listener) with
+         honest fail-closed text -- the taxonomy split, live.
+    NOT an availability guarantee: after enablement, host loss still denies
+    fail-closed per the design.
+    """
+    import subprocess as sp
+    import time
+
+    bin_dir = kit_dir / "bin"
+    host_exe = bin_dir / "qiven-runtime-host.exe"
+    hook_exe = bin_dir / "qiven-zcode-hook.exe"
+    ctl_exe = bin_dir / "qiven-runtimectl.exe"
+    for exe in (host_exe, hook_exe, ctl_exe):
+        if not exe.exists():
+            print(f"[FAIL] kit binary missing: {exe}")
+            return EXIT_FAIL
+
+    probe_payload = json.dumps({
+        "tool_name": "Bash",
+        "tool_input": {"command": "qiven preflight probe"},
+    })
+    log_path = kit_dir / "preflight-host.log"
+
+    def run_probe() -> tuple[int, str, str]:
+        proc = sp.run(
+            [str(hook_exe), "--event", "pre_tool", "--tool", "Bash",
+             "--root", str(GOVERNED_ROOT), "--session-handle", token + "-preflight"],
+            input=probe_payload, capture_output=True, text=True, timeout=20,
+            creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+    def verdict_round_trip(detail: str) -> bool:
+        code, _out, err = run_probe()
+        ok = (code == 0) or ("(host verdict)" in err)
+        print(("[ OK ] " if ok else "[FAIL] ") + detail +
+              ("" if ok else f" -- exit {code}: {err}"))
+        return ok
+
+    # 1. Boot a host from the kit (an already-running host is also fine: the
+    # singleton pipe answers; the probe proves the environment either way).
+    print("[ RUN] preflight: host boot + real-pipe round trip")
+    host_proc = None
+    host_answered_before_boot = False
+    if verdict_round_trip("host reachable BEFORE boot (existing host)"):
+        host_answered_before_boot = True
+    else:
+        with log_path.open("w", encoding="utf-8", newline="\n") as log:
+            host_proc = sp.Popen(
+                [str(host_exe), "--root", str(GOVERNED_ROOT)],
+                stdout=log, stderr=sp.STDOUT,
+                creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
+        deadline = time.monotonic() + 20.0
+        booted = False
+        err = ""
+        while time.monotonic() < deadline:
+            if host_proc.poll() is not None:
+                print(f"[FAIL] host exited during boot (exit {host_proc.returncode}); "
+                      f"log: {log_path}")
+                break
+            code, _out, err = run_probe()
+            if code == 0 or "(host verdict)" in err:
+                booted = True
+                break
+            time.sleep(0.5)
+        if not booted:
+            print(f"[FAIL] no verdict round trip within 20 s; last hook output: {err}")
+            if host_proc is not None and host_proc.poll() is None:
+                host_proc.kill()
+            return EXIT_FAIL
+        print("[ OK ] host booted from kit bin; verdict round trip complete")
+
+    # 2. Stop the host we started (or leave the owner's host alone).
+    if host_proc is not None:
+        stop = sp.run(
+            [str(ctl_exe), "host", "shutdown", "--root", str(GOVERNED_ROOT)],
+            capture_output=True, text=True, timeout=20,
+            creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
+        for _ in range(20):
+            if host_proc.poll() is not None:
+                break
+            time.sleep(0.5)
+        if host_proc.poll() is None:
+            host_proc.kill()
+        print(f"[ OK ] host stopped (runtimectl exit {stop.returncode})")
+
+    # 3. Fail-closed honesty: with no host, the deny names its class (120).
+    if host_proc is not None or not host_answered_before_boot:
+        code, _out, err = run_probe()
+        honest = (code == 2 and "deny 120" in err and "no host verdict" in err
+                  and "fail-closed" in err)
+        print(("[ OK ] " if honest else "[FAIL] ") +
+              "no-listener deny is typed 120 with honest fail-closed text" +
+              ("" if honest else f" -- exit {code}: {err}"))
+        if not honest:
+            return EXIT_FAIL
+
+    print("[ OK ] PREFLIGHT PASS - safe to approve the hook config in the ZCode UI")
+    return EXIT_OK
+
+
 def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "preflight":
+        parser = argparse.ArgumentParser(prog="h1_kit.py preflight",
+                                         description="run the kit pre-flight self-check")
+        parser.add_argument("--kit", required=True, help="the kit package directory")
+        parser.add_argument("--session-token", default=HOOK_SESSION_TOKEN_DEFAULT)
+        pre = parser.parse_args(argv[1:])
+        try:
+            return cmd_preflight(Path(pre.kit), pre.session_token)
+        except (OSError, ValueError) as failure:
+            print(f"[FAIL] preflight: {failure}", file=sys.stderr)
+            return EXIT_FAIL
+
     parser = argparse.ArgumentParser(description="build the H1 acceptance kit package")
     parser.add_argument("--gate", default="local", help="gate name whose receipt is required")
     parser.add_argument("--session-token", default=HOOK_SESSION_TOKEN_DEFAULT)

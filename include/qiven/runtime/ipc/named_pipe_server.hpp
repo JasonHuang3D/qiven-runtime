@@ -15,7 +15,12 @@
 //
 // Synchronous single-connection service model: the host accepts and serves
 // one client at a time on its control thread (GR-4; H-3 records the
-// concurrency deferral). Reads and writes are bounded by the frame caps.
+// concurrency deferral). One connection may carry a BOUNDED SEQUENCE of
+// frames (ipc/pipe_service.hpp, 2026-09-24 corrective decision): the wire
+// contract has always declared connection_seq "strictly increasing per
+// connection". Reads and writes are bounded by the frame caps; frame
+// ARRIVAL is bounded by the read deadline (a silent client cannot wedge
+// the serve loop).
 // ============================================================================
 
 #include <qiven/result.hpp>
@@ -73,7 +78,19 @@ public:
     // Reads ONE frame's bytes (bounded by max_frame_bytes; short read or
     // disconnect returns an empty optional).
     [[nodiscard]] std::optional<std::string> read_frame();
+    // Deadline form: waits at most timeout_ms for the frame's FIRST bytes
+    // (PeekNamedPipe poll); expiry returns an empty optional with
+    // last_read_timed_out() true. A stall mid-frame after arrival keeps the
+    // blocking semantics (owner-scoped clients; see pipe_service.hpp).
+    [[nodiscard]] std::optional<std::string> read_frame(u64 timeout_ms);
     [[nodiscard]] bool write_bytes(std::string_view bytes);
+
+    // True when the most recent read_frame(timeout_ms) returned empty
+    // BECAUSE the deadline expired (vs a disconnect/short read).
+    [[nodiscard]] bool last_read_timed_out() const noexcept
+    {
+        return m_last_read_timed_out;
+    }
 
     // The connected client's image path (QueryFullProcessImageNameW).
     [[nodiscard]] qiven::Result<std::string> client_image() const;
@@ -84,7 +101,8 @@ public:
     }
 
 private:
-    void* m_handle = nullptr;
+    void* m_handle              = nullptr;
+    bool m_last_read_timed_out  = false;
 };
 
 class NamedPipeServer
@@ -127,9 +145,18 @@ public:
 
     [[nodiscard]] bool write_bytes(std::string_view bytes);
     [[nodiscard]] std::optional<std::string> read_frame();
+    // Deadline form (client side): the caller's reply budget. Expiry returns
+    // an empty optional with last_read_timed_out() true — the timeout class
+    // is diagnosable, not folded into "no reply" (2026-09-24 taxonomy split).
+    [[nodiscard]] std::optional<std::string> read_frame(u64 timeout_ms);
+    [[nodiscard]] bool last_read_timed_out() const noexcept
+    {
+        return m_last_read_timed_out;
+    }
 
 private:
     explicit PipeClient(void* handle) noexcept;
-    void* m_handle = nullptr;
+    void* m_handle             = nullptr;
+    bool m_last_read_timed_out = false;
 };
 } // namespace qiven::runtime::ipc

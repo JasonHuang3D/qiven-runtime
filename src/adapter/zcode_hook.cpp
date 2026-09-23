@@ -53,7 +53,10 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     auto secret = ipc::InstallationSecret::ensure(run.runtime_root);
     if (!secret.is_ok())
     {
-        return ReplyResult::fail(secret.reason());
+        return ReplyResult::fail(
+            qiven::Error::make(qiven::error_category::unavailable,
+                               classify_transport_failure(secret.reason()),
+                               secret.reason().message));
     }
     const ipc::FrameCodec codec(secret.value());
 
@@ -62,7 +65,8 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
         std::ifstream in(run.runtime_root / "install.id");
         if (!in)
         {
-            return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable, 116,
+            return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable,
+                                                        hook_reason_no_listener,
                                                         "no installed RuntimeHost"));
         }
         install_id.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char> {});
@@ -76,7 +80,10 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     auto client = ipc::PipeClient::connect(ipc::pipe_name(install_id));
     if (!client.is_ok())
     {
-        return ReplyResult::fail(client.reason());
+        return ReplyResult::fail(qiven::Error::make(
+            qiven::error_category::unavailable, hook_reason_no_listener,
+            "no RuntimeHost listener on the installation pipe (" + client.reason().message +
+                ")"));
     }
 
     u64 seq = 1;
@@ -93,25 +100,56 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     header.connection_seq = seq;
     if (!client.value().write_bytes(codec.encode(header, ipc::encode_request_body(hello))))
     {
-        return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable, 116,
+        return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable,
+                                                    hook_reason_host_unavailable,
                                                     "hello write failed"));
     }
-    auto hello_frame = client.value().read_frame();
+    auto hello_frame = client.value().read_frame(run.deadline_ms);
     if (!hello_frame.has_value())
     {
-        return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable, 116,
+        if (client.value().last_read_timed_out())
+        {
+            return ReplyResult::fail(
+                qiven::Error::make(qiven::error_category::unavailable, hook_reason_timeout,
+                                   "no hello reply within " + std::to_string(run.deadline_ms) +
+                                       " ms (timeout)"));
+        }
+        return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable,
+                                                    hook_reason_host_unavailable,
                                                     "no hello reply from host"));
     }
     auto hello_verified = codec.decode(hello_frame.value());
     if (!hello_verified.is_ok())
     {
-        return ReplyResult::fail(hello_verified.reason());
+        return ReplyResult::fail(
+            qiven::Error::make(qiven::error_category::unavailable,
+                               classify_transport_failure(hello_verified.reason()),
+                               hello_verified.reason().message));
     }
     auto hello_reply = ipc::decode_reply(hello_verified.value().body);
-    if (!hello_reply.is_ok() || hello_reply.value().kind != ipc::Reply::Kind::HelloAck)
+    if (!hello_reply.is_ok())
     {
-        return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable, 116,
-                                                    "handshake rejected by host"));
+        return ReplyResult::fail(qiven::Error::make(qiven::error_category::invalid_argument,
+                                                    hello_reply.reason().code,
+                                                    hello_reply.reason().detail));
+    }
+    if (hello_reply.value().kind == ipc::Reply::Kind::ErrorView)
+    {
+        // Typed host rejection at the handshake: the admission surface is a
+        // real reply now (pipe_service), so the class is diagnosable.
+        const std::string& detail = hello_reply.value().error_detail;
+        const i32 code = detail.rfind("admission rejected", 0) == 0
+                             ? hook_reason_admission
+                             : static_cast<i32>(hello_reply.value().error_code);
+        return ReplyResult::fail(
+            qiven::Error::make(qiven::error_category::unavailable, code,
+                               "handshake rejected by host: " + detail));
+    }
+    if (hello_reply.value().kind != ipc::Reply::Kind::HelloAck)
+    {
+        return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable,
+                                                    hook_reason_host_unavailable,
+                                                    "unexpected hello reply shape"));
     }
 
     ipc::Request request;
@@ -135,19 +173,31 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     header.connection_seq = seq;
     if (!client.value().write_bytes(codec.encode(header, ipc::encode_request_body(request))))
     {
-        return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable, 116,
+        return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable,
+                                                    hook_reason_host_unavailable,
                                                     "request write failed"));
     }
-    auto frame = client.value().read_frame();
+    auto frame = client.value().read_frame(run.deadline_ms);
     if (!frame.has_value())
     {
-        return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable, 116,
-                                                    "no reply from host"));
+        if (client.value().last_read_timed_out())
+        {
+            return ReplyResult::fail(
+                qiven::Error::make(qiven::error_category::unavailable, hook_reason_timeout,
+                                   "no reply from host within " + std::to_string(run.deadline_ms) +
+                                       " ms (timeout)"));
+        }
+        return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable,
+                                                    hook_reason_host_unavailable,
+                                                    "no reply from host (connection ended)"));
     }
     auto verified = codec.decode(frame.value());
     if (!verified.is_ok())
     {
-        return ReplyResult::fail(verified.reason());
+        return ReplyResult::fail(qiven::Error::make(
+            qiven::error_category::unavailable,
+            classify_transport_failure(verified.reason()),
+            verified.reason().message));
     }
     auto reply = ipc::decode_reply(verified.value().body);
     if (!reply.is_ok())
@@ -158,6 +208,42 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     return ReplyResult(std::move(reply.value()));
 }
 } // namespace
+
+i32 classify_transport_failure(const qiven::Error& error, bool read_deadline_expired)
+{
+    namespace ipc = qiven::runtime::ipc;
+    if (read_deadline_expired)
+    {
+        return hook_reason_timeout;
+    }
+    const std::string& message = error.message;
+    if (message.find("pipe connect failed") != std::string::npos ||
+        message.find("no RuntimeHost listener") != std::string::npos ||
+        message.find("no installed RuntimeHost") != std::string::npos)
+    {
+        return hook_reason_no_listener;
+    }
+    if (error.code == ipc::err_frame && message.find("unsupported protocol version") != std::string::npos)
+    {
+        return hook_reason_version_skew;
+    }
+    if (error.code == ipc::err_auth && message.find("HMAC verification failed") != std::string::npos)
+    {
+        return hook_reason_secret_skew;
+    }
+    if (error.code == ipc::err_auth && message.find("secret") != std::string::npos)
+    {
+        // The local installation secret is unreadable/stale (DPAPI class).
+        return hook_reason_secret_skew;
+    }
+    if (error.code == hook_reason_no_listener || error.code == hook_reason_admission ||
+        error.code == hook_reason_version_skew || error.code == hook_reason_secret_skew ||
+        error.code == hook_reason_timeout)
+    {
+        return error.code; // already classified by transact
+    }
+    return hook_reason_host_unavailable;
+}
 
 HookOutcome run_zcode_hook(const HookRun& run)
 {
@@ -204,10 +290,10 @@ HookOutcome run_zcode_hook(const HookRun& run)
     {
         if (pre_tool)
         {
-            return deny_client(hook_reason_host_unavailable,
+            return deny_client(classify_transport_failure(reply.reason()),
                                reply.reason().message +
-                                   " -- cannot classify -- fail-closed deny (nothing is governed "
-                                   "while the host is unreachable)");
+                                   " -- fail-closed deny (nothing is governed while the host "
+                                   "cannot be reached)");
         }
         return advisory_note(run.event + ": host unreachable -- " + reply.reason().message +
                              (run.event == "session_start"

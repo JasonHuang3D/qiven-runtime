@@ -187,10 +187,14 @@ bash-governed-reference (conservative detector); 112 unknown-tool
 fail-closed; 113 manifest/scope mismatch; 114 unknown-session
 (register first); 115 correlation conflict (duplicate post); 116
 host-unavailable-classification (the hook's own fail-closed code when
-the host is unreachable — issued client-side, never by the host); 117
+the host is unreachable — issued client-side, never by the host; since
+the 2026-09-24 corrective lane it covers only GENUINELY UNKNOWN
+transport shapes — the classable causes carry their own codes, §7); 117
 cognition-expired (freshness window exceeded — closes H-2's deny
 path); 118 payload-too-large / unparseable (client-side); 119
-shutdown-in-progress.
+shutdown-in-progress; 120 no-listener; 121 admission-rejected;
+122 version-skew; 123 secret-skew; 124 timeout (corrective-lane
+split — disjoint, diagnosable; see §7).
 
 Mapping to the existing deny family: 117 rides typed IPC error 66
 (new: cognition-expired) at the mutation boundary; all others are
@@ -218,9 +222,10 @@ struct HookOutcome {            // everything main() needs to exit
 Laws: no classification, no counters, no session/action minting, no
 policy data, no caching (one-shot process; state lives in the host).
 Fail-closed mapping: for `pre_tool`, ANY failure to obtain a verified
-`hook_ack` (unreachable, timeout, HMAC/protocol error, version
-mismatch, unknown reply shape) → exit 2 with reason 116 and the honest
-text "host unreachable — cannot classify — fail-closed deny" (exit
+`hook_ack` → exit 2 with the CLASSIFIED reason (120/121/122/123/124;
+116 only for genuinely unknown shapes — the 2026-09-24 corrective-lane
+split, §7) and honest text "-- fail-closed deny (nothing is governed
+while the host cannot be reached)" (exit
 gate 5: nothing is reported as governed). For `session_start` and
 `post_tool`, unreachable host → exit 0 with an honesty note (activation
 is advisory, ADL §13; a completed action cannot be retroactively
@@ -434,3 +439,49 @@ before any implementation code exists in the branch:
 9. Confirmed no new truth: sessions/actions/decisions live in the
    journal; the hook retains nothing; the profile remains the only
    policy instance (revision bump explicit).
+
+## 10. Corrective lane (2026-09-24; deny-116 incident amendments)
+
+Incident record: qiven-context `evidence/audits/2026-09-24-mvp4-h1-deny116-incident.md`
+(the third MVP-4 H1 trial). Four amendments to this design, all landed in
+the same corrective batch:
+
+1. **Connection model (decision D1).** The wire contract stands as
+   declared (`framing.hpp`: `connection_seq` "strictly increasing per
+   connection") and §3.3's client shape (hello + hook_event on ONE
+   connection) is CORRECT. The production serve loop now lives as a
+   testable library unit — `ipc/pipe_service.hpp/.cpp`
+   (`serve_connection`) — and serves a bounded frame SEQUENCE per
+   connection: until the client disconnects, a frame does not arrive
+   within the idle bound (default 30 s), a typed protocol/security class
+   fails (error frame, then close), or the per-connection frame budget
+   (64) is exhausted. The exe loop delegates to it. Single-frame clients
+   (runtimectl) are unchanged.
+2. **Admission has a reply surface (decision D2).** A rejected client
+   image receives a typed 62 error frame ("admission rejected: ...")
+   before the connection ends; the hook client maps it to deny 121.
+   Silence is no longer an admission verdict the client must guess.
+3. **Denial taxonomy split (decision D3).** Client-side transport
+   failures classify disjointly (`classify_transport_failure`): 120
+   no-listener (connect refused / no install), 121 admission-rejected,
+   122 version-skew (typed 64 at decode), 123 secret-skew (HMAC 62 /
+   unreadable DPAPI secret), 124 timeout (deadline-bounded reads via
+   `read_frame(timeout_ms)` on both client and server). 116 remains ONLY
+   for genuinely unknown shapes (post-connect silent death, unexpected
+   reply shapes) — never silently absorbing a classable cause.
+4. **Replay honesty note.** `ReplayGuard`'s nonce/timestamp window is
+   NOT wired into the wire format: request bodies carry no nonce or
+   timestamp (the removed main() comment claimed otherwise — a dead
+   claim, deleted). Enforced per connection today: HMAC, frame caps,
+   strictly-increasing connection_seq (typed 63), frame budget, idle
+   bound. Wiring the nonce/timestamp window into the request envelope is
+   a recorded PRE-MVP-5 hardening obligation (owner-governed; requires
+   a wire-format decision across all three clients).
+
+Kit law addition: the H1 kit carries `preflight.cmd` (enable-gated
+functional self-check — host boot, real-pipe verdict round trip, typed
+120 no-listener honesty after stop) which the owner runs BEFORE
+approving the workspace config in the ZCode UI. Regression proof:
+`tests/ipc_multiframe_contract.cpp` (each test fails under the actual
+prior implementations — one-frame loop, silent admission, unchecked seq,
+unbounded idle, undifferentiated 116).

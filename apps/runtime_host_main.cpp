@@ -14,6 +14,7 @@
 #include <qiven/runtime/host/runtime_host.hpp>
 #include <qiven/runtime/ipc/framing.hpp>
 #include <qiven/runtime/ipc/named_pipe_server.hpp>
+#include <qiven/runtime/ipc/pipe_service.hpp>
 #include <qiven/runtime/ipc/protocol.hpp>
 #include <qiven/types.hpp>
 
@@ -173,8 +174,13 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    qiven::runtime::ipc::ReplayGuard replay;
-    replay.note_wall_clock(boot.now_ms);
+    // Replay honesty note (2026-09-24 corrective lane): ReplayGuard's
+    // nonce/timestamp window is NOT wired into the wire format (request
+    // bodies carry no nonce/timestamp); a guard was previously constructed
+    // here and never invoked — a dead claim, now removed. Enforced today,
+    // per connection (ipc/pipe_service.hpp): HMAC, frame caps,
+    // strictly-increasing connection_seq, frame budget, idle bound. The
+    // nonce/timestamp wiring is a recorded pre-MVP-5 hardening obligation.
     std::printf("[ OK ] ipc: pipe %ls\n",
                 qiven::runtime::ipc::pipe_name(status.install_id).c_str());
     std::printf("[ OK ] serving -- Ctrl+C stops the host (drain + journal checkpoint)\n");
@@ -200,84 +206,66 @@ int main(int argc, char** argv)
         }
         connections_served += 1;
 
-        // Client identity from the connection, never the payload.
-        auto image = connection.value().client_image();
-        if (!image.is_ok() ||
-            !qiven::runtime::ipc::ClientRecord::image_allowed(allowed_clients.value(),
-                                                              image.value()))
-        {
-            continue; // drop the connection (typed 62 class; no reply surface)
-        }
+        // Client identity from the connection, never the payload. A
+        // rejected image now receives a TYPED 62 error frame before the
+        // connection ends (pipe_service admission surface) — silence is no
+        // longer an admission verdict the client must guess.
+        const qiven::runtime::ipc::AdmitFn admit = [&]() -> std::string {
+            auto image = connection.value().client_image();
+            if (!image.is_ok())
+            {
+                return "client identity unavailable";
+            }
+            if (!qiven::runtime::ipc::ClientRecord::image_allowed(allowed_clients.value(),
+                                                                  image.value()))
+            {
+                return "client image is not in the install record: " + image.value();
+            }
+            return "";
+        };
 
-        auto frame_bytes = connection.value().read_frame();
-        if (!frame_bytes.has_value())
-        {
-            continue;
-        }
-        auto verified = codec.decode(frame_bytes.value());
-        if (!verified.is_ok())
-        {
-            // Auth/frame failure: typed error frame, then drop.
-            const auto error_reply = qiven::runtime::ipc::make_error(
-                0, static_cast<qiven::i32>(verified.reason().code), verified.reason().message);
-            const std::string body = qiven::runtime::ipc::encode_reply(error_reply);
-            connection.value().write_bytes(
-                codec.encode(qiven::runtime::ipc::FrameHeader {}, body));
-            continue;
-        }
+        const qiven::runtime::ipc::HandleFn handle =
+            [&](const qiven::runtime::ipc::Request& request) -> qiven::runtime::ipc::Reply {
+            auto reply = host.value()->handle(request, qiven::runtime::host::wall_now_ms());
 
-        // Replay window: the body's first 16 bytes are the nonce; the
-        // timestamp rides the frame request identity (hello carries it in
-        // the body; later kinds reuse the established connection state).
-        auto request = qiven::runtime::ipc::decode_request(verified.value().body);
-        if (!request.is_ok())
-        {
-            const auto error_reply = qiven::runtime::ipc::make_error(
-                verified.value().header.request_id, request.reason().code, request.reason().detail);
-            const std::string body = qiven::runtime::ipc::encode_reply(error_reply);
-            connection.value().write_bytes(
-                codec.encode(qiven::runtime::ipc::FrameHeader {}, body));
-            continue;
-        }
+            // One observable line per request (kind + outcome), then the
+            // periodic heartbeat -- healthy silence never exceeds ~30 s.
+            std::string request_label = "request";
+            if (request.kind == qiven::runtime::ipc::Request::Kind::HookEvent &&
+                !request.event.empty())
+            {
+                request_label = request.event;
+            }
+            std::string outcome_label = "ok";
+            if (reply.kind == qiven::runtime::ipc::Reply::Kind::ErrorView)
+            {
+                outcome_label = "error " + std::to_string(reply.error_code);
+            }
+            else if (reply.kind == qiven::runtime::ipc::Reply::Kind::HookAck)
+            {
+                outcome_label = reply.verdict;
+            }
+            std::printf("[conn] %s -> %s\n", request_label.c_str(), outcome_label.c_str());
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_beat >= std::chrono::seconds(30))
+            {
+                last_beat         = now;
+                const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
+                    now - serving_started);
+                std::printf("[beat] serving %llus, connections %llu, journal events %llu\n",
+                            static_cast<unsigned long long>(uptime.count()),
+                            static_cast<unsigned long long>(connections_served),
+                            static_cast<unsigned long long>(host.value()->status().journal_events));
+            }
+            std::fflush(stdout);
+            return reply;
+        };
 
-        auto reply = host.value()->handle(request.value(),
-                                          qiven::runtime::host::wall_now_ms());
-        qiven::runtime::ipc::FrameHeader reply_header;
-        reply_header.request_id     = verified.value().header.request_id;
-        reply_header.connection_seq = verified.value().header.connection_seq;
-        const std::string body      = qiven::runtime::ipc::encode_reply(reply);
-        connection.value().write_bytes(codec.encode(reply_header, body));
-
-        // One observable line per request (kind + outcome), then the
-        // periodic heartbeat -- healthy silence never exceeds ~30 s.
-        std::string request_label = "request";
-        if (request.value().kind == qiven::runtime::ipc::Request::Kind::HookEvent &&
-            !request.value().event.empty())
-        {
-            request_label = request.value().event;
-        }
-        std::string outcome_label = "ok";
-        if (reply.kind == qiven::runtime::ipc::Reply::Kind::ErrorView)
-        {
-            outcome_label = "error " + std::to_string(reply.error_code);
-        }
-        else if (reply.kind == qiven::runtime::ipc::Reply::Kind::HookAck)
-        {
-            outcome_label = reply.verdict;
-        }
-        std::printf("[conn] %s -> %s\n", request_label.c_str(), outcome_label.c_str());
-        const auto now = std::chrono::steady_clock::now();
-        if (now - last_beat >= std::chrono::seconds(30))
-        {
-            last_beat         = now;
-            const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
-                now - serving_started);
-            std::printf("[beat] serving %llus, connections %llu, journal events %llu\n",
-                        static_cast<unsigned long long>(uptime.count()),
-                        static_cast<unsigned long long>(connections_served),
-                        static_cast<unsigned long long>(host.value()->status().journal_events));
-        }
-        std::fflush(stdout);
+        // The production serve loop (ipc/pipe_service.hpp): a connection
+        // may carry a bounded frame SEQUENCE — the wire's declared contract
+        // (connection_seq "strictly increasing per connection") and the
+        // hook client's hello+event shape (2026-09-24 corrective decision).
+        (void)qiven::runtime::ipc::serve_connection(connection.value(), codec, admit, handle);
     }
 
     host.value()->request_shutdown();
