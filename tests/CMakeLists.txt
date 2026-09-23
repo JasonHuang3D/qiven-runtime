@@ -59,6 +59,8 @@ add_library(
     OBJECT
         headers/adapter_handshake.cpp
         headers/adapter_manifest.cpp
+        headers/adapter_zcode_event.cpp
+        headers/adapter_zcode_hook.cpp
         headers/auth.cpp
         headers/claims.cpp
         headers/generation.cpp
@@ -329,6 +331,10 @@ qiven_runtime_add_journal_test(generation-stale generation_stale.cpp)
 qiven_runtime_add_journal_test(pipe-frame-security pipe_frame_security.cpp)
 qiven_runtime_add_journal_test(process-runner-bounds process_runner_bounds.cpp)
 qiven_runtime_add_journal_test(host-lifecycle host_lifecycle.cpp)
+
+# --- MVP-4 hook adapter tests (design docs/design/mvp4-hook-adapter.md §6)
+
+qiven_runtime_add_journal_test(hook-conformance hook_conformance.cpp)
 
 # The crash test needs the crash hooks live INSIDE the process that dies:
 # it compiles the journal sources directly with the test-guard macro

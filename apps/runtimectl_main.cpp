@@ -38,7 +38,9 @@ int usage()
     std::cerr << "usage: qiven-runtimectl cognition show [--root <qiven-context checkout>]\n"
               << "       qiven-runtimectl profile show [--profile <profile file>]\n"
               << "       qiven-runtimectl status show [--root <qiven-context checkout>]\n"
-              << "       qiven-runtimectl doctor show [--root <qiven-context checkout>]\n";
+              << "       qiven-runtimectl doctor show [--root <qiven-context checkout>]\n"
+              << "       qiven-runtimectl host shutdown [--root <qiven-context checkout>] "
+                 "[--grace-ms N]\n";
     return exit_usage;
 }
 
@@ -233,6 +235,47 @@ int ipc_show(const std::vector<std::string>& args, bool doctor)
               << "  quarantined     : " << (reply.value().quarantined ? "yes" : "no") << "\n";
     return exit_ok;
 }
+// The one non-read verb (MVP-4 H-4; batch design delta 1.4): an explicit,
+// authenticated, audit-logged operator shutdown. The ack precedes the
+// host's drain.
+int host_shutdown(const std::vector<std::string>& args)
+{
+    std::filesystem::path repo_root = std::filesystem::current_path();
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        repo_root = given;
+    }
+    qiven::u64 grace_ms = 3000;
+    if (const auto given = flag_value(args, "--grace-ms"); !given.empty())
+    {
+        grace_ms = static_cast<qiven::u64>(std::strtoull(given.string().c_str(), nullptr, 10));
+    }
+    if (grace_ms == 0 || grace_ms > 30000)
+    {
+        std::cout << "shutdown: --grace-ms must be in (0, 30000]\n";
+        return exit_usage;
+    }
+    qiven::runtime::ipc::Request request;
+    request.kind        = qiven::runtime::ipc::Request::Kind::Shutdown;
+    request.request_id  = 1;
+    request.grace_ms    = grace_ms;
+    request.deadline_ms = 3000;
+    auto reply          = transact(repo_root / ".qiven" / "runtime", request);
+    if (!reply.is_ok())
+    {
+        std::cout << "shutdown: HOST UNREACHABLE (" << reply.reason().message
+                  << ") - nothing is reported governed\n";
+        return exit_fail;
+    }
+    if (reply.value().kind == qiven::runtime::ipc::Reply::Kind::ShutdownAck)
+    {
+        std::cout << "shutdown: acknowledged; host is draining (grace " << grace_ms << " ms)\n";
+        return exit_ok;
+    }
+    std::cout << "shutdown: HOST DENIED (" << reply.value().error_code << ": "
+              << reply.value().error_detail << ")\n";
+    return exit_fail;
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -259,6 +302,10 @@ int main(int argc, char** argv)
     if (object == "doctor" && verb == "show")
     {
         return ipc_show(args, true);
+    }
+    if (object == "host" && verb == "shutdown")
+    {
+        return host_shutdown(args);
     }
     return usage();
 }

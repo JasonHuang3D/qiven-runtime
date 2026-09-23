@@ -151,7 +151,8 @@ ProfileFileResult load_profile_file(const std::filesystem::path& file)
         Mediation,
         Claims,
         Cognition,
-        CognitionSources
+        CognitionSources,
+        ToolInventory
     };
     Section section  = Section::None;
     bool schema_seen = false;
@@ -317,6 +318,16 @@ ProfileFileResult load_profile_file(const std::filesystem::path& file)
             {
                 ok      = empty_value;
                 section = Section::Cognition;
+            }
+            else if (field->key == "tool_inventory")
+            {
+                ok      = empty_value;
+                section = Section::ToolInventory;
+            }
+            else if (field->key == "record_launcher")
+            {
+                profile.record_launcher = field->value;
+                section                 = Section::None;
             }
             else
             {
@@ -602,6 +613,68 @@ ProfileFileResult load_profile_file(const std::filesystem::path& file)
             break;
         }
 
+        case Section::ToolInventory:
+        {
+            if (is_list_row)
+            {
+                profile.tool_inventory.emplace_back();
+            }
+            else if (profile.tool_inventory.empty())
+            {
+                fail_line();
+                break;
+            }
+            if (!field)
+            {
+                fail_line();
+                break;
+            }
+            if (field->key == "tool")
+            {
+                if (field->value.empty())
+                {
+                    fail_line();
+                    break;
+                }
+                profile.tool_inventory.back().tool = field->value;
+            }
+            else if (field->key == "capability")
+            {
+                const auto value = parse_u64(field->value);
+                if (!value)
+                {
+                    fail_line();
+                    break;
+                }
+                profile.tool_inventory.back().capability = *value;
+            }
+            else if (field->key == "extraction")
+            {
+                const auto& value = field->value;
+                if (value != "command" && value != "file_path")
+                {
+                    fail_line();
+                    break;
+                }
+                profile.tool_inventory.back().extraction = value;
+            }
+            else if (field->key == "detector")
+            {
+                const auto& value = field->value;
+                if (value != "exact_path" && value != "conservative_text_reference")
+                {
+                    fail_line();
+                    break;
+                }
+                profile.tool_inventory.back().detector = value;
+            }
+            else
+            {
+                fail_line();
+            }
+            break;
+        }
+
         case Section::None:
             fail_line();
             break;
@@ -692,6 +765,55 @@ ProfileFileResult load_profile_file(const std::filesystem::path& file)
                                                      std::to_string(capability.id.value) +
                                                      " has no mediation entry (gaps are explicit, not silent)"));
         }
+    }
+
+    // MVP-4 complete-mediation precondition (batch design section 3.5):
+    // every ActionInterception-mediated FileSystemWrite capability has a
+    // tool_inventory row, and every inventory row references a declared,
+    // intercepted capability. An unclaimed mediation gap is explicit.
+    if (!profile.tool_inventory.empty())
+    {
+        for (const auto& row : profile.tool_inventory)
+        {
+            const profile::MediationEntry* entry            = nullptr;
+            const adapter::CapabilityDescriptor* capability = nullptr;
+            for (const auto& candidate : mediation)
+            {
+                if (candidate.capability.value == row.capability)
+                {
+                    for (const auto& declared : capabilities)
+                    {
+                        if (declared.id.value == row.capability)
+                        {
+                            capability = &declared;
+                            break;
+                        }
+                    }
+                    entry = &candidate;
+                    break;
+                }
+            }
+            if (entry == nullptr || capability == nullptr)
+            {
+                return ProfileFileResult::fail(
+                    malformed("tool_inventory references undeclared capability " +
+                              std::to_string(row.capability)));
+            }
+            if (entry->kind != profile::MediationKind::ActionInterception ||
+                capability->operation_class != adapter::OperationClass::FileSystemWrite)
+            {
+                return ProfileFileResult::fail(
+                    malformed("tool_inventory capability " + std::to_string(row.capability) +
+                              " must be an intercepted FileSystemWrite capability"));
+            }
+        }
+        // Deliberately NO downward completeness check here (design §3.5
+        // correction, found by profile_accept at batch time): capabilities
+        // 1-3 are the mediated qiven-record path, not harness tool
+        // surfaces — requiring an inventory row for them is not well
+        // typed. Completeness over the HARNESS write surface is the
+        // inventory itself plus the H1 real-tool proof; the record-path
+        // capabilities are guarded by the typed request surface (MVP-5).
     }
 
     // The scope value (normalized) and the profile build.

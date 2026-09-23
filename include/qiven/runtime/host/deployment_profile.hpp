@@ -41,6 +41,17 @@ struct ProfileCognition
     std::vector<std::string> source_paths;
 };
 
+// MVP-4 (batch design section 3.5): the write-capable tool entry points
+// the hook mediates, declared as profile DATA — the complete-mediation
+// claim is checked against this enumeration, never against code.
+struct ToolInventoryEntry
+{
+    std::string tool;       // harness tool name, e.g. "Bash"
+    u64 capability = 0;     // the declared capability id it maps to
+    std::string extraction; // command | file_path
+    std::string detector;   // exact_path | conservative_text_reference
+};
+
 struct ProfileFile
 {
     std::string profile_id;
@@ -53,7 +64,9 @@ struct ProfileFile
     std::vector<std::string> governed_paths;
     ProfileCognition cognition;
     std::filesystem::path git_executable;
-    u64 git_min_version_major_minor = 0; // (major << 16) | minor, 0 = unrecorded
+    u64 git_min_version_major_minor = 0;            // (major << 16) | minor, 0 = unrecorded
+    std::vector<ToolInventoryEntry> tool_inventory; // MVP-4
+    std::string record_launcher;                    // accepted qiven-record grammar pointer (MVP-4)
     // The built profile value (valid only when load()/accept() succeeded).
     profile::DeploymentProfile built;
 };

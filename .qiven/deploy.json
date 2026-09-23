@@ -13,6 +13,7 @@
     { "from": "build/vs2022-x64/Release/qiven-runtime-host.exe", "to": "bin/qiven-runtime-host.exe" },
     { "from": "build/vs2022-x64/Release/qiven-adapter-bridge.exe", "to": "bin/qiven-adapter-bridge.exe" },
     { "from": "build/vs2022-x64/Release/qiven-runtimectl.exe", "to": "bin/qiven-runtimectl.exe" },
+    { "from": "build/vs2022-x64/Release/qiven-zcode-hook.exe", "to": "bin/qiven-zcode-hook.exe" },
     { "from": "build/vs2022-x64/Release/qiven-runtime.lib", "to": "lib/qiven-runtime.lib" },
     { "from": "include/qiven", "to": "include/qiven" },
     { "from": "config", "to": "config" }
@@ -23,12 +24,15 @@
       { "from": "docs/architecture/runtime-production-mvp-architecture.md", "to": "ARCHITECTURE.md" },
       { "from": "docs/architecture/runtime-production-mvp-cpp-design.md", "to": "CPP-DESIGN.md" },
       { "from": "docs/design/mvp2-cognition.md", "to": "DESIGN-MVP2.md" },
-      { "from": "docs/design/mvp3-host-ipc.md", "to": "DESIGN-MVP3.md" }
+      { "from": "docs/design/mvp3-host-ipc.md", "to": "DESIGN-MVP3.md" },
+      { "from": "docs/design/mvp4-hook-adapter.md", "to": "DESIGN-MVP4.md" },
+      { "from": "docs/engineering/mvp4-h1-kit.md", "to": "MVP4-H1-KIT.md" }
     ]
   },
   "licenses": { "repo": "README.md", "repo_note": "internal workspace project; no separate LICENSE file yet" },
   "smoke": [
     { "cwd": "bin", "command": ["qiven-runtime-host.exe", "--help"], "expect_exit": 0, "note": "composition root self-identification" },
-    { "cwd": "bin", "command": ["qiven-runtimectl.exe", "cognition", "show", "--root", ".."], "expect_exit": 1, "note": "read-only client: typed non-zero when no active bundle exists in the bundle cwd" }
+    { "cwd": "bin", "command": ["qiven-runtimectl.exe", "cognition", "show", "--root", ".."], "expect_exit": 1, "note": "read-only client: typed non-zero when no active bundle exists in the bundle cwd" },
+    { "cwd": "bin", "command": ["qiven-zcode-hook.exe", "--help"], "expect_exit": 2, "note": "thin hook client: usage failure (exit 2) when invoked without --event/--root" }
   ]
 }

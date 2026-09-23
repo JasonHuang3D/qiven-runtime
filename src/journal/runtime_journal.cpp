@@ -2191,6 +2191,38 @@ qiven::Result<bool> RuntimeJournal::quarantined()
     return m_quarantined;
 }
 
+qiven::Result<std::optional<std::string>> RuntimeJournal::get_meta(std::string_view key)
+{
+    return read_meta(m_db, key);
+}
+
+qiven::Result<void> RuntimeJournal::set_meta(std::string_view key, std::string_view value)
+{
+    return write_meta(m_db, key, value);
+}
+
+qiven::Result<void> RuntimeJournal::append_audit_at(std::string_view kind,
+                                                    const std::vector<std::byte>& payload,
+                                                    u64 now_ms)
+{
+    if (auto prelude = deny_if_quarantined(); !prelude.is_ok())
+    {
+        return failed<void>(prelude);
+    }
+    if (auto clock = check_clock(now_ms); !clock.is_ok())
+    {
+        return failed<void>(clock);
+    }
+    auto txn = m_db.txn([&]() -> qiven::Result<void> {
+        if (auto audit = append_audit(kind, payload); !audit.is_ok())
+        {
+            return failed<void>(audit);
+        }
+        return touch_wall_clock(now_ms);
+    });
+    return txn;
+}
+
 qiven::Result<void> RuntimeJournal::checkpoint()
 {
     return m_db.checkpoint_wal();

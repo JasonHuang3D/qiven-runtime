@@ -267,6 +267,20 @@ public:
     [[nodiscard]] qiven::Result<std::string> install_id();
     [[nodiscard]] qiven::Result<void> verify_audit_chain();
 
+    // MVP-4 (batch design section 3.4): durable host scalars — the last
+    // successful cognition refresh time survives host restarts so the
+    // freshness window measures content age, not process age.
+    [[nodiscard]] qiven::Result<std::optional<std::string>> get_meta(std::string_view key);
+    [[nodiscard]] qiven::Result<void> set_meta(std::string_view key, std::string_view value);
+
+    // MVP-4: audit-event append with the CALLER's clock (the injected
+    // time-authority law, DESIGN section 4). Hook outcome/deny events use
+    // this; the port append() stamps the ambient clock and exists for the
+    // record trail, not for control events on the request path.
+    [[nodiscard]] qiven::Result<void> append_audit_at(std::string_view kind,
+                                                      const std::vector<std::byte>& payload,
+                                                      u64 now_ms);
+
     // --- IRuntimeJournalPort ----------------------------------------------
     // append(): durable append of one control fact as a chain-protected
     // audit event carrying the record's typed payload bytes (the rich
