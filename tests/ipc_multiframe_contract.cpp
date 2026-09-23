@@ -312,11 +312,24 @@ int main()
                          qiven::Error::make(qiven::error_category::invalid_argument, ipc::err_frame,
                                             "ipc: unsupported protocol version")) ==
                      adapter::hook_reason_version_skew);
-        // Secret skew (HMAC 62 at decode).
-        QIVEN_VERIFY(classify_transport_failure(
-                         qiven::Error::make(qiven::error_category::invalid_argument, ipc::err_auth,
-                                            "ipc: HMAC verification failed")) ==
-                     adapter::hook_reason_secret_skew);
+        // Secret skew: derived from a REAL wrong-key decode failure (not a
+        // synthetic string — adversarial review m1: the classifier must not
+        // be pinned only to hand-copied producer text).
+        {
+            SecretKey other_key {};
+            for (std::size_t i = 0; i < other_key.size(); ++i)
+            {
+                other_key[i] = static_cast<std::byte>(i * 13 + 5);
+            }
+            const ipc::FrameCodec wrong_codec(other_key);
+            const std::string wire = codec.encode(FrameHeader {},
+                                                  qiven::runtime::ipc::encode_request_body(
+                                                      hello_request(9)));
+            auto broken            = wrong_codec.decode(wire);
+            QIVEN_VERIFY(!broken.is_ok());
+            QIVEN_VERIFY(classify_transport_failure(broken.reason()) ==
+                         adapter::hook_reason_secret_skew);
+        }
         // Deadline expiry.
         QIVEN_VERIFY(classify_transport_failure(
                          qiven::Error::make(qiven::error_category::unavailable, 0, "unused"),
@@ -331,6 +344,79 @@ int main()
         QIVEN_VERIFY(adapter::hook_reason_admission != adapter::hook_reason_secret_skew);
         QIVEN_VERIFY(adapter::hook_reason_timeout != adapter::hook_reason_version_skew);
         std::printf("[ OK ] taxonomy: 120/121/122/123/124/116 disjoint and classable\n");
+    }
+
+    // --- Test 6: the per-connection frame budget is enforced typed -------
+    {
+        auto server = qiven::runtime::ipc::NamedPipeServer::create(
+            unique_install_id("mfc6"));
+        QIVEN_VERIFY(server.is_ok());
+
+        auto client = PipeClient::connect(
+            qiven::runtime::ipc::pipe_name(unique_install_id("mfc6")));
+        QIVEN_VERIFY(client.is_ok());
+
+        qiven::runtime::ipc::ServeStats stats;
+        std::thread server_thread([&]() {
+            auto connection = server.value().accept();
+            QIVEN_VERIFY(connection.is_ok());
+            qiven::runtime::ipc::ServeOptions options;
+            options.max_frames = 2;
+            stats              = qiven::runtime::ipc::serve_connection(
+                connection.value(), codec, [] { return std::string(""); },
+                [](const Request& request) { return canned_reply(request); }, options);
+        });
+
+        // Frames 1 and 2 serve normally; frame 3 exceeds the budget.
+        for (int i = 1; i <= 2; ++i)
+        {
+            QIVEN_VERIFY(write_request(client.value(), codec, hello_request(i), i));
+            auto frame = client.value().read_frame(2000);
+            QIVEN_VERIFY(frame.has_value());
+            QIVEN_VERIFY(decode_client_reply(codec, frame.value()).kind == Reply::Kind::HelloAck);
+        }
+        QIVEN_VERIFY(write_request(client.value(), codec, hello_request(3), 3));
+        {
+            auto frame = client.value().read_frame(2000);
+            QIVEN_VERIFY(frame.has_value());
+            const Reply reply = decode_client_reply(codec, frame.value());
+            QIVEN_VERIFY(reply.kind == Reply::Kind::ErrorView);
+            QIVEN_VERIFY(reply.error_detail.find("frame budget") != std::string::npos);
+        }
+        server_thread.join();
+        QIVEN_VERIFY(stats.frames_served == 2);
+        QIVEN_VERIFY(stats.budget_closed);
+        std::printf("[ OK ] budget: third frame denied typed after max_frames\n");
+    }
+
+    // --- Test 7: a DRIPPING client cannot wedge the serve loop (M1) ------
+    {
+        auto server = qiven::runtime::ipc::NamedPipeServer::create(
+            unique_install_id("mfc7"));
+        QIVEN_VERIFY(server.is_ok());
+
+        auto client = PipeClient::connect(
+            qiven::runtime::ipc::pipe_name(unique_install_id("mfc7")));
+        QIVEN_VERIFY(client.is_ok());
+
+        qiven::runtime::ipc::ServeStats stats;
+        std::thread server_thread([&]() {
+            auto connection = server.value().accept();
+            QIVEN_VERIFY(connection.is_ok());
+            qiven::runtime::ipc::ServeOptions options;
+            options.idle_timeout_ms = 300;
+            stats                   = qiven::runtime::ipc::serve_connection(
+                connection.value(), codec, [] { return std::string(""); },
+                [](const Request& request) { return canned_reply(request); }, options);
+        });
+
+        // One byte of a header, then silence: the prior blocking read held
+        // the serve thread forever (only first-byte arrival was bounded).
+        QIVEN_VERIFY(client.value().write_bytes("Q"));
+        server_thread.join(); // must return within the bound, not hang
+        QIVEN_VERIFY(stats.idle_closed);
+        QIVEN_VERIFY(stats.frames_served == 0);
+        std::printf("[ OK ] drip: partial-frame stall closed within the bound\n");
     }
 
     std::printf("[ OK ] ipc_multiframe_contract: all corrective regressions pass\n");

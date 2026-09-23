@@ -339,6 +339,9 @@ qiven_runtime_add_journal_test(hook-conformance hook_conformance.cpp)
 # --- MVP-4 corrective lane (2026-09-24 deny-116 incident regressions) ------
 
 qiven_runtime_add_journal_test(ipc-multiframe-contract ipc_multiframe_contract.cpp)
+# A reintroduced unbounded read must FAIL, not hang the suite (adversarial
+# review m4): the drip/budget tests regress by hanging without this bound.
+set_tests_properties(qiven-runtime.ipc-multiframe-contract PROPERTIES TIMEOUT 120)
 
 # The crash test needs the crash hooks live INSIDE the process that dies:
 # it compiles the journal sources directly with the test-guard macro

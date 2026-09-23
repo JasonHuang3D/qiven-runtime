@@ -18,9 +18,9 @@
 // concurrency deferral). One connection may carry a BOUNDED SEQUENCE of
 // frames (ipc/pipe_service.hpp, 2026-09-24 corrective decision): the wire
 // contract has always declared connection_seq "strictly increasing per
-// connection". Reads and writes are bounded by the frame caps; frame
-// ARRIVAL is bounded by the read deadline (a silent client cannot wedge
-// the serve loop).
+// connection". Reads and writes are bounded by the frame caps; each frame
+// (ALL of it, not just its first byte) is bounded by the read deadline, so
+// neither a silent nor a dripping client can wedge the serve loop.
 // ============================================================================
 
 #include <qiven/result.hpp>
@@ -78,10 +78,10 @@ public:
     // Reads ONE frame's bytes (bounded by max_frame_bytes; short read or
     // disconnect returns an empty optional).
     [[nodiscard]] std::optional<std::string> read_frame();
-    // Deadline form: waits at most timeout_ms for the frame's FIRST bytes
-    // (PeekNamedPipe poll); expiry returns an empty optional with
-    // last_read_timed_out() true. A stall mid-frame after arrival keeps the
-    // blocking semantics (owner-scoped clients; see pipe_service.hpp).
+    // Deadline form: the timeout bounds the COMPLETE frame (header + MAC +
+    // body) under one deadline — a client that writes one byte and stalls
+    // cannot hold the reader (adversarial-review M1); expiry returns an
+    // empty optional with last_read_timed_out() true.
     [[nodiscard]] std::optional<std::string> read_frame(u64 timeout_ms);
     [[nodiscard]] bool write_bytes(std::string_view bytes);
 

@@ -163,8 +163,6 @@ fail-closed (that is the design).
 1. In the ZCode UI, approve the hook configuration (Settings -> Hooks).
 2. Double-click:  `{run_host}`
 
-Double-click:  `{run_host}`
-
 A console window opens and SHOWS the boot: root/profile/state paths,
 install id, generation, cognition bundle revision, the pipe name, then
 `[ OK ] serving`. While healthy it prints a `[conn]` line per hook
@@ -319,7 +317,8 @@ def build_kit(out_root: Path, gate: str, token: str) -> int:
         "echo [ RUN] MVP-4 H1 pre-flight self-check (enable-gated)",
         f"\"{sys.executable}\" \"{REPO_ROOT / 'tools' / 'h1_kit.py'}\" preflight "
         f"--kit \"{kit_dir}\" --session-token {token}",
-        "echo [ OK ] preflight command returned (exit %errorlevel%)",
+        "if errorlevel 1 (echo [FAIL] PREFLIGHT FAILED - do NOT approve the config;"
+        " paste this window to the session) else (echo [ OK ] preflight wrapper done)",
         "pause",
     ]) + "\n", encoding="utf-8", newline="\n")
 
@@ -361,10 +360,14 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
     review is the enable gate). Proves in the TARGET environment:
       1. the kit binaries boot a host (or an existing host answers),
       2. a REAL pipe round trip completes (hello + pre_tool verdict),
-      3. with the host stopped, the hook denies 120 (no listener) with
+      3. the authenticated shutdown actually EXITS the host process,
+      4. with the host stopped, the hook denies 120 (no listener) with
          honest fail-closed text -- the taxonomy split, live.
     NOT an availability guarantee: after enablement, host loss still denies
     fail-closed per the design.
+
+    Custody (adversarial-review M4): every subprocess is bounded and the
+    booted host is killed on ANY exit path, including exceptions.
     """
     import subprocess as sp
     import time
@@ -399,66 +402,77 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
               ("" if ok else f" -- exit {code}: {err}"))
         return ok
 
-    # 1. Boot a host from the kit (an already-running host is also fine: the
-    # singleton pipe answers; the probe proves the environment either way).
-    print("[ RUN] preflight: host boot + real-pipe round trip")
+    result = EXIT_FAIL
     host_proc = None
     host_answered_before_boot = False
-    if verdict_round_trip("host reachable BEFORE boot (existing host)"):
-        host_answered_before_boot = True
-    else:
-        with log_path.open("w", encoding="utf-8", newline="\n") as log:
-            host_proc = sp.Popen(
-                [str(host_exe), "--root", str(GOVERNED_ROOT)],
-                stdout=log, stderr=sp.STDOUT,
+    try:
+        # 1. Boot a host from the kit (an already-running host is also fine:
+        # the singleton pipe answers; the probe proves the environment).
+        print("[ RUN] preflight: host boot + real-pipe round trip")
+        if verdict_round_trip("host reachable BEFORE boot (existing host)"):
+            host_answered_before_boot = True
+        else:
+            with log_path.open("w", encoding="utf-8", newline="\n") as log:
+                host_proc = sp.Popen(
+                    [str(host_exe), "--root", str(GOVERNED_ROOT)],
+                    stdout=log, stderr=sp.STDOUT,
+                    creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
+            deadline = time.monotonic() + 20.0
+            booted = False
+            err = ""
+            while time.monotonic() < deadline:
+                if host_proc.poll() is not None:
+                    print(f"[FAIL] host exited during boot (exit {host_proc.returncode}); "
+                          f"log: {log_path}")
+                    break
+                code, _out, err = run_probe()
+                if code == 0 or "(host verdict)" in err:
+                    booted = True
+                    break
+                time.sleep(0.5)
+            if not booted:
+                print(f"[FAIL] no verdict round trip within 20 s; last hook output: {err}")
+                return EXIT_FAIL
+            print("[ OK ] host booted from kit bin; verdict round trip complete")
+
+        # 2. Authenticated shutdown must actually EXIT the host we booted
+        # (adversarial-review M3: an acked-but-still-listening host is a
+        # FAIL, not a kill-and-pretend).
+        if host_proc is not None:
+            stop = sp.run(
+                [str(ctl_exe), "host", "shutdown", "--root", str(GOVERNED_ROOT)],
+                capture_output=True, text=True, timeout=20,
                 creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
-        deadline = time.monotonic() + 20.0
-        booted = False
-        err = ""
-        while time.monotonic() < deadline:
-            if host_proc.poll() is not None:
-                print(f"[FAIL] host exited during boot (exit {host_proc.returncode}); "
-                      f"log: {log_path}")
-                break
+            exited = False
+            for _ in range(20):
+                if host_proc.poll() is not None:
+                    exited = True
+                    break
+                time.sleep(0.5)
+            if not exited:
+                print("[FAIL] host did NOT exit within 10 s of the shutdown ack "
+                      "(killing it now - the exe shutdown wiring is broken)")
+                return EXIT_FAIL
+            print(f"[ OK ] host exited after authenticated shutdown "
+                  f"(runtimectl exit {stop.returncode})")
+
+        # 3. Fail-closed honesty: with no host, the deny names its class.
+        if host_proc is not None or not host_answered_before_boot:
             code, _out, err = run_probe()
-            if code == 0 or "(host verdict)" in err:
-                booted = True
-                break
-            time.sleep(0.5)
-        if not booted:
-            print(f"[FAIL] no verdict round trip within 20 s; last hook output: {err}")
-            if host_proc is not None and host_proc.poll() is None:
-                host_proc.kill()
-            return EXIT_FAIL
-        print("[ OK ] host booted from kit bin; verdict round trip complete")
+            honest = (code == 2 and "deny 120" in err and "no host verdict" in err
+                      and "fail-closed" in err)
+            print(("[ OK ] " if honest else "[FAIL] ") +
+                  "no-listener deny is typed 120 with honest fail-closed text" +
+                  ("" if honest else f" -- exit {code}: {err}"))
+            if not honest:
+                return EXIT_FAIL
 
-    # 2. Stop the host we started (or leave the owner's host alone).
-    if host_proc is not None:
-        stop = sp.run(
-            [str(ctl_exe), "host", "shutdown", "--root", str(GOVERNED_ROOT)],
-            capture_output=True, text=True, timeout=20,
-            creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
-        for _ in range(20):
-            if host_proc.poll() is not None:
-                break
-            time.sleep(0.5)
-        if host_proc.poll() is None:
+        print("[ OK ] PREFLIGHT PASS - safe to approve the hook config in the ZCode UI")
+        result = EXIT_OK
+        return result
+    finally:
+        if host_proc is not None and host_proc.poll() is None:
             host_proc.kill()
-        print(f"[ OK ] host stopped (runtimectl exit {stop.returncode})")
-
-    # 3. Fail-closed honesty: with no host, the deny names its class (120).
-    if host_proc is not None or not host_answered_before_boot:
-        code, _out, err = run_probe()
-        honest = (code == 2 and "deny 120" in err and "no host verdict" in err
-                  and "fail-closed" in err)
-        print(("[ OK ] " if honest else "[FAIL] ") +
-              "no-listener deny is typed 120 with honest fail-closed text" +
-              ("" if honest else f" -- exit {code}: {err}"))
-        if not honest:
-            return EXIT_FAIL
-
-    print("[ OK ] PREFLIGHT PASS - safe to approve the hook config in the ZCode UI")
-    return EXIT_OK
 
 
 def main(argv=None) -> int:
@@ -471,8 +485,8 @@ def main(argv=None) -> int:
         pre = parser.parse_args(argv[1:])
         try:
             return cmd_preflight(Path(pre.kit), pre.session_token)
-        except (OSError, ValueError) as failure:
-            print(f"[FAIL] preflight: {failure}", file=sys.stderr)
+        except Exception as failure:  # bounded custody: no traceback escape (M4)
+            print(f"[FAIL] preflight: {type(failure).__name__}: {failure}", file=sys.stderr)
             return EXIT_FAIL
 
     parser = argparse.ArgumentParser(description="build the H1 acceptance kit package")

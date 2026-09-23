@@ -479,9 +479,47 @@ the same corrective batch:
    a wire-format decision across all three clients).
 
 Kit law addition: the H1 kit carries `preflight.cmd` (enable-gated
-functional self-check — host boot, real-pipe verdict round trip, typed
-120 no-listener honesty after stop) which the owner runs BEFORE
-approving the workspace config in the ZCode UI. Regression proof:
-`tests/ipc_multiframe_contract.cpp` (each test fails under the actual
-prior implementations — one-frame loop, silent admission, unchecked seq,
-unbounded idle, undifferentiated 116).
+functional self-check — host boot, real-pipe verdict round trip,
+authenticated-shutdown EXIT, typed 120 no-listener honesty after stop)
+which the owner runs BEFORE approving the workspace config in the ZCode
+UI. Regression proof: `tests/ipc_multiframe_contract.cpp` (each test
+fails under the actual prior implementations — one-frame loop, silent
+admission, unchecked seq, unbounded idle, undifferentiated 116; the
+drip-stall and budget tests carry a ctest TIMEOUT so a regression FAILS
+instead of hanging).
+
+### 7.1 Adversarial-review amendments (same batch, fresh-context review)
+
+An independent fresh-context review (R2 class
+`fresh-cognitive-same-family-isolated-context`) empirically falsified
+four properties of the first cut; all four are fixed in this batch:
+
+- **M1 — whole-frame deadline.** The idle bound originally covered only
+  first-byte arrival; a client writing one byte of a header and stalling
+  held the serve thread in a blocking `ReadFile` forever (reproduced:
+  host wedged 40 s; runtimectl starved behind it). `read_frame(timeout)`
+  now bounds the COMPLETE frame under one deadline (peek-poll before
+  every chunk).
+- **M2 — vanished-client accept retry.** A client that connected and
+  died while the host was busy made `ConnectNamedPipe` fail
+  NO_DATA/BROKEN_PIPE, which the accept path treated as fatal — killing
+  the host. Vanish-class errors now replace the listen instance and keep
+  accepting (bounded internal retry).
+- **M3 — shutdown exits the exe.** `runtimectl host shutdown` acked
+  draining while the exe served forever (g_stop was Ctrl+C-only). The
+  serve handler now sets the stop flag after the ShutdownAck rides the
+  connection; the preflight ASSERTS real process exit (a kill fallback
+  is a FAIL, not a success).
+- **M4 — preflight custody.** Probe timeouts raise `SubprocessError`
+  (not OSError): uncaught, they escaped as a traceback with a leaked
+  host and an "[ OK ]" wrapper line. The preflight now catches
+  everything, kills the host on every exit path (finally), and the .cmd
+  echoes FAIL on nonzero exit.
+- Minor in the same pass: taxonomy producers pinned by a REAL wrong-key
+  decode in the test (not only synthetic strings); host-answered
+  handshake rejections no longer claim "host cannot be reached";
+  CryptProtectData failures classify 123; residual documented — the
+  500 ms admission linger can still lose an error frame to a client
+  whose read is delayed beyond the bound (the frame loss window is
+  bounded and the class then degrades to 116-with-honest-text, never a
+  false allow).

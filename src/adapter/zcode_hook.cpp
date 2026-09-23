@@ -231,9 +231,12 @@ i32 classify_transport_failure(const qiven::Error& error, bool read_deadline_exp
     {
         return hook_reason_secret_skew;
     }
-    if (error.code == ipc::err_auth && message.find("secret") != std::string::npos)
+    if (message.find("secret") != std::string::npos ||
+        message.find("CryptProtectData") != std::string::npos)
     {
-        // The local installation secret is unreadable/stale (DPAPI class).
+        // The local installation secret is unreadable/stale (DPAPI class,
+        // incl. the mint-side CryptProtectData failure — adversarial-review
+        // m2: that message carries no "secret" token).
         return hook_reason_secret_skew;
     }
     if (error.code == hook_reason_no_listener || error.code == hook_reason_admission ||
@@ -288,12 +291,23 @@ HookOutcome run_zcode_hook(const HookRun& run)
     auto reply = transact(run, fields);
     if (!reply.is_ok())
     {
+        const i32 code = classify_transport_failure(reply.reason());
         if (pre_tool)
         {
-            return deny_client(classify_transport_failure(reply.reason()),
+            // The fail-closed clause is only TRUE for unreachable-host
+            // classes; a host that ANSWERED and rejected the handshake
+            // must not be described as unreachable (adversarial-review
+            // m2: false "cannot be reached" text on host-answered codes).
+            const bool host_unreachable_class =
+                code == hook_reason_host_unavailable || code == hook_reason_no_listener ||
+                code == hook_reason_timeout;
+            return deny_client(code,
                                reply.reason().message +
-                                   " -- fail-closed deny (nothing is governed while the host "
-                                   "cannot be reached)");
+                                   (host_unreachable_class
+                                        ? " -- fail-closed deny (nothing is governed while the "
+                                          "host cannot be reached)"
+                                        : " -- fail-closed deny (no governed status without a "
+                                          "completed handshake)"));
         }
         return advisory_note(run.event + ": host unreachable -- " + reply.reason().message +
                              (run.event == "session_start"

@@ -9,6 +9,7 @@
 #include <wincrypt.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <iterator>
@@ -86,37 +87,72 @@ std::optional<std::string> read_bounded(HANDLE handle)
     return header;
 }
 
-// Bounded wait for the first incoming bytes (deadline discipline,
-// 2026-09-24 corrective lane): polls PeekNamedPipe so a silent client
-// cannot wedge a synchronous serve loop, and a slow host is a DIAGNOSABLE
-// timeout on the client side rather than an undifferentiated "no reply".
-enum class WaitStatus
+// Deadline-bounded exact read: consumes up to `size` bytes against ONE
+// frame-wide deadline point (M1: the bound covers the WHOLE frame, not
+// just first-byte arrival — a client that writes one byte of a header and
+// stalls must not hold the serve thread). Every chunk is preceded by a
+// peek so ReadFile only runs when bytes are confirmed.
+bool read_exact_deadline(HANDLE handle, char* buffer, usize size,
+                         const std::chrono::steady_clock::time_point& deadline, bool& timed_out)
 {
-    Readable,
-    Broken,
-    TimedOut,
-};
-
-WaitStatus wait_readable(HANDLE handle, u64 timeout_ms)
-{
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-    while (true)
+    usize done = 0;
+    while (done < size)
     {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            timed_out = true;
+            return false;
+        }
         DWORD available = 0;
         if (!PeekNamedPipe(handle, nullptr, 0, nullptr, &available, nullptr))
         {
-            return WaitStatus::Broken; // pipe broken/closing
+            return false; // broken/closing
         }
-        if (available > 0)
+        if (available == 0)
         {
-            return WaitStatus::Readable;
+            Sleep(5);
+            continue;
         }
-        if (std::chrono::steady_clock::now() >= deadline)
+        const usize want = (std::min)(static_cast<usize>(available), size - done);
+        DWORD chunk      = 0;
+        if (!ReadFile(handle, buffer + done, static_cast<DWORD>(want), &chunk, nullptr) ||
+            chunk == 0)
         {
-            return WaitStatus::TimedOut;
+            return false;
         }
-        Sleep(5);
+        done += chunk;
     }
+    return true;
+}
+
+// Deadline form of read_bounded: the timeout bounds the COMPLETE frame
+// (header + MAC + body) under one deadline. Returns nullopt with
+// timed_out=true on expiry.
+std::optional<std::string> read_bounded_deadline(HANDLE handle, u64 timeout_ms, bool& timed_out)
+{
+    timed_out           = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    std::string header(32, '\0');
+    if (!read_exact_deadline(handle, header.data(), header.size(), deadline, timed_out))
+    {
+        return std::nullopt;
+    }
+    u64 body_len = 0;
+    for (int i = 0; i < 8; ++i)
+    {
+        body_len |= static_cast<u64>(static_cast<unsigned char>(header[8 + i])) << (8 * i);
+    }
+    if (body_len > max_body_bytes)
+    {
+        return std::nullopt;
+    }
+    std::string tail(static_cast<usize>(body_len) + 32, '\0');
+    if (!tail.empty() && !read_exact_deadline(handle, tail.data(), tail.size(), deadline, timed_out))
+    {
+        return std::nullopt;
+    }
+    header.append(tail);
+    return header;
 }
 } // namespace
 
@@ -324,18 +360,11 @@ std::optional<std::string> PipeConnection::read_frame(u64 timeout_ms)
         return std::nullopt;
     }
     m_last_read_timed_out = false;
-    switch (wait_readable(static_cast<HANDLE>(m_handle), timeout_ms))
-    {
-    case WaitStatus::Readable:
-        break;
-    case WaitStatus::TimedOut:
-        m_last_read_timed_out = true;
-        return std::nullopt;
-    case WaitStatus::Broken:
-    default:
-        return std::nullopt;
-    }
-    return read_bounded(static_cast<HANDLE>(m_handle));
+    bool timed_out        = false;
+    auto frame            = read_bounded_deadline(static_cast<HANDLE>(m_handle), timeout_ms,
+                                                  timed_out);
+    m_last_read_timed_out = timed_out;
+    return frame;
 }
 
 bool PipeConnection::write_bytes(std::string_view bytes)
@@ -471,41 +500,64 @@ qiven::Result<PipeConnection> NamedPipeServer::accept()
         return AcceptResult::fail(os_error(err_frame, "server is closed"));
     }
 
-    // Stand up the NEXT listen instance first (same owner-only DACL, no
-    // FIRST flag), so the connected instance can be handed to the caller
-    // wholesale — its handle, its connection, no disconnect mid-service.
-    HANDLE next = nullptr;
+    // A client that connected to this instance and DIED before we called
+    // ConnectNamedPipe (connect-and-close while the host was busy serving
+    // another connection — a NORMAL event since clients carry deadlines)
+    // fails with NO_DATA/BROKEN_PIPE/PIPE_NOT_CONNECTED. That is not a
+    // server error: replace the dead listen instance and keep accepting.
+    // The retry loop is INTERNAL so every caller of accept() gets a real
+    // connection or a hard failure (adversarial-review M2, 2026-09-24;
+    // the prior code killed the host on this path).
+    constexpr int max_vanish_retries = 8;
+    for (int attempt = 0;; ++attempt)
     {
-        PSECURITY_DESCRIPTOR descriptor = nullptr;
-        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                owner_only_sddl().c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+        // Stand up the NEXT listen instance first (same owner-only DACL,
+        // no FIRST flag), so the connected instance can be handed to the
+        // caller wholesale — its handle, its connection, no disconnect
+        // mid-service.
+        HANDLE next = nullptr;
         {
-            return AcceptResult::fail(os_error(err_auth, "owner-only DACL construction failed"));
+            PSECURITY_DESCRIPTOR descriptor = nullptr;
+            if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    owner_only_sddl().c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+            {
+                return AcceptResult::fail(os_error(err_auth,
+                                                   "owner-only DACL construction failed"));
+            }
+            SECURITY_ATTRIBUTES attributes { sizeof(SECURITY_ATTRIBUTES), descriptor, FALSE };
+            next = CreateNamedPipeW(
+                m_name.c_str(), PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                PIPE_UNLIMITED_INSTANCES, 64 * 1024, 64 * 1024, 0, &attributes);
+            LocalFree(descriptor);
+            if (next == INVALID_HANDLE_VALUE)
+            {
+                return AcceptResult::fail(os_error(err_frame,
+                                                   "next pipe instance creation failed"));
+            }
         }
-        SECURITY_ATTRIBUTES attributes { sizeof(SECURITY_ATTRIBUTES), descriptor, FALSE };
-        next = CreateNamedPipeW(
-            m_name.c_str(), PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            PIPE_UNLIMITED_INSTANCES, 64 * 1024, 64 * 1024, 0, &attributes);
-        LocalFree(descriptor);
-        if (next == INVALID_HANDLE_VALUE)
+
+        if (!ConnectNamedPipe(static_cast<HANDLE>(m_handle), nullptr) &&
+            GetLastError() != ERROR_PIPE_CONNECTED)
         {
-            return AcceptResult::fail(os_error(err_frame, "next pipe instance creation failed"));
+            const DWORD error = GetLastError();
+            CloseHandle(static_cast<HANDLE>(m_handle));
+            m_handle = next;
+            if ((error == ERROR_NO_DATA || error == ERROR_BROKEN_PIPE ||
+                 error == ERROR_PIPE_NOT_CONNECTED) &&
+                attempt < max_vanish_retries)
+            {
+                continue; // a client vanished mid-accept; keep listening
+            }
+            return AcceptResult::fail(os_error(err_frame, "accept failed"));
         }
-    }
 
-    if (!ConnectNamedPipe(static_cast<HANDLE>(m_handle), nullptr) &&
-        GetLastError() != ERROR_PIPE_CONNECTED)
-    {
-        CloseHandle(next);
-        return AcceptResult::fail(os_error(err_frame, "accept failed"));
+        // The connected instance becomes the connection; the server keeps
+        // listening on the fresh instance.
+        void* connected = m_handle;
+        m_handle        = next;
+        return AcceptResult(PipeConnection(connected));
     }
-
-    // The connected instance becomes the connection; the server keeps
-    // listening on the fresh instance.
-    void* connected = m_handle;
-    m_handle        = next;
-    return AcceptResult(PipeConnection(connected));
 }
 
 std::wstring NamedPipeServer::applied_sddl() const
@@ -611,17 +663,10 @@ std::optional<std::string> PipeClient::read_frame(u64 timeout_ms)
         return std::nullopt;
     }
     m_last_read_timed_out = false;
-    switch (wait_readable(static_cast<HANDLE>(m_handle), timeout_ms))
-    {
-    case WaitStatus::Readable:
-        break;
-    case WaitStatus::TimedOut:
-        m_last_read_timed_out = true;
-        return std::nullopt;
-    case WaitStatus::Broken:
-    default:
-        return std::nullopt;
-    }
-    return read_bounded(static_cast<HANDLE>(m_handle));
+    bool timed_out        = false;
+    auto frame            = read_bounded_deadline(static_cast<HANDLE>(m_handle), timeout_ms,
+                                                  timed_out);
+    m_last_read_timed_out = timed_out;
+    return frame;
 }
 } // namespace qiven::runtime::ipc

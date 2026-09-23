@@ -228,6 +228,17 @@ int main(int argc, char** argv)
             [&](const qiven::runtime::ipc::Request& request) -> qiven::runtime::ipc::Reply {
             auto reply = host.value()->handle(request, qiven::runtime::host::wall_now_ms());
 
+            // An authenticated shutdown ENDS the serve loop: the ack rides
+            // this connection back first (serve_connection writes it before
+            // the client's EOF), then g_stop ends the accept loop and the
+            // process exits cleanly (adversarial-review M3, 2026-09-24:
+            // `runtimectl host shutdown` previously acked draining while
+            // the exe kept serving forever).
+            if (request.kind == qiven::runtime::ipc::Request::Kind::Shutdown)
+            {
+                g_stop = TRUE;
+            }
+
             // One observable line per request (kind + outcome), then the
             // periodic heartbeat -- healthy silence never exceeds ~30 s.
             std::string request_label = "request";
