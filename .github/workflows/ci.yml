@@ -61,14 +61,68 @@ jobs:
     # failing run - the "phantom push runs" misclassified as a platform
     # anomaly on 2026-09-22; root cause found by the owner in the UI.
     steps:
+      # WR-3/WR-4 continuation (v29): the raw `cmake -S` entry (broken against
+      # a lone checkout since WR-0) is replaced by the workspace path. CI
+      # validates the LOCKED workspace graph: the control repository is pinned
+      # to the admitted revision and every node checkout rides the lock; runs
+      # are dispatched after a lock transaction advances (explicit-dispatch
+      # law). The replacement proof is an owner-dispatched run.
       - uses: actions/checkout@v6
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
-      - run: cmake -S . -B build -DQIVEN_RUNTIME_BUILD_TESTS=ON
+        with:
+          repository: JasonHuang3D/qiven-workspace
+          ref: 423082d428602abc7c21fd1af35652242d4e3cbd
+          path: qiven-workspace
+      - uses: actions/checkout@v6
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
-      - run: cmake --build build --config Debug --parallel
+        with:
+          repository: JasonHuang3D/qiven-devkit
+          ref: 945fdd2b399d6701ba2eab79688a730c009e835f
+          path: qiven-devkit
+      - uses: actions/checkout@v6
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
-      - run: ctest --test-dir build -C Debug --output-on-failure
+        with:
+          repository: JasonHuang3D/qiven-foundation
+          ref: 9045feee0c81fa247dec49407e51e891fe427744
+          path: qiven-foundation
+      - uses: actions/checkout@v6
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
+        with:
+          repository: JasonHuang3D/qiven-context-draft
+          ref: 50288c2ddcf7d3c9cf0fbc2a0a03eff9276bb6ce
+          path: qiven-context-draft
+      - uses: actions/checkout@v6
+        if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
+        with:
+          repository: JasonHuang3D/qiven-third-party-win
+          ref: 318453834315a68fa85374dffa9a77ff73d6e71c
+          path: qiven-third-party-win
+      - uses: actions/checkout@v6
+        if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
+        with:
+          repository: JasonHuang3D/qiven-runtime
+          ref: ba2a959ba3fdf069ae11367e3de39904eedeac51
+          path: qiven-runtime
+      - name: Configure (workspace bootstrap)
+        if: ${{ needs.plan.outputs[matrix.id] == 'true' && matrix.id == 'windows' }}
+        run: >-
+          python qiven-workspace/bootstrap/qiven-bootstrap.py gate-configure
+          --control qiven-workspace --devkit qiven-devkit
+          --repo qiven-runtime --repo-root qiven-runtime
+          --preset vs2022-x64 --cmake cmake
+      - name: Build (Debug)
+        if: ${{ needs.plan.outputs[matrix.id] == 'true' && matrix.id == 'windows' }}
+        run: cmake --build qiven-runtime/build/vs2022-x64 --config Debug --parallel
+      - name: Test (Debug)
+        if: ${{ needs.plan.outputs[matrix.id] == 'true' && matrix.id == 'windows' }}
+        run: ctest --test-dir qiven-runtime/build/vs2022-x64 -C Debug --output-on-failure
+      - name: Workspace path status (non-windows units)
+        if: ${{ needs.plan.outputs[matrix.id] == 'true' && matrix.id != 'windows' }}
+        run: >
+          echo "[SKIP] ${{ matrix.id }}: the workspace-path CI migration covers the
+          supported platform (windows; CMakePresets define vs2022-x64 only).
+          Per-platform presets are a WR-5-class follow-up; this run validates
+          nothing for ${{ matrix.id }}."
 
   ci-gate:
     name: CI Gate
