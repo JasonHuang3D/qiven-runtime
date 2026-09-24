@@ -44,6 +44,19 @@ HOOK_SESSION_TOKEN_DEFAULT = "zcode-h1-2026-09-23"
 GOVERNED_ROOT = Path("D:/JasonWork/qiven-context")
 WORKSPACE_CONFIG = Path("D:/JasonWork/.zcode/config.json")
 
+# The deployment profile every kit entrypoint runs the host with (the same
+# default profile name runtime_host_main.cpp derives). ADR-0049 kit
+# self-containment (2026-09-24 preflight incident): the kit carries its own
+# copy and every generated launcher passes it EXPLICITLY, so the owner-live
+# double-click (cwd = kit folder) never depends on a CWD-derived default.
+PROFILE_NAME = "zcode-jason-context-record-mvp.yaml"
+KIT_PROFILE_RELPATH = f"config/profiles/{PROFILE_NAME}"
+
+
+def kit_profile(kit_dir: Path) -> Path:
+    """The kit-internal deployment profile path (ADR-0049 self-containment)."""
+    return kit_dir / "config" / "profiles" / PROFILE_NAME
+
 
 def sha256_of(path: Path) -> str:
     digest = hashlib.sha256()
@@ -168,11 +181,12 @@ install id, generation, cognition bundle revision, the pipe name, then
 `[ OK ] serving`. While healthy it prints a `[conn]` line per hook
 request and a `[beat]` heartbeat every 30 s. Leave the window open.
 
-If you prefer a shell instead of double-click, any of these starts it:
+If you prefer a shell instead of double-click, any of these starts it
+(the `--profile` argument is the kit's own copy - do not drop it):
 
-  cmd:        cd /d D:\\JasonWork\\qiven-runtime && build\\vs2022-x64\\Release\\qiven-runtime-host.exe --root D:\\JasonWork\\qiven-context
-  PowerShell: cd D:\\JasonWork\\qiven-runtime; build\\vs2022-x64\\Release\\qiven-runtime-host.exe --root D:\\JasonWork\\qiven-context
-  Git Bash:   cd /d/JasonWork/qiven-runtime && ./build/vs2022-x64/Release/qiven-runtime-host.exe --root /d/JasonWork/qiven-context
+  cmd:        cd /d D:\\JasonWork\\qiven-runtime && build\\vs2022-x64\\Release\\qiven-runtime-host.exe --root D:\\JasonWork\\qiven-context --profile "{kit_profile_win}"
+  PowerShell: cd D:\\JasonWork\\qiven-runtime; build\\vs2022-x64\\Release\\qiven-runtime-host.exe --root D:\\JasonWork\\qiven-context --profile "{kit_profile_win}"
+  Git Bash:   cd /d/JasonWork/qiven-runtime && ./build/vs2022-x64/Release/qiven-runtime-host.exe --root /d/JasonWork/qiven-context --profile "{kit_profile_posix}"
 
 ## Step 3 - new session + six probes (copy-paste, ~3 minutes)
 
@@ -228,6 +242,15 @@ trial: probes write nothing into it (that is the point).
 
 def build_kit(out_root: Path, gate: str, token: str) -> int:
     head, receipt = require_clean_tree_with_receipt(gate)
+    return assemble_kit(out_root, head, receipt, gate, token)
+
+
+def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
+                 token: str) -> int:
+    """Assemble the kit package content (called by build_kit after the
+    deploy-grade preconditions; also driven directly by the regression
+    test tools/h1_kit_test.py, which by construction runs on a tree that
+    is NOT clean-and-committed)."""
     build_dir = REPO_ROOT / "build" / "vs2022-x64" / "Release"
     exes = ["qiven-runtime-host.exe", "qiven-zcode-hook.exe", "qiven-runtimectl.exe"]
     for name in exes:
@@ -244,6 +267,17 @@ def build_kit(out_root: Path, gate: str, token: str) -> int:
     for name in exes:
         shutil.copy2(build_dir / name, kit_dir / "bin" / name)
         print(f"[ OK ] bin/{name} ({(build_dir / name).stat().st_size} bytes)")
+
+    # ADR-0049 self-containment (2026-09-24 preflight incident): the kit
+    # carries the deployment profile its entrypoints run the host with.
+    profile_src = REPO_ROOT / "config" / "profiles" / PROFILE_NAME
+    if not profile_src.exists():
+        raise SystemExit(f"[FAIL] deployment profile missing from the runtime "
+                         f"checkout: {profile_src}")
+    profile_dst = kit_profile(kit_dir)
+    profile_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(profile_src, profile_dst)
+    print(f"[ OK ] {KIT_PROFILE_RELPATH} (kit-internal deployment profile)")
 
     probe_log = REPO_ROOT / ".generated-temp" / "h1" / "payload-probe.log"
     config_text = render_config(build_dir / "qiven-zcode-hook.exe", token, probe_log)
@@ -263,7 +297,8 @@ def build_kit(out_root: Path, gate: str, token: str) -> int:
         "@echo off",
         "echo [ RUN] qiven-runtime-host (MVP-4 H1 trial)",
         "cd /d D:\\JasonWork\\qiven-runtime",
-        "build\\vs2022-x64\\Release\\qiven-runtime-host.exe --root D:\\JasonWork\\qiven-context",
+        f"build\\vs2022-x64\\Release\\qiven-runtime-host.exe --root D:\\JasonWork\\qiven-context"
+        f" --profile \"{profile_dst}\"",
         "echo [ OK ] host exited",
         "pause",
     ]) + "\n", encoding="utf-8", newline="\n")
@@ -311,6 +346,10 @@ def build_kit(out_root: Path, gate: str, token: str) -> int:
     # owner runs this BEFORE approving the config in the ZCode UI; it boots
     # the kit host, proves a real-pipe verdict round trip, stops the host,
     # and verifies the typed no-listener deny (120) with honest text.
+    # ADR-0049: the preflight subcommand launches the host with an EXPLICIT
+    # --profile resolving INSIDE THIS KIT (kit_profile of --kit, whose
+    # absolute path is baked into the cmd below) - the double-click cwd
+    # (kit folder) never feeds a CWD-derived default profile.
     preflight = kit_dir / "preflight.cmd"
     preflight.write_text("\n".join([
         "@echo off",
@@ -327,7 +366,8 @@ def build_kit(out_root: Path, gate: str, token: str) -> int:
         config_target=WORKSPACE_CONFIG.parent, config_name="config.json",
         backup_name="config.pre-h1.json", run_host=run_host, stop_host=stop_host,
         collect_evidence=collect, evidence_dir=evidence_dir, rollback=rollback,
-        preflight=preflight)
+        preflight=preflight,
+        kit_profile_win=str(profile_dst), kit_profile_posix=profile_dst.as_posix())
     (kit_dir / "GUIDE.md").write_text(guide, encoding="utf-8", newline="\n")
 
     files = []
@@ -358,7 +398,8 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
 
     Runs BEFORE the owner approves the hook config in the ZCode UI (the UI
     review is the enable gate). Proves in the TARGET environment:
-      1. the kit binaries boot a host (or an existing host answers),
+      1. the kit binaries boot a host (or an existing host answers) with
+         the KIT-INTERNAL deployment profile, passed explicitly (ADR-0049),
       2. a REAL pipe round trip completes (hello + pre_tool verdict),
       3. the authenticated shutdown actually EXITS the host process,
       4. with the host stopped, the hook denies 120 (no listener) with
@@ -390,6 +431,15 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
         if not (kit_bin / name).exists():
             print(f"[FAIL] kit reference copy missing: {kit_bin / name}")
             return EXIT_FAIL
+    # ADR-0049 self-containment (2026-09-24 preflight incident): the host
+    # below runs the KIT-INTERNAL deployment profile, passed EXPLICITLY --
+    # never a CWD-derived default (the owner double-click cwd is the kit
+    # folder, where no checkout-relative profile exists).
+    profile_file = kit_profile(kit_dir)
+    if not profile_file.exists():
+        print(f"[FAIL] kit is not self-contained: deployment profile missing: "
+              f"{profile_file} - rebuild the kit with the current h1_kit.py")
+        return EXIT_FAIL
 
     probe_payload = json.dumps({
         "tool_name": "Bash",
@@ -405,13 +455,6 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
             creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
-    def verdict_round_trip(detail: str) -> bool:
-        code, _out, err = run_probe()
-        ok = (code == 0) or ("(host verdict)" in err)
-        print(("[ OK ] " if ok else "[FAIL] ") + detail +
-              ("" if ok else f" -- exit {code}: {err}"))
-        return ok
-
     result = EXIT_FAIL
     host_proc = None
     host_answered_before_boot = False
@@ -419,12 +462,21 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
         # 1. Boot a host from the kit (an already-running host is also fine:
         # the singleton pipe answers; the probe proves the environment).
         print("[ RUN] preflight: host boot + real-pipe round trip")
-        if verdict_round_trip("host reachable BEFORE boot (existing host)"):
+        code, _out, err = run_probe()
+        if code == 0 or "(host verdict)" in err:
             host_answered_before_boot = True
+            print("[ OK ] host reachable BEFORE boot (existing host)")
         else:
+            # The expected cold path: no host is running yet, so the probe
+            # fail-closed denies 120. That is the DESIGNED state here, not
+            # a failure (2026-09-24 incident: this line wore a misleading
+            # [FAIL] on every cold start); the boot below is the real test.
+            print("[COLD] no existing host before boot (expected on a cold "
+                  f"start) - booting the kit host; probe said: {err}")
             with log_path.open("w", encoding="utf-8", newline="\n") as log:
                 host_proc = sp.Popen(
-                    [str(host_exe), "--root", str(GOVERNED_ROOT)],
+                    [str(host_exe), "--root", str(GOVERNED_ROOT),
+                     "--profile", str(profile_file)],
                     stdout=log, stderr=sp.STDOUT,
                     creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
             deadline = time.monotonic() + 20.0
@@ -443,7 +495,8 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
             if not booted:
                 print(f"[FAIL] no verdict round trip within 20 s; last hook output: {err}")
                 return EXIT_FAIL
-            print("[ OK ] host booted from kit bin; verdict round trip complete")
+            print("[ OK ] host booted with the kit-internal profile; "
+                  "verdict round trip complete")
 
         # 2. Authenticated shutdown must actually EXIT the host we booted
         # (adversarial-review M3: an acked-but-still-listening host is a
