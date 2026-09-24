@@ -11,12 +11,12 @@ endif()
 
 option(QIVEN_RUNTIME_BUILD_TESTS "Build qiven-runtime tests" ${PROJECT_IS_TOP_LEVEL})
 
-# --- workspace resolution (ADR-0052, WR-3 Foundation cutover) -------------
-# CMake receives the resolved Foundation root from the workspace adapter
-# (QIVEN_RESOLUTION_FILE, supplied by the gate-configure bootstrap); it
-# materializes the locked provider once per build graph and never resolves
-# siblings or checks a consumer-local pin. The draft and third-party edges
-# remain legacy root+pin until their own cutovers (WR-4 / WR-5).
+# --- workspace resolution (ADR-0052, WR-3/WR-4 cutovers) ------------------
+# CMake receives the resolved Foundation and context-draft roots from the
+# workspace adapter (QIVEN_RESOLUTION_FILE, supplied by the gate-configure
+# bootstrap); it materializes the locked providers once per build graph
+# and never resolves siblings or checks a consumer-local pin. Only the
+# third-party edge remains legacy root+pin until its cutover (WR-5).
 if(NOT DEFINED ENV{QIVEN_RESOLUTION_FILE} OR "$ENV{QIVEN_RESOLUTION_FILE}" STREQUAL "")
     message(FATAL_ERROR
         "QIVEN_RESOLUTION_FILE is not set - configure through the workspace bootstrap "
@@ -24,54 +24,14 @@ if(NOT DEFINED ENV{QIVEN_RESOLUTION_FILE} OR "$ENV{QIVEN_RESOLUTION_FILE}" STREQ
 endif()
 include("$ENV{QIVEN_RESOLUTION_FILE}")
 
-# --- frozen semantic library pin (layer contract §2) ----------------------
-# qiven-context-draft is consumed as a FROZEN semantic library at an exact
-# revision; upgrades are an explicit re-pin with re-validation.
-# Semantic baseline: frozen v4 @ 4cbc995. Consumption pin: a007837
-# (descendant chain 31fdf505 -> 73a4bfa -> 41d32ff -> de7f0e1 -> 611255b ->
-# 7583724 -> ea9af72 -> a007837; v4 semantics unchanged - the later commits
-# are engineering-docs managed syncs, template manual patches, the
-# foundation-pin build glue and the WR-3 workspace-cutover manifest).
-# WR-4 target: this pin retires when the draft edge migrates to the
-# workspace lock (the foundation ripple is already gone at WR-3).
-set(QIVEN_DRAFT_ROOT "" CACHE PATH "Path to the pinned qiven-context-draft checkout")
-if(NOT QIVEN_DRAFT_ROOT)
-    set(QIVEN_DRAFT_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/../qiven-context-draft")
-    if(EXISTS "${QIVEN_DRAFT_DEFAULT}/CMakeLists.txt")
-        set(QIVEN_DRAFT_ROOT "${QIVEN_DRAFT_DEFAULT}")
-    endif()
-endif()
-if(NOT EXISTS "${QIVEN_DRAFT_ROOT}/CMakeLists.txt")
-    message(FATAL_ERROR "qiven-context-draft checkout not found; set QIVEN_DRAFT_ROOT to its path")
-endif()
-
-set(QIVEN_DRAFT_PINNED_SHA "a0078372001d8ac45ac3ff8c5674167935b45f23")
-find_package(Git REQUIRED)
-execute_process(
-    COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
-    WORKING_DIRECTORY "${QIVEN_DRAFT_ROOT}"
-    RESULT_VARIABLE QIVEN_DRAFT_SHA_RESULT
-    OUTPUT_VARIABLE QIVEN_DRAFT_SHA
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
-)
-if(NOT QIVEN_DRAFT_SHA_RESULT EQUAL 0)
-    message(FATAL_ERROR "cannot read the qiven-context-draft revision at ${QIVEN_DRAFT_ROOT}")
-endif()
-if(NOT QIVEN_DRAFT_SHA STREQUAL QIVEN_DRAFT_PINNED_SHA)
-    message(
-        FATAL_ERROR
-            "qiven-context-draft is pinned at ${QIVEN_DRAFT_PINNED_SHA} but the checkout is at ${QIVEN_DRAFT_SHA}; "
-            "re-pin explicitly in CMakeLists.txt and re-validate (layer contract §2)"
-    )
-endif()
-
-# Foundation materializes through the workspace adapter guard (once per
-# build graph; a pre-existing qiven::foundation target that the adapter did
-# not create is a hard anti-spoof error). The draft singleton stays here
-# until WR-4.
+# Foundation and the context draft materialize through the workspace
+# adapter guard (once per build graph; a pre-existing provider target that
+# the adapter did not create is a hard anti-spoof error). The adapter adds
+# each provider subdirectory EXCLUDE_FROM_ALL under
+# ${CMAKE_BINARY_DIR}/qiven-workspace/<provider>; no consumer-local root
+# resolution or SHA pin remains on these edges (WR-3 / WR-4).
 qiven_workspace_materialize(qiven-foundation)
-add_subdirectory("${QIVEN_DRAFT_ROOT}" "${CMAKE_BINARY_DIR}/qiven-context-draft" EXCLUDE_FROM_ALL)
+qiven_workspace_materialize(qiven-context-draft)
 
 # --- third-party singleton (Devkit standard v2; cross-repo-cmake.md) ----
 # One workspace copy: qiven-third-party-win. Root resolution: env override
