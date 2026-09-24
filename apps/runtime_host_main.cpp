@@ -52,10 +52,11 @@ int usage()
 int main(int argc, char** argv)
 {
     std::filesystem::path repo_root = std::filesystem::current_path();
-    std::filesystem::path profile   = repo_root / "config" / "profiles" /
-                                    "zcode-jason-context-record-mvp.yaml";
+    std::filesystem::path profile; // set by --profile, else derived from the
+                                   // RESOLVED root below (never from CWD)
     std::filesystem::path git = "C:/Program Files/Git/cmd/git.exe";
     std::string build_id      = "qiven-runtime-host-mvp3";
+    bool profile_explicit     = false;
     for (int i = 1; i + 1 < argc; ++i)
     {
         const std::string flag = argv[i];
@@ -70,7 +71,8 @@ int main(int argc, char** argv)
         }
         else if (flag == "--profile")
         {
-            profile = argv[++i];
+            profile          = argv[++i];
+            profile_explicit = true;
         }
         else if (flag == "--git")
         {
@@ -89,6 +91,22 @@ int main(int argc, char** argv)
     {
         std::cerr << "root checkout not found: " << repo_root.string() << "\n";
         return usage();
+    }
+    // The default profile follows the RESOLVED root, never the caller's
+    // working directory (2026-09-24 MVP-4 preflight incident: --root
+    // re-pointed the governed root while the profile stayed CWD-derived,
+    // so an owner double-click in the kit folder resolved a profile that
+    // did not exist). An explicit --profile overrides everything.
+    if (!profile_explicit)
+    {
+        profile = repo_root / "config" / "profiles" /
+                  "zcode-jason-context-record-mvp.yaml";
+        if (!std::filesystem::exists(profile))
+        {
+            std::cerr << "default profile not found under the resolved root: "
+                      << profile.string() << "\n";
+            return usage();
+        }
     }
 
     qiven::runtime::host::HostBoot boot;
