@@ -27,10 +27,13 @@ include("$ENV{QIVEN_RESOLUTION_FILE}")
 # --- frozen semantic library pin (layer contract §2) ----------------------
 # qiven-context-draft is consumed as a FROZEN semantic library at an exact
 # revision; upgrades are an explicit re-pin with re-validation.
-# Semantic baseline: frozen v4 @ 4cbc995. Consumption pin: 7583724
+# Semantic baseline: frozen v4 @ 4cbc995. Consumption pin: a007837
 # (descendant chain 31fdf505 -> 73a4bfa -> 41d32ff -> de7f0e1 -> 611255b ->
-# 7583724; v4 semantics unchanged - the later commits are engineering-docs
-# managed syncs, template manual patches and the foundation-pin build glue).
+# 7583724 -> ea9af72 -> a007837; v4 semantics unchanged - the later commits
+# are engineering-docs managed syncs, template manual patches, the
+# foundation-pin build glue and the WR-3 workspace-cutover manifest).
+# WR-4 target: this pin retires when the draft edge migrates to the
+# workspace lock (the foundation ripple is already gone at WR-3).
 set(QIVEN_DRAFT_ROOT "" CACHE PATH "Path to the pinned qiven-context-draft checkout")
 if(NOT QIVEN_DRAFT_ROOT)
     set(QIVEN_DRAFT_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/../qiven-context-draft")
@@ -42,7 +45,7 @@ if(NOT EXISTS "${QIVEN_DRAFT_ROOT}/CMakeLists.txt")
     message(FATAL_ERROR "qiven-context-draft checkout not found; set QIVEN_DRAFT_ROOT to its path")
 endif()
 
-set(QIVEN_DRAFT_PINNED_SHA "ea9af72dd53b227a4f17142b0d437dfbb6148dbe")
+set(QIVEN_DRAFT_PINNED_SHA "a0078372001d8ac45ac3ff8c5674167935b45f23")
 find_package(Git REQUIRED)
 execute_process(
     COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
