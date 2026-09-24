@@ -16,7 +16,7 @@
       "argv": ["{python}", "tools/format_sources.py", "--fix"]
     },
     "configure": {
-      "argv": ["{cmake}", "--preset", "vs2022-x64"]
+      "argv": ["{python}", "../qiven-workspace/bootstrap/qiven-bootstrap.py", "gate-configure", "--devkit", "../qiven-devkit", "--repo", "qiven-runtime", "--repo-root", ".", "--preset", "vs2022-x64", "--cmake", "{cmake}"]
     },
     "delete-all-branches-but-main": {
       "argv": ["{python}", "tools/delete_all_branches.py"]
