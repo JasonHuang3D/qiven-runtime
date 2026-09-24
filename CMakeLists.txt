@@ -11,37 +11,18 @@ endif()
 
 option(QIVEN_RUNTIME_BUILD_TESTS "Build qiven-runtime tests" ${PROJECT_IS_TOP_LEVEL})
 
-# --- dependency checkouts (sibling layout, JasonPC default) ---------------
-set(QIVEN_FOUNDATION_ROOT "" CACHE PATH "Path to the qiven-foundation checkout")
-if(NOT QIVEN_FOUNDATION_ROOT)
-    set(QIVEN_FOUNDATION_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/../qiven-foundation")
-    if(EXISTS "${QIVEN_FOUNDATION_DEFAULT}/CMakeLists.txt")
-        set(QIVEN_FOUNDATION_ROOT "${QIVEN_FOUNDATION_DEFAULT}")
-    endif()
+# --- workspace resolution (ADR-0052, WR-3 Foundation cutover) -------------
+# CMake receives the resolved Foundation root from the workspace adapter
+# (QIVEN_RESOLUTION_FILE, supplied by the gate-configure bootstrap); it
+# materializes the locked provider once per build graph and never resolves
+# siblings or checks a consumer-local pin. The draft and third-party edges
+# remain legacy root+pin until their own cutovers (WR-4 / WR-5).
+if(NOT DEFINED ENV{QIVEN_RESOLUTION_FILE} OR "$ENV{QIVEN_RESOLUTION_FILE}" STREQUAL "")
+    message(FATAL_ERROR
+        "QIVEN_RESOLUTION_FILE is not set - configure through the workspace bootstrap "
+        "(qiven-workspace gate-configure), not a bare cmake invocation")
 endif()
-if(NOT EXISTS "${QIVEN_FOUNDATION_ROOT}/CMakeLists.txt")
-    message(FATAL_ERROR "qiven-foundation checkout not found; set QIVEN_FOUNDATION_ROOT to its path")
-endif()
-
-# Foundation pin (cross-repo-cmake.md law; owner direction 2026-09-23:
-# full SHA-pin coverage - the v2 standard's recorded gap is closed, not
-# deferred; upgrades are an explicit re-pin with re-validation).
-set(QIVEN_FOUNDATION_PINNED_SHA "f28b86b0448c7b08c64f6c4bc11e0c327d240212")
-find_package(Git REQUIRED)
-execute_process(
-    COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
-    WORKING_DIRECTORY "${QIVEN_FOUNDATION_ROOT}"
-    RESULT_VARIABLE QIVEN_FOUNDATION_SHA_RESULT
-    OUTPUT_VARIABLE QIVEN_FOUNDATION_SHA
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
-)
-if(NOT QIVEN_FOUNDATION_SHA_RESULT EQUAL 0)
-    message(FATAL_ERROR "cannot read the qiven-foundation revision at ${QIVEN_FOUNDATION_ROOT}")
-endif()
-if(NOT QIVEN_FOUNDATION_SHA STREQUAL QIVEN_FOUNDATION_PINNED_SHA)
-    message(FATAL_ERROR "qiven-foundation is pinned at ${QIVEN_FOUNDATION_PINNED_SHA} but the checkout is at ${QIVEN_FOUNDATION_SHA}; re-pin explicitly in CMakeLists.txt and re-validate")
-endif()
+include("$ENV{QIVEN_RESOLUTION_FILE}")
 
 # --- frozen semantic library pin (layer contract §2) ----------------------
 # qiven-context-draft is consumed as a FROZEN semantic library at an exact
@@ -82,7 +63,11 @@ if(NOT QIVEN_DRAFT_SHA STREQUAL QIVEN_DRAFT_PINNED_SHA)
     )
 endif()
 
-add_subdirectory("${QIVEN_FOUNDATION_ROOT}" "${CMAKE_BINARY_DIR}/qiven-foundation" EXCLUDE_FROM_ALL)
+# Foundation materializes through the workspace adapter guard (once per
+# build graph; a pre-existing qiven::foundation target that the adapter did
+# not create is a hard anti-spoof error). The draft singleton stays here
+# until WR-4.
+qiven_workspace_materialize(qiven-foundation)
 add_subdirectory("${QIVEN_DRAFT_ROOT}" "${CMAKE_BINARY_DIR}/qiven-context-draft" EXCLUDE_FROM_ALL)
 
 # --- third-party singleton (Devkit standard v2; cross-repo-cmake.md) ----
