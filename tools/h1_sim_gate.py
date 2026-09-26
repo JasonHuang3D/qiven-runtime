@@ -595,7 +595,7 @@ class Rig:
             stop_host(s_root, s_proc, s_fh)
             rows = [p for kind, p in audit_events(s_root) if kind == "session_registered"]
             for handle in ("h-s1", "h-resume", "h-clear", "h-compact", "h-nofield",
-                           "h-cap0", "h-cap1"):
+                           "h-cap0", "h-cap1", "h-s9"):
                 count = sum(1 for p in rows if p.endswith("|" + handle))
                 self.expect(count == 1,
                             f"handle {handle}: {count} session_registered rows (want 1)")
@@ -625,7 +625,7 @@ class Rig:
                  "capture.2.pre-tool.write.governed.dualkey", "Write"),
                 ("B8.capture-P2-edit-allow-detector-scope",
                  "capture.12.pre-tool.edit.governed.dualkey", "Edit")):
-            @self.case(case_id, ["INV-4", "INV-13"],
+            @self.case(case_id, ["INV-4"],
                        f"{template}; capture P1/P2 target is outside the "
                        "governed-path LIST - detector-scope observation")
             def _capture_probe(template_id=template, tool_name=tool, cid=case_id):
@@ -685,12 +685,17 @@ class Rig:
                           ("B7b.edit-active-work", "state/active-work.yaml")):
             @self.case(slug, ["INV-3", "INV-15"], f"pinned-contract Edit -> {rel}")
             def _deny_edit(rel_path=rel):
+                target = f"{b_root.as_posix()}/{rel_path}"
                 payload = self.payload_with_target(
                     b_root, b_outside, "sess-b", "Edit",
-                    file_path=f"{b_root.as_posix()}/{rel_path}")
+                    file_path=target)
+                before = Path(target).read_bytes() if Path(target).exists() else None
                 code, err, _ = run_hook(hook, "pre_tool", b_root, payload,
                                         tool="Edit", session_handle="h-b")
                 self.expect_deny(R_GOVERNED_WRITE, err, code)
+                after = Path(target).read_bytes() if Path(target).exists() else None
+                self.expect(after == before,
+                            "DENY executed an effect (target changed)")
 
         bash_governed = [
             ("B9.capture-P3-bash-governed", "capture.13.pre-tool.bash.governed.dualkey",
@@ -708,32 +713,47 @@ class Rig:
              lambda r, o: "grep x memory/records/MEM-1.md"),
         ]
         for case_id, template, command_fn in bash_governed:
-            @self.case(case_id, ["INV-3", "INV-13", "INV-15"],
-                       "conservative_text_reference detector + repo-root containment")
-            def _deny_bash(template_id=template, cmd_fn=command_fn, cid=case_id):
+            allow_leg = case_id.endswith("lexical-gap")
+            want_invariants = (["INV-4", "INV-13"] if allow_leg
+                               else ["INV-3", "INV-13", "INV-15"])
+            @self.case(case_id, want_invariants,
+                       "conservative_text_reference detector + repo-root containment"
+                       + ("; the backslash root form is outside the TEXT detector"
+                          if allow_leg else ""))
+            def _bash_leg(template_id=template, cmd_fn=command_fn, cid=case_id,
+                          is_allow=allow_leg):
                 if template_id:
                     payload = self.hook_payload(template_id, b_root, b_outside, "sess-b")
-                    code, err, _ = run_hook(hook, "pre_tool", b_root, payload,
-                                            tool="Bash", session_handle="h-b")
-                    self.expect_deny(R_BASH_REFERENCE, err, code)
                 else:
                     command = cmd_fn(b_root, b_outside)
                     payload = self.payload_with_target(b_root, b_outside, "sess-b",
                                                        "Bash", command=command)
-                    code, err, _ = run_hook(hook, "pre_tool", b_root, payload,
-                                            tool="Bash", session_handle="h-b")
-                    if cid.endswith("lexical-gap"):
-                        # The conservative detector matches TEXT: a backslash
-                        # root form never contains the slash-form root, so the
-                        # action is honestly outside the detector - recorded as
-                        # a detector-scope limit, never claimed as authorization.
-                        self.expect(code == 0 and err == "",
-                                    f"backslash root form is outside the TEXT "
-                                    f"detector (expected allow): {err}")
-                        self.detector_limits.append(cid)
-                        self.clear_outstanding(b_root, "h-b", "Bash")
-                    else:
-                        self.expect_deny(R_BASH_REFERENCE, err, code)
+                # INV-15 (effect-freedom): a governed Bash deny must leave
+                # the command's redirect targets UNWRITTEN.
+                command_text = json.loads(payload)["toolInput"].get("command", "")
+                effect_targets = [Path(match.group(1).strip('"'))
+                                  for match in re.finditer(r">\s*([^\s;&|]+)",
+                                                           command_text)]
+                before = {t: (t.read_bytes() if t.is_file() else None)
+                          for t in effect_targets}
+                code, err, _ = run_hook(hook, "pre_tool", b_root, payload,
+                                        tool="Bash", session_handle="h-b")
+                if is_allow:
+                    # The conservative detector matches TEXT: a backslash
+                    # root form never contains the slash-form root, so the
+                    # action is honestly outside the detector - recorded as
+                    # a detector-scope limit, never claimed as authorization.
+                    self.expect(code == 0 and err == "",
+                                f"backslash root form is outside the TEXT "
+                                f"detector (expected allow): {err}")
+                    self.detector_limits.append(cid)
+                    self.clear_outstanding(b_root, "h-b", "Bash")
+                    return
+                self.expect_deny(R_BASH_REFERENCE, err, code)
+                for target, was in before.items():
+                    now = target.read_bytes() if target.is_file() else None
+                    self.expect(now == was,
+                                f"deny {cid} executed an effect ({target})")
 
         @self.case("B12.traversal-form-denied", ["INV-3"],
                    "host traversal-form rejection clause")
@@ -1098,11 +1118,19 @@ class Rig:
                         f"second host on the same root must fail boot "
                         f"(got {proc.returncode})")
 
-        @self.case("C2.authenticated-shutdown-exits", ["INV-16"],
-                   "shutdown ack precedes drain; the PROCESS exits (M3 law)")
+        @self.case("C2.authenticated-shutdown-exits", ["INV-5", "INV-16"],
+                   "shutdown ack precedes drain; the PROCESS exits (M3 law). "
+                   "After the exit nothing mediates: the mid-session-death "
+                   "shape (host dies while the session lived) leaves the next "
+                   "probe a typed no-listener 120 with fail-closed text")
         def _c2():
             c_state["pre_rows"] = len(audit_events(c_root))
             stop_host(c_root, c_proc, c_fh)  # raises unless ack + real exit
+            payload = self.hook_payload("pinned.pre-tool.write", c_root,
+                                        c_outside, "sess-c")
+            code, err, _ = run_hook(hook, "pre_tool", c_root, payload,
+                                    tool="Write", session_handle="h-c")
+            self.expect_deny(R_NO_LISTENER, err, code, source="hook-client")
 
         @self.case("C3.old-session-dead-after-restart", ["INV-17"],
                    "in-memory sessions die with the host; journal survives")
@@ -1322,17 +1350,21 @@ class Rig:
             self.detector_limits.append("P15.junction-reparse-lexical-gap")
             self.clear_outstanding(p_root, "h-p", "Write")
 
-        @self.case("P16.bash-unicode-command-governed", ["INV-13"],
+        @self.case("P16.bash-unicode-command-governed", ["INV-3", "INV-13", "INV-15"],
                    "conservative detector over-approximates unicode text too")
         def _p16():
             command = f"echo \u4e2d > {p_sim}/sessions/\u4e2d.md"
             payload = self.payload_with_target(p_root, p_outside, "sess-p", "Bash",
                                                command=command)
+            target = Path(f"{p_sim}/sessions/\u4e2d.md")
             code, err, _ = run_hook(hook, "pre_tool", p_root, payload,
                                     tool="Bash", session_handle="h-p")
             self.expect_deny(R_BASH_REFERENCE, err, code)
+            self.expect(not target.exists(),
+                        "deny P16 executed an effect (unicode target written)")
 
-        @self.case("P17.bash-backslash-name-still-caught", ["INV-13"],
+        @self.case("P17.bash-backslash-name-still-caught",
+                   ["INV-3", "INV-13", "INV-15"],
                    "the Bash detector matches the bare governed NAME anywhere in "
                    "the text (contains_ci on the path token itself), so a "
                    "backslash form still denies - conservative over-approximation "
@@ -1341,10 +1373,40 @@ class Rig:
             command = f"echo x > {str(p_root)}\\sessions\\\\via-bs.md"
             payload = self.payload_with_target(p_root, p_outside, "sess-p", "Bash",
                                                command=command)
+            target = Path(f"{str(p_root)}\\sessions\\via-bs.md")
             code, err, _ = run_hook(hook, "pre_tool", p_root, payload,
                                     tool="Bash", session_handle="h-p")
             self.expect_deny(R_BASH_REFERENCE, err, code,
                              fragment="references governed scope")
+            self.expect(not target.exists(),
+                        "deny P17 executed an effect (target written)")
+
+        @self.case("P22.short-name-alias-lexical-gap", ["INV-4"],
+                   "Windows 8.3 short-name alias (GetShortPathName of a governed "
+                   "target): when the volume generates 8.3 names the short form "
+                   "falls outside the LEXICAL detector (allow + DETECTOR LIMIT "
+                   "recorded); when 8.3 is disabled the probe degenerates to the "
+                   "long form and denies - the documented lexical policy holds "
+                   "either way, honestly labeled per environment")
+        def _p22():
+            long_form = p_root / "state" / "current.md"
+            buf = ctypes.create_unicode_buffer(1024)
+            length = ctypes.windll.kernel32.GetShortPathNameW(str(long_form), buf,
+                                                              1024)
+            self.expect(length > 0, "GetShortPathNameW failed on the fixture")
+            short_form = buf.value
+            payload = self.payload_with_target(p_root, p_outside, "sess-p", "Write",
+                                               file_path=short_form)
+            code, err, _ = run_hook(hook, "pre_tool", p_root, payload,
+                                    tool="Write", session_handle="h-p")
+            if short_form.lower() != str(long_form).lower():
+                self.expect(code == 0 and err == "",
+                            f"short-name alias is outside the LEXICAL detector "
+                            f"(expected allow): {err}")
+                self.detector_limits.append("P22.short-name-alias-lexical-gap")
+                self.clear_outstanding(p_root, "h-p", "Write")
+            else:
+                self.expect_deny(R_GOVERNED_WRITE, err, code)
 
         @self.case("P21.astral-character-payload-denied-118", ["INV-2"],
                    "extractor law: \\uXXXX surrogate halves are unreadable at this "
@@ -1749,7 +1811,13 @@ class Rig:
         return path
 
     def verify_receipt(self, path: Path) -> int:
-        receipt = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as failure:
+            print(f"[FAIL] receipt unreadable "
+                  f"({type(failure).__name__}: {failure}) - an absent or "
+                  f"truncated receipt is rejected")
+            return EXIT_FAIL
         graph = self.source_graph()
         problems = []
         if receipt.get("development"):
@@ -1808,6 +1876,14 @@ def cmd_old_fail_i4(bin_dir: Path) -> int:
     """The I4 old-fail leg against the historical defective binaries:
     session_start registration must fail with the recorded mechanism
     (hello 9750 > 5000 ceiling -> advisory -> no session -> deny 114)."""
+    try:
+        return _old_fail_i4_body(bin_dir)
+    except Exception as failure:  # noqa: BLE001 - typed containment, no traceback
+        print(f"[FAIL] old-fail-i4 gate error: {type(failure).__name__}: {failure}")
+        return EXIT_FAIL
+
+
+def _old_fail_i4_body(bin_dir: Path) -> int:
     rig = Rig(bin_dir=bin_dir)
     rig.run_root = WORKROOT / f"oldfail-{time.strftime('%Y%m%d-%H%M%S')}"
     root, outside = rig.fresh_root("old-i4")
@@ -1862,19 +1938,24 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv[1:])
 
     if args.mode == "verify-receipt":
-        rig = Rig()
-        if args.receipt:
-            path = Path(args.receipt)
-        elif RECEIPTS.exists():
-            candidates = sorted(RECEIPTS.glob("sim-*.json"),
-                                key=lambda p: p.stat().st_mtime)
-            path = candidates[-1] if candidates else None
-        else:
-            path = None
-        if path is None or not path.exists():
-            print("[FAIL] no receipt found - absent receipts are rejected")
+        try:
+            rig = Rig()
+            if args.receipt:
+                path = Path(args.receipt)
+            elif RECEIPTS.exists():
+                candidates = sorted(RECEIPTS.glob("sim-*.json"),
+                                    key=lambda p: p.stat().st_mtime)
+                path = candidates[-1] if candidates else None
+            else:
+                path = None
+            if path is None or not path.exists():
+                print("[FAIL] no receipt found - absent receipts are rejected")
+                return EXIT_FAIL
+            return rig.verify_receipt(path)
+        except Exception as failure:  # noqa: BLE001 - typed containment
+            print(f"[FAIL] verify-receipt gate error: "
+                  f"{type(failure).__name__}: {failure}")
             return EXIT_FAIL
-        return rig.verify_receipt(path)
 
     if args.mode == "old-fail-i4":
         return cmd_old_fail_i4(Path(args.bin_dir))
