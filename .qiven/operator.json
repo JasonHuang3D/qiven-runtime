@@ -51,6 +51,12 @@
     },
     "h1-kit": {
       "argv": ["python", "tools/h1_kit.py"]
+    },
+    "h1-kit-test": {
+      "argv": ["python", "tools/h1_kit_test.py"]
+    },
+    "h1-sim": {
+      "argv": ["python", "tools/h1_sim_gate.py", "run"]
     }
   },
   "gates": {
@@ -61,6 +67,8 @@
       "configure",
       ["build-debug", "build-release"],
       ["test-debug", "test-release"],
+      "h1-sim",
+      "h1-kit-test",
       "diff-check",
       "clean-tree"
     ]

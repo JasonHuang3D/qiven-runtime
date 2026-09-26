@@ -17,6 +17,14 @@ Regressions:
      while the CWD HAS one, the fixed exe must fail closed (exit 2)
      naming the ROOT-derived profile path -- the incident mechanism.
 
+Skip semantics (ADR-0055 decision 5, fixed 2026-09-26): a skipped host/
+hook/scenario is NOT_RUN and FAILS this suite -- never a green receipt.
+The historical behavior (print [SKIP], return True when the host exe was
+absent) is the exact defect class the ADR retires: the packaging checks
+stayed useful, but the process case silently stopped being exercised.
+Build the Release target first (the publication gate orders this task
+after build-release for exactly that reason).
+
 Run directly (no python test harness exists in this repo yet; standard
 library only per the Devkit python-standard law):
 
@@ -102,12 +110,14 @@ def test_kit_self_containment() -> bool:
 def test_host_profile_follows_root() -> bool:
     """The 2026-09-24 incident mechanism: --root without --profile. The
     derived default must follow the RESOLVED root; a CWD that happens to
-    contain config/profiles must NOT satisfy it."""
+    contain config/profiles must NOT satisfy it. ADR-0055 decision 5: an
+    unbuilt host exe is NOT_RUN and FAILS the suite, never a skip-success."""
     host_exe = REPO_ROOT / "build" / "vs2022-x64" / "Release" / "qiven-runtime-host.exe"
     if not host_exe.exists():
-        print(f"[SKIP] {host_exe} not built - build the Release target first "
-              "(regression not exercised in this run)")
-        return True
+        print(f"[NOT_RUN] {host_exe} not built - the regression is NOT exercised "
+              "and this suite FAILS (ADR-0055 decision 5: skip is acceptance-fatal; "
+              "run build-release first)")
+        return False
     with tempfile.TemporaryDirectory(prefix="qiven-host-profile-test-") as tmp:
         cwd_checkout = Path(tmp) / "cwd-checkout"
         cwd_profile = cwd_checkout / "config" / "profiles" / h1_kit.PROFILE_NAME

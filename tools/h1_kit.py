@@ -455,6 +455,18 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
             creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
+    def run_session_start_probe() -> tuple[int, str, str]:
+        # Trial-4 preflight blind spot (2026-09-26 incident): the old
+        # preflight drove ONLY a pre_tool round trip, so the session_start
+        # registration path -- where the hello/event deadline split lived --
+        # was never exercised before the owner approved the config.
+        proc = sp.run(
+            [str(hook_exe), "--event", "session_start",
+             "--root", str(GOVERNED_ROOT), "--session-handle", token + "-preflight"],
+            input=probe_payload, capture_output=True, text=True, timeout=20,
+            creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
     result = EXIT_FAIL
     host_proc = None
     host_answered_before_boot = False
@@ -497,6 +509,20 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
                 return EXIT_FAIL
             print("[ OK ] host booted with the kit-internal profile; "
                   "verdict round trip complete")
+
+        # 1b. session_start REGISTRATION coverage (2026-09-26 trial-4 fix):
+        # the preflight must drive the registration path it will rely on,
+        # and the booted host's console must show the session registered.
+        code, _out, err = run_session_start_probe()
+        registered = code == 0 and "NOT registered" not in err
+        if host_proc is not None and log_path.exists():
+            log_text = log_path.read_text(encoding="utf-8", errors="replace")
+            registered = registered and "[conn] session_start -> allow" in log_text
+        print(("[ OK ] " if registered else "[FAIL] ") +
+              "session_start registers a session (host log confirms the lifecycle row)"
+              + ("" if registered else f" -- exit {code}: {err}"))
+        if not registered:
+            return EXIT_FAIL
 
         # 2. Authenticated shutdown must actually EXIT the host we booted
         # (adversarial-review M3: an acked-but-still-listening host is a

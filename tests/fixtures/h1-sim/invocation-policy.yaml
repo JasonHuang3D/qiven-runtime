@@ -1,0 +1,123 @@
+schema: qiven-invocation-policy-v1
+version: 1
+
+# Machine instance of the v4 InvocationPolicy specification (ADR-0047
+# section 7.3). The rules below mirror, one-to-one, the frozen
+# qiven-context-draft default_invocation_policy() rows (the compiled
+# scar backlog P-51/52/53 as data; draft pin 7583724). This file is the
+# machine-readable face of that specification, not an independently
+# authored second policy: tools/validate_context.py reference-checks the
+# rule table against the pinned mirror so two divergent policies cannot
+# silently emerge. qiven-runtime parses the strict subset its bounded
+# parser defines (runtime MVP-2 docs/design/mvp2-cognition.md section
+# 3.3) and never gains a general YAML parser (D-4).
+
+policy:
+  present: true
+  rules:
+    - action: CreateCppSymbol
+      requirement: MandatoryRecall
+      boundary: BeforeJudgment
+      subject: naming policy
+      blocking: true
+    - action: IntroducePrimitive
+      requirement: SearchLowerLayer
+      boundary: BeforeJudgment
+      subject: eligible lower layers
+      blocking: true
+    - action: InvokeTool
+      requirement: InspectToolContract
+      boundary: BeforeExecution
+      subject: declared tool argv contract
+      blocking: true
+    - action: RetryFailure
+      requirement: InspectKnownPit
+      boundary: BeforeJudgment
+      subject: failure fingerprint
+      blocking: true
+    - action: MakeCanonicalClaim
+      requirement: VerifyCanonical
+      boundary: BeforeJudgment
+      subject: canonical record
+      blocking: true
+    - action: MakeLiveClaim
+      requirement: VerifyLive
+      boundary: BeforeJudgment
+      subject: live source
+      blocking: true
+    - action: ModifyReferencedContract
+      requirement: MandatoryRecall
+      boundary: BeforeJudgment
+      subject: reference integrity sweep (P-52)
+      blocking: true
+    - action: Commit
+      requirement: RunMechanicalCheck
+      boundary: BeforeExecution
+      subject: attribution subject-position lint (P-51)
+      blocking: true
+    - action: Publish
+      requirement: RunMechanicalCheck
+      boundary: BeforeExecution
+      subject: full default gate PASS receipt at exact head (P-53)
+      blocking: true
+    - action: Publish
+      requirement: RequestReview
+      boundary: BeforeExecution
+      subject: H2 exact-delta review
+      blocking: true
+    - action: AcceptCandidate
+      requirement: RequestReview
+      boundary: BeforeExecution
+      subject: content-bound H2 evidence
+      blocking: true
+
+# Which accepted mechanism may satisfy each RequirementKind (component
+# ADL section 28: the registry binding table). min_version is the
+# minimum resolver version a RuntimeGeneration accepts. Block style is
+# mandatory for all list rows: the runtime's bounded parser (D-4)
+# accepts exactly this shape.
+resolvers:
+  - requirement: MandatoryRecall
+    type: snapshot_resolver
+    min_version: 1
+  - requirement: SearchLowerLayer
+    type: layer_index_resolver
+    min_version: 1
+  - requirement: VerifyCanonical
+    type: git_tree_resolver
+    min_version: 1
+  - requirement: VerifyLive
+    type: live_probe_resolver
+    min_version: 1
+  - requirement: InspectToolContract
+    type: tool_contract_resolver
+    min_version: 1
+  - requirement: InspectKnownPit
+    type: pit_registry_resolver
+    min_version: 1
+  - requirement: RunMechanicalCheck
+    type: mechanical_check_runner
+    min_version: 1
+  - requirement: RequestReview
+    type: review_receipt_resolver
+    min_version: 1
+  - requirement: AskHuman
+    type: human_handoff_resolver
+    min_version: 1
+
+# Evidence freshness constraints (component ADL section 30 receipt
+# expiry): how long an EvidenceReceipt remains acceptable, and how long
+# a verified local cognition bundle may serve when the remote fetch
+# fails (production-MVP architecture section 7.4 freshness window).
+freshness:
+  evidence_ttl_ms: 900000
+  bundle_freshness_ms: 604800000
+
+# Deny and re-deliberation behavior (production-MVP architecture
+# section 8.2): an unsatisfied BeforeJudgment requirement NEVER
+# authorizes the current proposal - the transaction ends ReDeliberate
+# and a new one may pre-satisfy via a valid receipt; an unsatisfied
+# BeforeExecution requirement denies.
+enforcement:
+  unsatisfied_before_judgment: redeliberate
+  unsatisfied_before_execution: deny
