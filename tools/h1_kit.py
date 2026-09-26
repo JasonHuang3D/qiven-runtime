@@ -1,26 +1,33 @@
 #!/usr/bin/env python3
-"""qiven h1_kit.py - build an executable H1 acceptance kit package.
+"""qiven h1_kit.py - build an executable H1 kit package (server model).
 
 The H1 kit law (2026-09-23 owner direction, after the MVP-4 deny-118
 incident): an H1 acceptance point is NOT a prose document the owner
 interprets - it is a PACKAGE, produced by a tool like deploy_bundle.py,
 containing every artifact the owner's hands need:
 
-  bin/            the Release executables the trial runs
-  config.json     the COMPLETE ready workspace hook config (no owner
-                  authoring; the ZCode UI review is the enable gate)
-  run-host.cmd    double-clickable host start (visible staged output)
+  bin/            PINNED REFERENCE copies of the Release executables -
+                  never launched, never registered (the installation unit
+                  is the repo BUILD DIRECTORY; host-server redesign
+                  section 8 image-consistency invariant)
+  config.json     the COMPLETE ready workspace hook config (registers the
+                  BUILD-DIR qiven-zcode-hook.exe; the ZCode UI review is
+                  the enable gate)
+  start-host.cmd  idempotent server start (already-running = typed OK)
+  install-autostart.cmd   user-scope Startup shortcut + start + verify
   stop-host.cmd   authenticated shutdown
-  collect-evidence.cmd   seals journal/bundle/probe evidence for relay
-  rollback.cmd    restores the pre-trial hook config from the backup
-                  this tool took
+  remove-autostart.cmd    removes the shortcut + stops the server
+  collect-evidence.cmd   seals journal/bundle/probe/log evidence for relay
+  rollback.cmd    removes autostart, restores the pre-trial hook config,
+                  stops the server
+  preflight.cmd   the server-model self-check (section 8 legs; LEAVES the
+                  server running)
   GUIDE.md        numbered owner steps with exact UI actions and
-                  copy-paste probe prompts; every inline command is
-                  labeled per shell (cmd / PowerShell / Git Bash)
+                  copy-paste probe prompts
   manifest.json   file digests + exact head + gate receipt reference
 
 Preconditions (deploy-grade): clean tree at an exact head whose gate
-PASSed (the operator receipt store is the evidence). Fail closed.
+PASSed (the operator receipt is the evidence). Fail closed.
 
 Standard library only (Devkit python-standard law).
 """
@@ -137,58 +144,61 @@ def render_config(hook_exe: Path, token: str, probe_log: Path) -> str:
     return text + "\n"
 
 
-GUIDE_TEMPLATE = """# MVP-4 H1 Acceptance Kit - Owner Runbook
+GUIDE_TEMPLATE = """# MVP-4 H1 Kit - Owner Runbook (server model)
 
 Kit built at exact head `{head}` (gate `{gate}` PASS; receipt
 `{receipt_name}`). Everything you need is IN THIS FOLDER. Nothing here
 goes live by itself: the ZCode UI hook review is the enable gate, and
 `rollback.cmd` restores the pre-trial state.
 
-## What this trial proves
+## The server model (what changed)
 
-MVP-4 exit gate row 1 (ARCH section 15): in a REAL ZCode session, a
-qiven DENY has no fallthrough - the tool call is blocked; Bash/Write/
-Edit cannot reach the governed qiven-context paths; an unreachable host
-denies honestly (never claims governed status).
+The RuntimeHost is now a LONG-LIVED SERVER (host-server redesign): install
+the autostart once and the server runs from logon; the hook answers
+against whatever is already serving. The ONE installation unit is the
+REPO BUILD DIRECTORY (`D:\\JasonWork\\qiven-runtime\\build\\vs2022-x64\\Release`):
+every launcher here starts the BUILD-DIR `qiven-runtime-host.exe`, and the
+workspace config registers the BUILD-DIR `qiven-zcode-hook.exe`. The kit's
+`bin\\` copies are PINNED REFERENCE ARTIFACTS ONLY - never launched, never
+registered.
 
-## Step 1 - install the hook config (owner hands, ~1 minute)
+## Step 1 - pre-flight self-check (run BEFORE approving; ~1 minute)
+
+Double-click:  `{preflight}`
+
+It verifies the SERVER model: ensures the server is running (starting it
+via the normal path if absent), proves a verdict round trip, a
+FIRST-CONTACT pre_tool with no prior session_start (the LL-2a live
+proof), a FAST session_start (< 2000 ms - no refresh in the request
+path), and status refresh state. Legs (6)-(7) - authenticated shutdown
+exits the process, and start-host brings it back with no residue - run
+ONLY when this preflight started the server itself (a verification tool
+does not bounce an autostart-owned server mid-flight). The preflight
+LEAVES THE SERVER RUNNING (that is the model). EXPECT the final line
+`[ OK ] PREFLIGHT PASS`. If any `[FAIL]` appears, do NOT approve the
+config - paste the window's text back to the session instead.
+
+## Step 2 - install the hook config + the server autostart
 
 1. Open Explorer at:  `{config_target}`   (file `{config_name}`)
 2. Copy this kit's `{config_name}` OVER that file (a backup of the
    current file is next to it already: `{backup_name}` in this kit).
-3. In the ZCode UI, review the changed hook configuration
-   (Settings -> Hooks) - but do NOT approve yet: run Step 1.5 first.
+3. In the ZCode UI, review and approve the hook configuration
+   (Settings -> Hooks).
+4. Double-click:  `{install_autostart}`
+   - creates the user-scope Startup shortcut (server starts minimized
+     with `--log` at every logon),
+   - starts the server NOW via the normal idempotent path,
+   - verifies it answers.
 
-## Step 1.5 - pre-flight self-check (run BEFORE approving; ~1 minute)
+From now on the server is a property of the machine session, not of any
+trial. Manual control stays yours: `{start_host}` (idempotent;
+already-running is a typed OK), `{stop_host}` (authenticated shutdown),
+`{remove_autostart}` (removes the shortcut + stops the server). The
+server writes its staged boot, per-request `[conn]` lines and a
+`[beat]` heartbeat every 30 s to `host.log` in this kit folder.
 
-Double-click:  `{preflight}`
-
-It boots the kit's own host, proves a REAL pipe verdict round trip in this
-environment, stops the host again, and verifies that with no host the hook
-denies `120` (no listener) with honest fail-closed text. EXPECT the final
-line `[ OK ] PREFLIGHT PASS`. If any `[FAIL]` appears, do NOT approve the
-config - paste the window's text back to the session instead. This check is
-NOT an availability guarantee: after enablement, host loss still denies
-fail-closed (that is the design).
-
-## Step 2 - approve the config and start the RuntimeHost
-
-1. In the ZCode UI, approve the hook configuration (Settings -> Hooks).
-2. Double-click:  `{run_host}`
-
-A console window opens and SHOWS the boot: root/profile/state paths,
-install id, generation, cognition bundle revision, the pipe name, then
-`[ OK ] serving`. While healthy it prints a `[conn]` line per hook
-request and a `[beat]` heartbeat every 30 s. Leave the window open.
-
-If you prefer a shell instead of double-click, any of these starts it
-(the `--profile` argument is the kit's own copy - do not drop it):
-
-  cmd:        cd /d D:\\JasonWork\\qiven-runtime && build\\vs2022-x64\\Release\\qiven-runtime-host.exe --root D:\\JasonWork\\qiven-context --profile "{kit_profile_win}"
-  PowerShell: cd D:\\JasonWork\\qiven-runtime; build\\vs2022-x64\\Release\\qiven-runtime-host.exe --root D:\\JasonWork\\qiven-context --profile "{kit_profile_win}"
-  Git Bash:   cd /d/JasonWork/qiven-runtime && ./build/vs2022-x64/Release/qiven-runtime-host.exe --root /d/JasonWork/qiven-context --profile "{kit_profile_posix}"
-
-## Step 3 - new session + six probes (copy-paste, ~3 minutes)
+## Step 3 - new session + probes (copy-paste, ~3 minutes)
 
 Start a NEW ZCode session (hooks load at session start only). In it,
 send these messages ONE AT A TIME and note what the tools return:
@@ -208,35 +218,34 @@ send these messages ONE AT A TIME and note what the tools return:
 
   P5  Please run any WebSearch or WebFetch tool call
       -> EXPECT: allowed by qiven (not a mediated tool) - and note the
-         host console printed nothing for it (no hook fires: the matcher
-         only covers Bash/Write/Edit - the honesty boundary)
+         server logged nothing for it (no hook fires: the matcher only
+         covers Bash/Write/Edit - the honesty boundary)
 
-  P6  Close the RuntimeHost window (or double-click `{stop_host}`),
-      then: Please run in Bash: echo late > /d/JasonWork/qiven-context/state/h1-late.md
-      -> EXPECT: BLOCKED with `[qiven] deny 120 ... no host verdict ...
-         no RuntimeHost listener ... fail-closed deny` - the typed
-         no-listener class (the 2026-09-24 taxonomy split), and the text
-         must NOT claim anything is governed (the honesty row)
+  P6  Restart-leg: double-click `{stop_host}`, confirm the console/log shows
+      the clean stop, then double-click `{start_host}` and run:
+      Please run in Bash: echo back > /d/JasonWork/qiven-runtime/.generated-temp/h1/back.txt
+      -> EXPECT: ALLOWED with no re-registration ritual (LL-4: the very
+         next call works after a restart)
 
 ## Step 4 - seal and relay the evidence
 
 Double-click:  `{collect_evidence}`
 
 It writes everything (probe payload captures, journal audit rows, host
-console copy instructions, deny texts) into:
+log copy, deny texts) into:
 
   `{evidence_dir}`
 
 Paste that folder's contents back to the session UNMODIFIED (or zip it
 and give the path). The session grades P1-P6 against the exit gate and
-records the H1 verdict.
+records the verdict.
 
 ## Rollback (any time)
 
-Double-click:  `{rollback}` - restores the pre-trial hook config from
-`{backup_name}` (you still review the restore in the ZCode UI) and
-stops the host if running. The governed checkout is untouched by this
-trial: probes write nothing into it (that is the point).
+Double-click:  `{rollback}` - removes the autostart shortcut, restores
+the pre-trial hook config from `{backup_name}` (you still review the
+restore in the ZCode UI), and stops the server. The governed checkout is
+untouched by this trial: probes write nothing into it (that is the point).
 """
 
 
@@ -292,14 +301,39 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
         (kit_dir / "config.pre-h1.json").write_text(
             '{"hooks":{"enabled":false,"events":{}}}\n', encoding="utf-8")
 
-    run_host = kit_dir / "run-host.cmd"
-    run_host.write_text("\n".join([
+    # --- server-shaped launchers (host-server redesign §8) ------------------
+    # The ONE installation unit is the REPO BUILD DIRECTORY: every launcher
+    # starts the BUILD-DIR qiven-runtime-host.exe (whose boot merges the
+    # sibling client images into the install record), and the workspace
+    # config registers the BUILD-DIR qiven-zcode-hook.exe. The kit's bin/
+    # copies are PINNED REFERENCE ARTIFACTS ONLY - never launched, never
+    # registered. Every launcher states the exact image it runs.
+    start_host = kit_dir / "start-host.cmd"
+    start_host.write_text("\n".join([
         "@echo off",
-        "echo [ RUN] qiven-runtime-host (MVP-4 H1 trial)",
-        "cd /d D:\\JasonWork\\qiven-runtime",
-        f"build\\vs2022-x64\\Release\\qiven-runtime-host.exe --root D:\\JasonWork\\qiven-context"
-        f" --profile \"{profile_dst}\"",
-        "echo [ OK ] host exited",
+        "setlocal",
+        f"set HOST={build_dir / 'qiven-runtime-host.exe'}",
+        f"set CTL={build_dir / 'qiven-runtimectl.exe'}",
+        f"set ROOT={GOVERNED_ROOT}",
+        f"set PROFILE={profile_dst}",
+        f"set LOG={kit_dir / 'host.log'}",
+        "echo [ RUN] qiven-runtime-host start (idempotent)",
+        f"\"%CTL%\" status show --root \"%ROOT%\" >nul 2>&1",
+        "if not errorlevel 1 (",
+        "  echo [ OK ] host already running (typed detection, no second instance)",
+        "  goto :done",
+        ")",
+        "echo [ RUN] launching image: %HOST%",
+        "start \"qiven-runtime-host\" /MIN \"%HOST%\" --root \"%ROOT%\" --profile \"%PROFILE%\" --log \"%LOG%\"",
+        "echo [ OK ] launch issued (minimized; log at %LOG%)",
+        ":wait",
+        f"\"%CTL%\" status show --root \"%ROOT%\" >nul 2>&1",
+        "if errorlevel 1 (",
+        "  timeout /t 1 /nobreak >nul",
+        "  goto :wait",
+        ")",
+        "echo [ OK ] host is answering status",
+        ":done",
         "pause",
     ]) + "\n", encoding="utf-8", newline="\n")
 
@@ -313,6 +347,44 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
         "pause",
     ]) + "\n", encoding="utf-8", newline="\n")
 
+    # User-scope autostart (LL-1): the Startup shortcut starts the server
+    # minimized with --log at logon; install starts it NOW and verifies a
+    # status round trip.
+    shortcut_name = "qiven-runtime-host (mvp4-h1).lnk"
+    install_autostart = kit_dir / "install-autostart.cmd"
+    install_autostart.write_text("\n".join([
+        "@echo off",
+        "setlocal",
+        f"set HOST={build_dir / 'qiven-runtime-host.exe'}",
+        f"set ROOT={GOVERNED_ROOT}",
+        f"set PROFILE={profile_dst}",
+        f"set LOG={kit_dir / 'host.log'}",
+        f"set LNK=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\{shortcut_name}",
+        "echo [ RUN] install user-scope autostart (Startup folder)",
+        "powershell -NoProfile -Command \""
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:LNK);"
+        "$s.TargetPath=$env:HOST;"
+        "$s.Arguments='--root \"'+$env:ROOT+'\" --profile \"'+$env:PROFILE+'\" --log \"'+$env:LOG+'\"';"
+        "$s.WindowStyle=7;"
+        "$s.Save()\"",
+        "if errorlevel 1 (echo [FAIL] shortcut creation failed & exit /b 1)",
+        "echo [ OK ] autostart shortcut: %LNK%",
+        f"call \"{start_host}\"",
+    ]) + "\n", encoding="utf-8", newline="\n")
+
+    remove_autostart = kit_dir / "remove-autostart.cmd"
+    remove_autostart.write_text("\n".join([
+        "@echo off",
+        f"set LNK=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\{shortcut_name}",
+        "echo [ RUN] remove autostart + shut the server down",
+        "if exist \"%LNK%\" (del /f \"%LNK%\" & echo [ OK ] shortcut removed)",
+        "if not exist \"%LNK%\" echo [ OK ] no autostart shortcut present",
+        f"cd /d D:\\JasonWork\\qiven-runtime",
+        "build\\vs2022-x64\\Release\\qiven-runtimectl.exe host shutdown --root D:\\JasonWork\\qiven-context",
+        "echo [ OK ] autostart removed and server stopped",
+        "pause",
+    ]) + "\n", encoding="utf-8", newline="\n")
+
     evidence_dir = kit_dir / "evidence"
     collect = kit_dir / "collect-evidence.cmd"
     collect.write_text("\n".join([
@@ -322,6 +394,7 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
         "echo [ RUN] sealing H1 evidence into %EV%",
         "if not exist %EV% mkdir %EV%",
         "copy /y D:\\JasonWork\\qiven-runtime\\.generated-temp\\h1\\payload-probe.log %EV%\\payload-probe.log >nul",
+        "if exist host.log copy /y host.log %EV%\\host.log >nul",
         "copy /y D:\\JasonWork\\qiven-context\\.qiven\\runtime\\install.id %EV%\\install.id >nul",
         "echo --- journal audit tail (last 40 rows) --- > %EV%\\journal-audit.txt",
         f"{sys.executable} -c \"import sqlite3;c=sqlite3.connect(r'D:\\JasonWork\\qiven-context\\.qiven\\runtime\\journal.sqlite3');[print(r) for r in c.execute('select seq,kind from audit_events order by seq desc limit 40')]\" >> %EV%\\journal-audit.txt 2>&1",
@@ -333,7 +406,9 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
     rollback = kit_dir / "rollback.cmd"
     rollback.write_text("\n".join([
         "@echo off",
-        "echo [ RUN] H1 rollback: restore pre-trial hook config",
+        "echo [ RUN] H1 rollback: remove autostart, restore pre-trial hook config, stop the server",
+        f"set LNK=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\{shortcut_name}",
+        "if exist \"%LNK%\" (del /f \"%LNK%\" & echo [ OK ] autostart shortcut removed)",
         f"copy /y \"{kit_dir}\\config.pre-h1.json\" \"{WORKSPACE_CONFIG}\"",
         "echo [ OK ] config restored - REVIEW IT in the ZCode UI (hooks reload at next session start)",
         "cd /d D:\\JasonWork\\qiven-runtime",
@@ -364,7 +439,9 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
     guide = GUIDE_TEMPLATE.format(
         head=head, gate=gate, receipt_name=receipt.name,
         config_target=WORKSPACE_CONFIG.parent, config_name="config.json",
-        backup_name="config.pre-h1.json", run_host=run_host, stop_host=stop_host,
+        backup_name="config.pre-h1.json", start_host=start_host,
+        stop_host=stop_host, install_autostart=install_autostart,
+        remove_autostart=remove_autostart,
         collect_evidence=collect, evidence_dir=evidence_dir, rollback=rollback,
         preflight=preflight,
         kit_profile_win=str(profile_dst), kit_profile_posix=profile_dst.as_posix())
@@ -383,6 +460,13 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
         "gate": {"name": gate, "receipt": receipt.name},
         "session_token": token,
         "built_at": datetime.now(timezone.utc).isoformat(),
+        "launch_model": (
+            "server-shaped (host-server redesign section 8): the ONE "
+            "installation unit is the REPO BUILD DIRECTORY - every launcher "
+            "starts the build-dir qiven-runtime-host.exe and the workspace "
+            "config registers the build-dir qiven-zcode-hook.exe; the kit's "
+            "bin/ copies are PINNED REFERENCE ARTIFACTS ONLY, never "
+            "launched, never registered"),
         "files": files,
     }
     (kit_dir / "manifest.json").write_text(
@@ -394,21 +478,24 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
 
 
 def cmd_preflight(kit_dir: Path, token: str) -> int:
-    """Enable-gated functional self-check (2026-09-24 corrective lane).
-
-    Runs BEFORE the owner approves the hook config in the ZCode UI (the UI
-    review is the enable gate). Proves in the TARGET environment:
-      1. the kit binaries boot a host (or an existing host answers) with
-         the KIT-INTERNAL deployment profile, passed explicitly (ADR-0049),
-      2. a REAL pipe round trip completes (hello + pre_tool verdict),
-      3. the authenticated shutdown actually EXITS the host process,
-      4. with the host stopped, the hook denies 120 (no listener) with
-         honest fail-closed text -- the taxonomy split, live.
-    NOT an availability guarantee: after enablement, host loss still denies
-    fail-closed per the design.
-
-    Custody (adversarial-review M4): every subprocess is bounded and the
-    booted host is killed on ANY exit path, including exceptions.
+    """Enable-gated functional self-check, SERVER MODEL (host-server
+    redesign section 8). Runs BEFORE the owner approves the hook config in
+    the ZCode UI (the UI review is the enable gate). Verifies the server
+    model in the TARGET environment:
+      1. the server is running (started via the normal path if absent),
+      2. a REAL pipe verdict round trip completes,
+      3. a FIRST-CONTACT pre_tool with no prior session_start is judged
+         on merits (LL-2a - the deny-114 ritual is retired),
+      4. a session_start round trip lands under 2000 ms (no refresh in
+         the request path - the trial-5 mechanism),
+      5. status reports the host-autonomous refresh state,
+      6./7. authenticated shutdown EXITS the process and a restart
+         serves the next verdict with no ritual (LL-4) - these legs run
+         ONLY when this preflight started the server (an autostart-owned
+         server is never bounced by a verification tool; the honest skip
+         label names the owner's manual exercise).
+    The preflight LEAVES THE SERVER RUNNING (the long-lived model) and
+    says so. Custody: every subprocess is bounded (M4).
     """
     import subprocess as sp
     import time
@@ -468,115 +555,151 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
     result = EXIT_FAIL
-    host_proc = None
-    host_answered_before_boot = False
-    try:
-        # 1. Boot a host from the kit (an already-running host is also fine:
-        # the singleton pipe answers; the probe proves the environment).
-        print("[ RUN] preflight: host boot + real-pipe round trip")
-        code, _out, err = run_probe()
-        if code == 0 or "(host verdict)" in err:
-            host_answered_before_boot = True
-            print("[ OK ] host reachable BEFORE boot (existing host)")
-        else:
-            # The expected cold path: no host is running yet, so the probe
-            # fail-closed denies 120. That is the DESIGNED state here, not
-            # a failure (2026-09-24 incident: this line wore a misleading
-            # [FAIL] on every cold start); the boot below is the real test.
-            print("[COLD] no existing host before boot (expected on a cold "
-                  f"start) - booting the kit host; probe said: {err}")
-            with log_path.open("w", encoding="utf-8", newline="\n") as log:
-                host_proc = sp.Popen(
-                    [str(host_exe), "--root", str(GOVERNED_ROOT),
-                     "--profile", str(profile_file)],
-                    stdout=log, stderr=sp.STDOUT,
-                    creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
-            deadline = time.monotonic() + 20.0
-            booted = False
-            err = ""
-            while time.monotonic() < deadline:
-                if host_proc.poll() is not None:
-                    print(f"[FAIL] host exited during boot (exit {host_proc.returncode}); "
-                          f"log: {log_path}")
-                    break
-                code, _out, err = run_probe()
-                if code == 0 or "(host verdict)" in err:
-                    booted = True
-                    break
-                time.sleep(0.5)
-            if not booted:
-                print(f"[FAIL] no verdict round trip within 20 s; last hook output: {err}")
-                return EXIT_FAIL
-            print("[ OK ] host booted with the kit-internal profile; "
-                  "verdict round trip complete")
+    started_here = False
 
-        # 1b. session_start REGISTRATION coverage (2026-09-26 trial-4 fix):
-        # the preflight must drive the registration path it will rely on,
-        # and the booted host's console must show the session registered.
-        # Silent allow is the CONTRACT for a current-cognition registration
-        # (the hook prints the note only on a non-current refresh), so the
-        # positive evidence is the HOST LOG row; the text checks reject
-        # every known failure shape the hook can emit while exiting 0.
-        code, _out, err = run_session_start_probe()
-        registered = (code == 0
-                      and "NOT registered" not in err
-                      and "unexpected reply shape" not in err)
-        if host_proc is not None and log_path.exists():
-            log_text = log_path.read_text(encoding="utf-8", errors="replace")
-            registered = registered and "[conn] session_start -> allow" in log_text
+    def status_show() -> sp.CompletedProcess:
+        return sp.run(
+            [str(ctl_exe), "status", "show", "--root", str(GOVERNED_ROOT)],
+            capture_output=True, text=True, timeout=20,
+            creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
+
+    def start_server() -> bool:
+        """The normal start path (the same image/args start-host.cmd uses):
+        launches the build-dir host with the KIT profile and --log, then
+        waits bounded for a status round trip."""
+        with log_path.open("a", encoding="utf-8", newline="\n") as log:
+            sp.Popen(
+                [str(host_exe), "--root", str(GOVERNED_ROOT),
+                 "--profile", str(profile_file), "--log", str(log_path)],
+                stdout=log, stderr=sp.STDOUT,
+                creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            if status_show().returncode == 0:
+                return True
+            time.sleep(0.5)
+        return False
+
+    try:
+        # Leg 1 - ensure the server is running (start via the normal path
+        # if absent; already-running is the NORMAL state under LL-1).
+        print("[ RUN] preflight: ensure the server is running")
+        if status_show().returncode == 0:
+            print("[ OK ] server already running (the normal state under LL-1)")
         else:
-            # Pre-existing host (this preflight did not boot one): no host
-            # console is owned here, so the evidence is text-level only -
-            # labeled honestly instead of claimed as log-confirmed.
-            print("[ NOTE ] pre-existing host answered: registration evidence "
-                  "is text-level (no host console owned by this preflight)")
-        print(("[ OK ] " if registered else "[FAIL] ") +
-              "session_start registers a session (host log confirms the lifecycle row)"
-              + ("" if registered else f" -- exit {code}: {err}"))
-        if not registered:
+            print("[ RUN] no server answering - starting it via the normal path")
+            if not start_server():
+                print(f"[FAIL] server did not answer within 20 s; log: {log_path}")
+                return EXIT_FAIL
+            started_here = True
+            print("[ OK ] server started with the kit-internal profile")
+
+        # Leg 2 - verdict round trip (a REAL pipe verdict, not a boot echo).
+        print("[ RUN] preflight: verdict round trip")
+        code, _out, err = run_probe()
+        verdict_ok = code == 0 or "(host verdict)" in err
+        print(("[ OK ] " if verdict_ok else "[FAIL] ") +
+              "verdict round trip complete" +
+              ("" if verdict_ok else f" -- exit {code}: {err}"))
+        if not verdict_ok:
             return EXIT_FAIL
 
-        # 2. Authenticated shutdown must actually EXIT the host we booted
-        # (adversarial-review M3: an acked-but-still-listening host is a
-        # FAIL, not a kill-and-pretend).
-        if host_proc is not None:
+        # Leg 3 - FIRST-CONTACT pre_tool with NO prior session_start (the
+        # LL-2a live proof: a never-registered handle mints and is judged
+        # on its merits - the trial-4 deny-114 ritual is retired).
+        print("[ RUN] preflight: first-contact pre_tool (no session_start)")
+        proc = sp.run(
+            [str(hook_exe), "--event", "pre_tool", "--tool", "Bash",
+             "--root", str(GOVERNED_ROOT),
+             "--session-handle", token + "-firstcontact"],
+            input=probe_payload, capture_output=True, text=True, timeout=20,
+            creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
+        first_contact_ok = (proc.returncode == 0
+                            and "deny 114" not in proc.stderr)
+        print(("[ OK ] " if first_contact_ok else "[FAIL] ") +
+              "first contact judged on merits (no registration ritual)" +
+              ("" if first_contact_ok else
+               f" -- exit {proc.returncode}: {proc.stderr.strip()}"))
+        if not first_contact_ok:
+            return EXIT_FAIL
+
+        # Leg 4 - session_start round trip asserted FAST (the trial-5
+        # mechanism: no refresh work in the request path; wall-clock bound
+        # 2000 ms for the FULL round trip, far under the retired 9750 class).
+        print("[ RUN] preflight: session_start round trip (< 2000 ms)")
+        started = time.monotonic()
+        code, _out, err = run_session_start_probe()
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+        fast_ok = (code == 0 and elapsed_ms < 2000.0
+                   and "NOT registered" not in err
+                   and "unexpected reply shape" not in err)
+        print(("[ OK ] " if fast_ok else "[FAIL] ") +
+              f"session_start round trip in {elapsed_ms:.0f} ms (< 2000)" +
+              ("" if fast_ok else f" -- exit {code}: {err}"))
+        if not fast_ok:
+            return EXIT_FAIL
+
+        # Leg 5 - status reports the refresh state (the host-autonomous
+        # worker's observable).
+        status = status_show()
+        refresh_ok = (status.returncode == 0
+                      and "refresh_state" in status.stdout)
+        print(("[ OK ] " if refresh_ok else "[FAIL] ") +
+              "status reports refresh state" +
+              ("" if refresh_ok else f" -- exit {status.returncode}: "
+                                     f"{status.stdout.strip()[:200]}"))
+        if not refresh_ok:
+            return EXIT_FAIL
+
+        # Legs 6-7 - the restart pair, ONLY when this preflight started the
+        # server (a verification tool does not bounce an autostart-owned
+        # server mid-flight; stop-host + start-host remain the owner's
+        # manual exercise of that path, GUIDE step P6).
+        if started_here:
+            print("[ RUN] preflight: authenticated shutdown exits the process")
             stop = sp.run(
                 [str(ctl_exe), "host", "shutdown", "--root", str(GOVERNED_ROOT)],
                 capture_output=True, text=True, timeout=20,
                 creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
-            exited = False
-            for _ in range(20):
-                if host_proc.poll() is not None:
-                    exited = True
+            deadline = time.monotonic() + 10.0
+            stopped = False
+            while time.monotonic() < deadline:
+                if status_show().returncode != 0:
+                    stopped = True
                     break
                 time.sleep(0.5)
-            if not exited:
-                print("[FAIL] host did NOT exit within 10 s of the shutdown ack "
-                      "(killing it now - the exe shutdown wiring is broken)")
+            print(("[ OK ] " if stopped else "[FAIL] ") +
+                  f"server exited after the shutdown ack (ctl exit {stop.returncode})")
+            if not stopped:
                 return EXIT_FAIL
-            print(f"[ OK ] host exited after authenticated shutdown "
-                  f"(runtimectl exit {stop.returncode})")
-
-        # 3. Fail-closed honesty: with no host, the deny names its class.
-        if host_proc is not None or not host_answered_before_boot:
+            print("[ RUN] preflight: restart brings it back with no residue")
+            if not start_server():
+                print(f"[FAIL] restart did not answer within 20 s; log: {log_path}")
+                return EXIT_FAIL
             code, _out, err = run_probe()
-            honest = (code == 2 and "deny 120" in err and "no host verdict" in err
-                      and "fail-closed" in err)
-            print(("[ OK ] " if honest else "[FAIL] ") +
-                  "no-listener deny is typed 120 with honest fail-closed text" +
-                  ("" if honest else f" -- exit {code}: {err}"))
-            if not honest:
+            residue_ok = code == 0 or "(host verdict)" in err
+            print(("[ OK ] " if residue_ok else "[FAIL] ") +
+                  "next verdict succeeds with no re-registration ritual (LL-4)" +
+                  ("" if residue_ok else f" -- exit {code}: {err}"))
+            if not residue_ok:
                 return EXIT_FAIL
         else:
-            print("[SKIP-labeled] no-listener leg inapplicable: a pre-existing "
-                  "host is serving this root (the leg needs an unmediated pipe)")
+            print("[SKIP-labeled] shutdown/restart legs: the server was "
+                  "already running (autostart-owned); stop-host.cmd + "
+                  "start-host.cmd remain the owner's manual exercise "
+                  "(GUIDE step P6)")
 
-        print("[ OK ] PREFLIGHT PASS - safe to approve the hook config in the ZCode UI")
+        print("[ OK ] PREFLIGHT PASS - safe to approve the hook config in "
+              "the ZCode UI")
+        print("[ NOTE ] the preflight LEAVES THE SERVER RUNNING (the "
+              "long-lived model)")
         result = EXIT_OK
         return result
     finally:
-        if host_proc is not None and host_proc.poll() is None:
-            host_proc.kill()
+        # LL-1 custody: a STARTED server stays running on every exit path
+        # (starting availability is the design, not a leak); the owner's
+        # stop is stop-host.cmd / rollback.cmd.
+        pass
 
 
 def main(argv=None) -> int:

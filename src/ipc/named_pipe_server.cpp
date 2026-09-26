@@ -897,6 +897,15 @@ void ServeLoop::dispatch_connection(PipeConnection connection)
             m_live_serve_threads += 1;
         }
     }
+    // One observable line per ACCEPTED connection (the one-connection law's
+    // observable: a client that splits hello/event across two connections
+    // shows two [open] lines for one registration). The occupancy rides the
+    // line so the S-5 discriminator has a per-connection trace.
+    if (m_hooks.log)
+    {
+        m_hooks.log("[open] connection (occupancy " + std::to_string(occupancy) +
+                    ")");
+    }
     // NOTE: everything below this point must not throw onto the ARM
     // thread (fault containment §5) — the busy/log paths are guarded.
     if (over_cap)

@@ -170,15 +170,16 @@ class WireClient:
         return json.loads(body.decode("utf-8"))
 
     def request(self, body_obj: dict, request_id: int, connection_seq: int,
-                deadline_ms: int = 3000, **frame_kwargs) -> dict:
+                **frame_kwargs) -> dict:
         body = json.dumps(body_obj, separators=(",", ":")).encode("utf-8")
         self.send(hmac_frame(self.key, body, request_id, connection_seq, **frame_kwargs))
         return self.read_reply()
 
-    def hello(self, connection_seq: int = 1, deadline_ms: int = 3000, **kw) -> dict:
+    def hello(self, connection_seq: int = 1, **kw) -> dict:
+        # The wire carries NO deadline (host-server LL-3: the envelope field
+        # is retired; a frame containing it fails closed typed).
         return self.request({"kind": "hello", "client_kind": "zcode-hook",
-                             "client_build": 1, "request_id": 1,
-                             "deadline_ms": deadline_ms},
+                             "client_build": 1, "request_id": 1},
                             1, connection_seq, **kw)
 
     def close(self) -> None:
@@ -266,8 +267,8 @@ def stop_host(root: Path, host_proc, log_handle) -> None:
     """Authenticated shutdown via the wire client (INV-16: ack + real exit)."""
     client = WireClient(root / ".qiven" / "runtime")
     try:
-        reply = client.request({"kind": "shutdown", "grace_ms": 1500, "request_id": 99,
-                                "deadline_ms": 3000}, 99, 1)
+        reply = client.request({"kind": "shutdown", "grace_ms": 1500, "request_id": 99},
+                                99, 1)
         if reply.get("kind") != "shutdown_ack":
             raise GateFailure(f"shutdown reply was {reply.get('kind')}")
     finally:
@@ -457,10 +458,13 @@ class Rig:
     def registered(self, root: Path, outside: Path, handle: str,
                    session_label: str, require_note: bool = True) -> str | None:
         """Register one session handle; returns the runtime session id when
-        the registration note is observable. The REPEAT path may answer
-        silently (idempotent branch with a fresh-enough cognition window:
-        allow_silent) - identity stability is then proven by the journal's
-        exactly-one-row law, not by the text."""
+        the registration note is observable. The note carries INFORMATION
+        only (the reply's refresh state): a window-current host answers
+        SILENTLY (allow_silent, host-server LL-4/§6 - nothing to report),
+        so a silent first call waits bounded for the host-autonomous boot
+        attempt (offline fixture: cognition_local_fallback) and retries
+        once - after that the note is stable for the window. Identity
+        stability is always proven by the journal's exactly-one-row law."""
         payload = self.hook_payload("pinned.session-start.startup", root, outside,
                                     session_label)
         code, err, elapsed = run_hook(self.hook_exe, "session_start", root, payload,
@@ -470,9 +474,32 @@ class Rig:
                     f"hello+event transaction for {handle} closed in {elapsed:.2f}s "
                     f"(INV-10 whole-transaction bound {SESSION_TX_BOUND_S}s - a "
                     f"per-frame-only timer cannot close the trial-4 class)")
+        if require_note and "session registered (id" not in err:
+            # Window-current hosts answer silently; wait for a NEW
+            # host-autonomous attempt (offline fixture:
+            # cognition_local_fallback) to land in the journal, then retry
+            # once - after that the note is stable for the window. The count
+            # (not mere existence) matters: restarted hosts carry earlier
+            # lifetimes' cognition rows in the same journal.
+            before = sum(1 for kind, _ in audit_events(root)
+                         if kind.startswith("cognition_"))
+            deadline = time.monotonic() + 6.0
+            attempted = False
+            while time.monotonic() < deadline and not attempted:
+                current = sum(1 for kind, _ in audit_events(root)
+                              if kind.startswith("cognition_"))
+                attempted = current > before
+                if not attempted:
+                    time.sleep(0.2)
+            if attempted:
+                code, err, elapsed = run_hook(
+                    self.hook_exe, "session_start", root, payload,
+                    session_handle=handle)
+                self.expect(code == 0, f"registration retry for {handle} failed: {err}")
         if require_note:
             self.expect("session registered (id" in err,
-                        f"first registration must carry the note: {err}")
+                        f"first registration must carry the note once the "
+                        f"refresh state is observable: {err!r}")
             return self.session_id_of(err)
         return self.session_id_of(err) if "session registered (id" in err else None
 
@@ -790,25 +817,34 @@ class Rig:
                                     tool="Write", session_handle="h-b")
             self.expect_deny(R_GOVERNED_WRITE, err, code, fragment="traversal")
 
-        @self.case("B13.unregistered-write-denied-114", ["INV-2"],
-                   "trial-4 audit: deny 114 fires BEFORE classification", incident="I4")
+        @self.case("B13.unregistered-write-first-contact-merits", ["INV-2"],
+                   "LL-2a (the deny-114 class is RETIRED): a pre_tool on a "
+                   "never-registered handle MINTS the session and is judged on "
+                   "its merits — a governed target still denies 110, and the "
+                   "mint leaves its session_registered row", incident="I4")
         def _b13():
             payload = self.hook_payload("pinned.pre-tool.write", b_root, b_outside,
                                         "sess-ghost")
             code, err, _ = run_hook(hook, "pre_tool", b_root, payload,
                                     tool="Write", session_handle="h-ghost")
-            self.expect_deny(R_UNKNOWN_SESSION, err, code,
-                             fragment="SessionStart must fire first")
+            self.expect_deny(R_GOVERNED_WRITE, err, code, source="(host verdict)")
+            rows = [p for kind, p in audit_events(b_root)
+                    if kind == "session_registered" and p.endswith("|h-ghost")]
+            self.expect(len(rows) == 1,
+                        f"first contact must mint exactly one session row: {rows}")
 
-        @self.case("B14.unregistered-outside-denied-114", ["INV-2"],
-                   "trial-4 audit: even the outside-scope probe denied 114",
-                   incident="I4")
+        @self.case("B14.unregistered-outside-allows-first-contact", ["INV-2"],
+                   "LL-2a live proof (the trial-4 P4 probe): an outside-scope "
+                   "pre_tool with NO prior session_start ALLOWS — a lost "
+                   "session_start has no governance consequence", incident="I4")
         def _b14():
             payload = self.hook_payload("capture.14.pre-tool.bash.outside.dualkey",
                                         b_root, b_outside, "sess-ghost")
             code, err, _ = run_hook(hook, "pre_tool", b_root, payload,
-                                    tool="Bash", session_handle="h-ghost")
-            self.expect_deny(R_UNKNOWN_SESSION, err, code)
+                                    tool="Bash", session_handle="h-ghost2")
+            self.expect(code == 0 and err == "",
+                        f"first-contact outside probe must allow on merits: {err}")
+            self.clear_outstanding(b_root, "h-ghost2", "Bash")
 
         @self.case("B15.unknown-tool-denied-112", ["INV-2"],
                    "tool-inventory fail-closed law")
@@ -863,8 +899,11 @@ class Rig:
             self.expect_deny(R_PAYLOAD, err, code, fragment="no command",
                              source="(host verdict)")
 
-        @self.case("B21.degraded-session-denies-113", ["INV-19"],
-                   "capability-handshake mismatch law (fault profile: undeclared tool)")
+        @self.case("B21.profile-only-tool-denies-113", ["INV-19"],
+                   "LL-2a per-tool degradation: the hook's declared manifest "
+                   "(Bash,Write,Edit) omits the fault profile's NotebookEdit "
+                   "entry - ONLY that tool degrades (deny 113); Bash/Write/Edit "
+                   "keep their merits verdicts in the same session")
         def _b21():
             fault_root, fault_outside = self.fresh_root("gB21")
             profile = fault_root / "config" / "profiles" / PROFILE_NAME
@@ -878,10 +917,20 @@ class Rig:
             self.live_procs.append(proc)
             try:
                 self.registered(fault_root, fault_outside, "h-d", "sess-d")
+                # The manifest-declared Write keeps its merits verdict.
                 payload = self.hook_payload("pinned.pre-tool.write", fault_root,
                                             fault_outside, "sess-d")
                 code, err, _ = run_hook(hook, "pre_tool", fault_root, payload,
                                         tool="Write", session_handle="h-d")
+                self.expect_deny(R_GOVERNED_WRITE, err, code,
+                                 source="(host verdict)")
+                # The profile-only tool degrades per-tool.
+                payload = self.payload_with_target(fault_root, fault_outside,
+                                                   "sess-d", "NotebookEdit",
+                                                   file_path=f"{fault_root.as_posix()}/"
+                                                             "state/current.md")
+                code, err, _ = run_hook(hook, "pre_tool", fault_root, payload,
+                                        tool="NotebookEdit", session_handle="h-d")
                 self.expect_deny(R_SCOPE_MISMATCH, err, code,
                                  fragment="manifest lacks declared tool 'NotebookEdit'")
             finally:
@@ -1031,25 +1080,38 @@ class Rig:
             self.expect(len(after) == len(before) + 1,
                         "unmatched post must leave its Indeterminate journal row")
 
-        @self.case("A7.unregistered-post-degraded-never-correlated",
+        @self.case("A7.unregistered-post-mints-unmatched",
                    ["INV-7", "INV-14"],
-                   "unregistered post: typed 114 advisory (exit 0, silent at the "
-                   "hook - degraded is a legal silent verdict); it must NEVER "
-                   "mint a correlated outcome row (catalogue oracle "
-                   "unregistered_post_degraded)")
+                   "LL-2a: a post_tool on a never-seen handle MINTS the session "
+                   "and is recorded as an honest unmatched observation (the old "
+                   "114-advisory shape is retired); it must never mint a "
+                   "CORRELATED outcome row (never guessed, never silently "
+                   "success)")
         def _a7():
             payload = self.hook_payload("pinned.post-tool.write", a_root, a_outside,
                                         "sess-ghost")
-            rows_before = [p for kind, p in audit_events(a_root)
-                           if kind in ("hook_outcome", "hook_outcome_unmatched")]
+            correlated_before = sum(
+                1 for kind, _ in audit_events(a_root) if kind == "hook_outcome")
+            unmatched_before = sum(
+                1 for kind, _ in audit_events(a_root)
+                if kind == "hook_outcome_unmatched")
             code, _err, _ = run_hook(hook, "post_tool", a_root, payload,
                                      tool="Write", session_handle="h-ghost2")
-            self.expect(code == 0, "unregistered post is advisory: exit 0")
-            rows_after = [p for kind, p in audit_events(a_root)
-                          if kind in ("hook_outcome", "hook_outcome_unmatched")]
-            self.expect(len(rows_after) == len(rows_before),
-                        "an unregistered post must NOT mint a correlated "
+            self.expect(code == 0, "first-contact post is advisory: exit 0")
+            events = audit_events(a_root)
+            correlated_after = sum(1 for kind, _ in events if kind == "hook_outcome")
+            unmatched_after = sum(1 for kind, _ in events
+                                  if kind == "hook_outcome_unmatched")
+            self.expect(correlated_after == correlated_before,
+                        "an unmatched post must NOT mint a correlated "
                         "outcome row (never guessed, never silently success)")
+            self.expect(unmatched_after == unmatched_before + 1,
+                        "the first-contact post must leave its honest "
+                        "unmatched (Indeterminate) row")
+            minted = [p for kind, p in events
+                      if kind == "session_registered" and p.endswith("|h-ghost2")]
+            self.expect(len(minted) == 1,
+                        f"first contact must mint exactly one session row: {minted}")
 
         @self.case("A8.cross-session-outstanding-isolated", ["INV-7"],
                    "outstanding state is per-session (isolation contract)")
@@ -1171,18 +1233,32 @@ class Rig:
                                     tool="Write", session_handle="h-c")
             self.expect_deny(R_NO_LISTENER, err, code, source="hook-client")
 
-        @self.case("C3.old-session-dead-after-restart", ["INV-17"],
-                   "in-memory sessions die with the host; journal survives")
+        @self.case("C3.restart-recontact-mints-fresh", ["INV-17"],
+                   "host-server §5 restart semantics: a handle from before the "
+                   "restart re-contacts and mints a FRESH runtime session "
+                   "(a SECOND session_registered row for the handle); the "
+                   "verdict is on merits (the deny-114 ritual is retired), "
+                   "and the journal survives the restart")
         def _c3():
             proc, fh = boot_host(self.host_exe, c_root, None,
                                  self.run_root / "gC-host2.log")
             self.live_procs.append(proc)
             try:
+                rows_before = [p for kind, p in audit_events(c_root)
+                               if kind == "session_registered"
+                               and p.endswith("|h-c")]
                 payload = self.hook_payload("pinned.pre-tool.write", c_root,
                                             c_outside, "sess-c")
                 code, err, _ = run_hook(hook, "pre_tool", c_root, payload,
                                         tool="Write", session_handle="h-c")
-                self.expect_deny(R_UNKNOWN_SESSION, err, code)
+                self.expect_deny(R_GOVERNED_WRITE, err, code,
+                                 source="(host verdict)")
+                rows_after = [p for kind, p in audit_events(c_root)
+                              if kind == "session_registered"
+                              and p.endswith("|h-c")]
+                self.expect(len(rows_after) == len(rows_before) + 1,
+                            f"re-contact after restart must mint a FRESH session "
+                            f"({len(rows_before)} -> {len(rows_after)})")
                 rows = len(audit_events(c_root))
                 self.expect(rows >= c_state["pre_rows"],
                             "journal rows must survive the restart")
@@ -1241,8 +1317,24 @@ class Rig:
                                         self.hook_payload("pinned.session-start.startup",
                                                           d_root, d_outside, "sess-d1"),
                                         session_handle="h-d1")
-                self.expect(code == 0 and "session registered (id" in err,
-                            f"kit-form boot must register: {err}")
+                self.expect(code == 0, f"kit-form boot must register: {err}")
+                if "session registered (id" not in err:
+                    deadline = time.monotonic() + 6.0
+                    while time.monotonic() < deadline and "session registered" not in err:
+                        if not any(kind.startswith("cognition_")
+                                   for kind, _ in audit_events(d_root)):
+                            time.sleep(0.2)
+                            continue
+                        code, err, _ = run_hook(
+                            hook, "session_start", d_root,
+                            self.hook_payload("pinned.session-start.startup",
+                                              d_root, d_outside, "sess-d1"),
+                            session_handle="h-d1")
+                        self.expect(code == 0, f"registration retry failed: {err}")
+                        break
+                self.expect("session registered (id" in err,
+                            f"kit-form registration note must appear once "
+                            f"refresh is observable: {err!r}")
             finally:
                 stop_host(d_root, proc, fh)
 
@@ -1283,8 +1375,25 @@ class Rig:
                                         self.hook_payload("pinned.session-start.startup",
                                                           d_root, d_outside, "sess-i5b"),
                                         session_handle="h-i5b")
-                self.expect(code == 0 and "session registered (id" in err,
+                self.expect(code == 0,
                             f"explicit kit profile must be CWD-independent: {err}")
+                if "session registered (id" not in err:
+                    deadline = time.monotonic() + 6.0
+                    while time.monotonic() < deadline and "session registered" not in err:
+                        if not any(kind.startswith("cognition_")
+                                   for kind, _ in audit_events(d_root)):
+                            time.sleep(0.2)
+                            continue
+                        code, err, _ = run_hook(
+                            hook, "session_start", d_root,
+                            self.hook_payload("pinned.session-start.startup",
+                                              d_root, d_outside, "sess-i5b"),
+                            session_handle="h-i5b")
+                        self.expect(code == 0, f"registration retry failed: {err}")
+                        break
+                self.expect("session registered (id" in err,
+                            f"CWD-independent registration note must appear "
+                            f"once refresh is observable: {err!r}")
             finally:
                 stop_host(d_root, proc, fh)
 
@@ -1500,7 +1609,7 @@ class Rig:
                         "session_handle": "h-w", "tool_name": "Write",
                         "payload_sha256": "00" * 32, "payload_bytes": 2,
                         "command": "", "file_path": "", "mediated_tools": "",
-                        "request_id": 2, "deadline_ms": 3000}
+                        "request_id": 2}
                 client.send(hmac_frame(client.key,
                                        json.dumps(body,
                                                   separators=(",", ":")).encode(),
@@ -1520,8 +1629,7 @@ class Rig:
             try:
                 client.send(hmac_frame(
                     client.key,
-                    b'{"kind":"status","request_id":1,"deadline_ms":1000}',
-                    1, 1, corrupt_mac=True))
+                    b'{"kind":"status","request_id":1}', 1, 1, corrupt_mac=True))
                 reply = client.read_reply()
                 self.expect(reply.get("kind") == "error"
                             and reply["error"]["code"] == ERR_AUTH
@@ -1536,8 +1644,7 @@ class Rig:
             try:
                 client.send(hmac_frame(
                     client.key,
-                    b'{"kind":"status","request_id":1,"deadline_ms":1000}',
-                    1, 1, magic=0xDEADBEEF))
+                    b'{"kind":"status","request_id":1}', 1, 1, magic=0xDEADBEEF))
                 reply = client.read_reply()
                 self.expect(reply.get("kind") == "error"
                             and reply["error"]["code"] == ERR_FRAME
@@ -1553,8 +1660,7 @@ class Rig:
             try:
                 client.send(hmac_frame(
                     client.key,
-                    b'{"kind":"status","request_id":1,"deadline_ms":1000,'
-                    b'"surprise":"x"}', 1, 1))
+                    b'{"kind":"status","request_id":1,"surprise":"x"}', 1, 1))
                 reply = client.read_reply()
                 self.expect(reply.get("kind") == "error"
                             and "unknown request field" in reply["error"]["detail"],
@@ -1569,8 +1675,7 @@ class Rig:
             try:
                 client.send(hmac_frame(
                     client.key,
-                    b'{"kind":"status","request_id":1,"deadline_ms":1000}',
-                    1, 1, proto=99))
+                    b'{"kind":"status","request_id":1}', 1, 1, proto=99))
                 reply = client.read_reply()
                 self.expect(reply.get("kind") == "error"
                             and "unsupported protocol version" in
@@ -1579,19 +1684,26 @@ class Rig:
             finally:
                 client.close()
 
-        @self.case("I4a.wire-hello-refresh-deadline-typed-64", ["INV-9", "INV-10"],
-                   "trial-4 mechanism, wire level: hello ceiling is 5000 even when "
-                   "the session_start event budget is 9750", incident="I4")
+        @self.case("I4a.wire-hello-deadline-field-typed-64", ["INV-9", "INV-10"],
+                   "trial-4 mechanism, DEAD BY CONSTRUCTION (host-server LL-3): the "
+                   "wire carries no deadline; a hello still carrying the retired "
+                   "deadline_ms field fails closed typed as an unknown field — the "
+                   "ceiling split cannot recur because there is no deadline to "
+                   "validate, reject, or split", incident="I4")
         def _i4a():
             client = WireClient(w_root / ".qiven" / "runtime")
             try:
-                reply = client.hello(deadline_ms=9750)
+                # OLD-client shape (mixed-fleet transition, LL-3): the frame
+                # carries the retired field; the typed rejection names it.
+                reply = client.request({"kind": "hello", "client_kind": "zcode-hook",
+                                        "client_build": 1, "request_id": 1,
+                                        "deadline_ms": 9750}, 1, 1)
                 self.expect(reply.get("kind") == "error"
                             and reply["error"]["code"] == ERR_FRAME
-                            and "deadline_ms must be in (0, 5000]" in
+                            and "unknown request field 'deadline_ms'" in
                             reply["error"]["detail"],
-                            f"the hello frame must reject a refresh-grade "
-                            f"deadline: {reply}")
+                            f"the retired deadline_ms field must fail closed "
+                            f"typed: {reply}")
             finally:
                 client.close()
 
@@ -1608,7 +1720,7 @@ class Rig:
                     client.send(hmac_frame(
                         client.key,
                         b'{"kind":"status","request_id":' + str(seq).encode() +
-                        b',"deadline_ms":1000}', seq, seq))
+                        b'}', seq, seq))
                     reply = client.read_reply()
                     if reply.get("kind") == "error":
                         self.expect("frame budget" in reply["error"]["detail"],
@@ -1618,6 +1730,264 @@ class Rig:
                 self.expect(exceeded, "frame budget (64) was never enforced")
             finally:
                 client.close()
+
+        # ===================================================================
+        # Group N: host-server laws (LL-1/2/3): busy cap, trigger coalescing,
+        # drain marking, refresh recovery, mixed-fleet transition
+        # ===================================================================
+        @self.case("N1.connection-cap-busy-typed-125", ["INV-9"],
+                   "LL-3: connections beyond the cap receive the typed 125 busy "
+                   "frame (never an ERROR_PIPE_BUSY fake-120 against a healthy "
+                   "pool). The fill loop is PHASE-INDEPENDENT: connections are "
+                   "opened one at a time and served until the boundary fires "
+                   "(earlier wire-fault connections may still hold serve "
+                   "threads inside their idle window)")
+        def _n1():
+            clients: list[WireClient] = []
+            try:
+                def connect_retried() -> WireClient:
+                    # Raw open has no WaitNamedPipe etiquette; the listen pool
+                    # re-arms within microseconds, so a bounded retry loop is
+                    # the honest client shape at this layer.
+                    last: OSError | None = None
+                    for _ in range(200):
+                        try:
+                            return WireClient(w_root / ".qiven" / "runtime")
+                        except OSError as failure:
+                            last = failure
+                            time.sleep(0.01)
+                    raise AssertionError(f"connect retries exhausted: {last}")
+
+                busy_seen = False
+                for _ in range(16):
+                    client = connect_retried()
+                    clients.append(client)
+                    reply = client.request({"kind": "hello", "client_kind": "zcode-hook",
+                                            "client_build": 1, "request_id": 1}, 1, 1)
+                    if reply.get("kind") == "hello_ack":
+                        continue  # under the cap: served
+                    self.expect(reply.get("kind") == "error"
+                                and reply["error"]["code"] == 125
+                                and "server busy" in reply["error"]["detail"],
+                                f"the first over-cap connection must receive the "
+                                f"typed 125 busy frame: {reply}")
+                    busy_seen = True
+                    break
+                self.expect(busy_seen,
+                            "16 concurrent connections never hit the connection "
+                            "cap (the busy law went unexercised)")
+            finally:
+                for client in clients:
+                    client.close()
+
+        @self.case("N2.refresh-trigger-coalescing-journaled", ["INV-19"],
+                   "LL-2b/§5 coalescing: a trigger inside the cooldown replies "
+                   "coalesced_pending and the reply texts are JOURNALED as "
+                   "refresh_triggered rows (the post-cooldown run is asserted at "
+                   "handle() level in hook_conformance; the 30 s production "
+                   "cooldown keeps the gate's wait bounded to the reply+rows)")
+        def _n2():
+            ctl = self.bin / "qiven-runtimectl.exe"
+
+            def cognition_rows() -> int:
+                return sum(1 for kind, _ in audit_events(w_root)
+                           if kind.startswith("cognition_"))
+
+            before = cognition_rows()
+            proc = subprocess.run(
+                [str(ctl), "host", "refresh", "--root", str(w_root)],
+                capture_output=True, timeout=20, creationflags=CREATE_NO_WINDOW)
+            self.expect(proc.returncode == 0,
+                        f"refresh trigger failed: {proc.stderr.decode(errors='replace')}")
+            # Wait for the triggered ATTEMPT to complete: the cooldown window
+            # opens when the attempt updates last_attempt_ms (firing the
+            # second trigger before that lands OUTSIDE the cooldown).
+            completed = False
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline and not completed:
+                completed = cognition_rows() > before
+                if not completed:
+                    time.sleep(0.25)
+            self.expect(completed, "the triggered attempt never journaled")
+            proc = subprocess.run(
+                [str(ctl), "host", "refresh", "--root", str(w_root)],
+                capture_output=True, timeout=20, creationflags=CREATE_NO_WINDOW)
+            self.expect(proc.returncode == 0,
+                        f"cooldown trigger failed: "
+                        f"{proc.stderr.decode(errors='replace')}")
+            rows = [p for kind, p in audit_events(w_root)
+                    if kind == "refresh_triggered"]
+            self.expect(len(rows) >= 2,
+                        f"both triggers must journal: {rows}")
+            # The FIRST trigger's text is phase-dependent (the gate runs fast
+            # enough that the boot attempt's cooldown may still cover it -
+            # coalesced_pending is then the honest reply); the LAW asserted
+            # here is the second trigger's: fired immediately after a
+            # COMPLETED attempt, it must reply/journal coalesced_pending, and
+            # the post-cooldown run is the hook_conformance oracle's.
+            self.expect(rows[-1].endswith("coalesced_pending"),
+                        f"trigger inside the fresh attempt's cooldown must "
+                        f"reply/journal coalesced_pending: all rows {rows}")
+            self.expect(rows[-2].endswith("triggered")
+                        or rows[-2].endswith("coalesced_pending"),
+                        f"first trigger result must be an honest phase "
+                        f"outcome: all rows {rows}")
+
+        @self.case("N3.drain-marks-outstanding-indeterminate", ["INV-16", "INV-7"],
+                   "§5 stop semantics: an outstanding pre observation at drain "
+                   "leaves its hook_outcome_indeterminate audit row (the durable "
+                   "boundary record)")
+        def _n3():
+            payload = self.payload_with_target(w_root, w_outside, "sess-w", "Write",
+                                               file_path=f"{w_outside.as_posix()}/"
+                                                         "n3-outside.md")
+            code, err, _ = run_hook(hook, "pre_tool", w_root, payload,
+                                    tool="Write", session_handle="h-w")
+            self.expect(code == 0, f"outside allow for the outstanding pre: {err}")
+            # W3 below stops the host; the drain must mark the observation.
+            rows = [p for kind, p in audit_events(w_root)
+                    if kind == "hook_outcome_indeterminate"]
+            self.expect(len(rows) == 0, "no drain row before the stop")
+            stop_host(w_root, w_proc, w_fh)
+            rows = [p for kind, p in audit_events(w_root)
+                    if kind == "hook_outcome_indeterminate"]
+            self.expect(len(rows) >= 1,
+                        "drain must mark the outstanding pre Indeterminate")
+
+        @self.case("N4.refresh-recovery-real-git-origin", ["INV-19"],
+                   "§6 recovery law (carried from the implementation batch's "
+                   "amended section 7 row): expiry denies 117; a SUCCESSFUL "
+                   "worker attempt against a real local git origin refreshes "
+                   "and the same governed target is judged on merits again")
+        def _n4():
+            rec_root, rec_outside = self.fresh_root("gN4")
+
+            def git_run(args: list, cwd: Path | None = None, check: bool = True):
+                proc = subprocess.run(["git", "-c", "core.hooksPath="] + args,
+                                      capture_output=True, timeout=90,
+                                      creationflags=CREATE_NO_WINDOW,
+                                      cwd=str(cwd) if cwd else None)
+                if check and proc.returncode != 0:
+                    raise AssertionError(
+                        f"git {args[:2]} failed ({proc.returncode}): "
+                        f"{proc.stderr.decode(errors='replace')}")
+                return proc
+
+            # A REAL local origin: a bare repository the fixture pushes to.
+            bare = self.run_root / "gN4-origin.git"
+            git_run(["init", "--bare", "--quiet", str(bare)])
+            git_run(["remote", "add", "origin", bare.as_posix()], cwd=rec_root)
+            git_run(["push", "--quiet", "origin", "main"], cwd=rec_root)
+            profile = rec_root / "config" / "profiles" / PROFILE_NAME
+            text = profile.read_text(encoding="utf-8")
+            import re as _re
+            text, subs = _re.subn(r"repository: .*",
+                                  f"repository: {bare.as_posix()}", text, count=1)
+            self.expect(subs == 1, "profile cognition.repository edit failed")
+            profile.write_text(text, encoding="utf-8", newline="\n")
+            proc, fh = boot_host(self.host_exe, rec_root, profile,
+                                 self.run_root / "gN4-host.log")
+            self.live_procs.append(proc)
+            try:
+                # The real origin refreshes successfully -> refresh stays
+                # "current" -> the registration note lawfully stays SILENT.
+                self.registered(rec_root, rec_outside, "h-r", "sess-r",
+                                require_note=False)
+                payload = self.hook_payload("pinned.pre-tool.write", rec_root,
+                                            rec_outside, "sess-r")
+                code, err, _ = run_hook(hook, "pre_tool", rec_root, payload,
+                                        tool="Write", session_handle="h-r")
+                self.expect_deny(R_GOVERNED_WRITE, err, code,
+                                 source="(host verdict)")
+                # Force expiry (the B22 fault shape), restart, confirm 117.
+            finally:
+                stop_host(rec_root, proc, fh)
+            journal = rec_root / ".qiven" / "runtime" / "journal.sqlite3"
+            conn = sqlite3.connect(journal, timeout=5)
+            stale = str(int(time.time() * 1000) - 61 * 24 * 3600 * 1000)
+            conn.execute("UPDATE runtime_meta SET value=? WHERE key='last_refresh_ok_ms'",
+                         (stale,))
+            conn.commit()
+            conn.close()
+            # The origin gains a committed change the recovery will fetch.
+            (rec_root / "memory" / "records" / "RECOVERY.md").write_text(
+                "recovery marker\n", encoding="utf-8")
+            git_run(["add", "-A"], cwd=rec_root)
+            git_run(["-c", "user.email=sim@qiven.invalid", "-c",
+                     "user.name=qiven-sim", "commit", "--quiet", "-m",
+                     "recovery change"], cwd=rec_root)
+            git_run(["push", "--quiet", "origin", "main"], cwd=rec_root)
+            proc, fh = boot_host(self.host_exe, rec_root, profile,
+                                 self.run_root / "gN4-host2.log")
+            self.live_procs.append(proc)
+            try:
+                payload = self.hook_payload("pinned.pre-tool.write", rec_root,
+                                            rec_outside, "sess-r2")
+                code, err, _ = run_hook(hook, "pre_tool", rec_root, payload,
+                                        tool="Write", session_handle="h-r2")
+                self.expect_deny(R_EXPIRED, err, code, source="(host verdict)")
+                # Trigger the worker against the real origin; the fetch
+                # SUCCEEDS and brings the committed change.
+                ctl = self.bin / "qiven-runtimectl.exe"
+                subprocess.run([str(ctl), "host", "refresh", "--root", str(rec_root)],
+                               capture_output=True, timeout=20,
+                               creationflags=CREATE_NO_WINDOW, check=True)
+                refreshed = False
+                deadline = time.monotonic() + 15.0
+                while time.monotonic() < deadline and not refreshed:
+                    kinds = [kind for kind, _ in audit_events(rec_root)]
+                    refreshed = "cognition_refreshed" in kinds
+                    if not refreshed:
+                        time.sleep(0.25)
+                self.expect(refreshed,
+                            "the successful attempt must journal "
+                            "cognition_refreshed (recovery)")
+                code, err, _ = run_hook(hook, "pre_tool", rec_root, payload,
+                                        tool="Write", session_handle="h-r2")
+                self.expect_deny(R_GOVERNED_WRITE, err, code,
+                                 source="(host verdict)",
+                                 fragment="governed scope")
+            finally:
+                stop_host(rec_root, proc, fh)
+
+        @self.case("N5.mixed-fleet-old-client-fails-closed", ["INV-9", "INV-14"],
+                   "LL-3 mixed-fleet transition (carried from the implementation "
+                   "batch's amended section 7 row): the PRESERVED pre-fix hook "
+                   "binary (it still sends deadline_ms) against the new host "
+                   "fails closed with honest text naming the retired field")
+        def _n5():
+            prefix_dir = REPO_ROOT / ".generated-temp" / "h1-sim" / "prefix-reference"
+            old_hook = prefix_dir / "qiven-zcode-hook.exe"
+            if not old_hook.is_file():
+                raise GateFailure(
+                    f"pre-fix reference hook missing: {old_hook} (the old-fail "
+                    "evidence pair; regenerate from git history per the "
+                    "standing residual if needed)")
+            mix_root, mix_outside = self.fresh_root("gN5")
+            # Admit the old client image for this root (same-user DACL stays
+            # the boundary; the install record governs the admission).
+            record = mix_root / ".qiven" / "runtime" / "clients.json"
+            data = json.loads(record.read_text(encoding="utf-8"))
+            data["clients"].append(str(old_hook))
+            record.write_text(json.dumps(data, indent=2) + "\n",
+                              encoding="utf-8", newline="\n")
+            proc, fh = boot_host(self.host_exe, mix_root, None,
+                                 self.run_root / "gN5-host.log")
+            self.live_procs.append(proc)
+            try:
+                payload = self.hook_payload("pinned.pre-tool.write", mix_root,
+                                            mix_outside, "sess-old-client")
+                code, err, _ = run_hook(old_hook, "pre_tool", mix_root, payload,
+                                        tool="Write", session_handle="h-old-client")
+                self.expect(code == 2,
+                            f"the old client must fail closed (exit 2), got "
+                            f"{code}: {err}")
+                self.expect("deny" in err,
+                            f"the old client must DENY honestly: {err}")
+                self.expect("deadline_ms" in err,
+                            f"the honest text must name the retired field: {err}")
+            finally:
+                stop_host(mix_root, proc, fh)
 
         # W: the writable-child/delegation bypass negative controls.
         @self.case("W1.unmediated-direct-write-bypass", ["INV-18"],
@@ -1653,6 +2023,8 @@ class Rig:
 
         @self.case("W3.wire-group-teardown", ["INV-16"], "shutdown after wire faults")
         def _w3():
+            if w_proc.poll() is not None:
+                return  # N3 already drained and stopped this host
             stop_host(w_root, w_proc, w_fh)
 
         # ===================================================================
@@ -1673,7 +2045,22 @@ class Rig:
                                         x_root, x_outside, "sess-x0")
             code, err, _ = run_hook(hook, "session_start", x_root, payload,
                                     session_handle="h-x0")
-            self.expect(code == 0 and "session registered (id" in err, err)
+            self.expect(code == 0, f"registration failed: {err}")
+            if "session registered (id" not in err:
+                # Window-current hosts answer silently; wait for the boot
+                # attempt then retry (the note law carries information only).
+                deadline = time.monotonic() + 6.0
+                while time.monotonic() < deadline and "session registered" not in err:
+                    if not any(kind.startswith("cognition_")
+                               for kind, _ in audit_events(x_root)):
+                        time.sleep(0.2)
+                        continue
+                    code, err, _ = run_hook(hook, "session_start", x_root, payload,
+                                            session_handle="h-x0")
+                    self.expect(code == 0, f"registration retry failed: {err}")
+                    break
+            self.expect("session registered (id" in err,
+                        f"note must appear once refresh is observable: {err!r}")
 
         @self.case("X3.capture-inert-bash-outside-root", ["INV-4", "INV-13"],
                    "capture.4 with substitutions: no governed reference -> not_governed")
@@ -1901,8 +2288,7 @@ class Rig:
 def stop_host_quiet(proc, fh, root: Path) -> None:
     try:
         client = WireClient(root / ".qiven" / "runtime")
-        client.request({"kind": "shutdown", "grace_ms": 1000, "request_id": 99,
-                        "deadline_ms": 3000}, 99, 1)
+        client.request({"kind": "shutdown", "grace_ms": 1000, "request_id": 99}, 99, 1)
         client.close()
     except Exception:  # noqa: BLE001 - best-effort cleanup on an old-fail path
         pass

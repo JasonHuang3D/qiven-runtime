@@ -378,3 +378,58 @@ day (factual record; the case count stays 101):
     pre-existing-host registration evidence is text-level (NOTE), and
     the inapplicable no-listener leg prints a typed SKIP label instead
     of passing silently.
+
+## 11. Host-server refactor (2026-09-27, batch c — the scenario table is refactored per the supersession map)
+
+The gate is refactored to the long-lived host-server contract
+(docs/design/mvp4-host-server.md; its §10 row names this batch):
+
+1. **The deny-114 class is retired** (LL-2a): B13/B14 assert
+   FIRST-CONTACT merits (a governed target still denies 110 with its
+   session_registered row minted; the outside-scope probe ALLOWS with
+   no registration ritual); A7 asserts the first-contact post mints and
+   leaves its honest UNMATCHED row (never a correlated one); C3 asserts
+   the restart re-contact mints a FRESH session row and is judged on
+   merits. The catalogue binding `unregistered_deny_114` is rewritten
+   as `first_contact_merits` (the retired mechanism stays as historical
+   evidence text); `unregistered_post_degraded` becomes
+   `unregistered_post_unmatched`.
+2. **The wire carries no deadline** (LL-3): the rig's wire client no
+   longer sends `deadline_ms`; I4a's expectation is the RETIRED-FIELD
+   rejection (typed 64 naming `deadline_ms`) — the trial-4 hello-ceiling
+   mechanism is dead by construction, and the binding text says so.
+3. **New N-group (106 cases total, up from 101)**: N1 typed 125 busy
+   (phase-independent fill loop — earlier wire-fault connections may
+   hold serve threads inside their idle window); N2 trigger coalescing
+   journaled (the FIRST trigger's text is phase-dependent because the
+   gate runs inside the boot attempt's 30 s cooldown — the LAW asserted
+   is the second trigger's coalesced_pending; the post-cooldown run is
+   the hook_conformance oracle); N3 drain-marks-outstanding
+   hook_outcome_indeterminate; N4 refresh RECOVERY against a real local
+   git bare origin (expired → 117 → successful fetch of a committed
+   change → merits verdict again — carried from the implementation
+   batch's amended §7 row); N5 the MIXED-FLEET transition (the
+   preserved pre-fix hook binary, still sending deadline_ms, fails
+   closed against the new host with honest text naming the field —
+   carried from the same amendment).
+4. **The per-connection `[open]` line is RESTORED in the library**
+   (ServeLoop::dispatch_connection logs one line per accepted
+   connection with the occupancy) — the redesign's rewrite had dropped
+   it, taking S9's one-connection oracle with it; S9 stands again.
+5. **Registration notes are phase-dependent** (LL-4/§6): a
+   window-current host answers session_start SILENTLY (the note carries
+   information only); the rig's registered() helper waits bounded for
+   the host-autonomous boot attempt to land and retries once — the
+   note then holds the refresh state for the window. Offline fixtures
+   observe `cognition local_fallback`; the N4 real-origin fixture
+   lawfully never notes (require_note=False).
+6. **B21 re-pinned to the per-tool degradation law**: the hook's
+   declared manifest (Bash,Write,Edit) omits the fault profile's
+   NotebookEdit — ONLY that tool degrades (113); manifest-declared
+   tools keep their merits verdicts in the same session.
+7. **The h1 kit is server-shaped** (§8 of the redesign): start-host.cmd
+   (idempotent), install-autostart/remove-autostart, rollback removes
+   autostart, the build-dir image-consistency invariant in the manifest
+   and the config, and the preflight rewritten to the §8 legs (leaves
+   the server running; shutdown/restart legs only when the preflight
+   itself started it).
