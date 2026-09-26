@@ -678,6 +678,10 @@ void RuntimeHost::start_refresh_worker()
     {
         return;
     }
+    if (m_refresh_worker.joinable()) // a stopped worker from a prior drain
+    {
+        m_refresh_worker.join(); // assigning to a joinable thread terminates
+    }
     m_worker_running = true;
     m_refresh_worker = std::thread([this] { refresh_worker_body(); });
 }
@@ -747,16 +751,23 @@ void RuntimeHost::refresh_worker_body()
                 continue; // spurious wake: keep waiting for the cadence point
             }
             m_refresh_pending = false;
-            // Coalescing (§5): a trigger inside the cooldown re-arms a SHORT
-            // wait for the cooldown's end instead of attempting at once.
+            // Coalescing (§5): a trigger inside the cooldown waits for the
+            // cooldown's end. The wait predicate EXCLUDES m_refresh_pending —
+            // with pending in the predicate this loop busy-spins the whole
+            // cooldown (found by review).
             const u64 now_wall = wall_now_ms();
             if (now_wall < m_last_attempt_ms + m_refresh_coalesce_ms)
             {
-                m_refresh_pending = true;
-                next_due          = now_steady + std::chrono::milliseconds(
-                                            m_last_attempt_ms + m_refresh_coalesce_ms -
-                                            now_wall);
-                continue;
+                const auto cooldown_end =
+                    now_steady + std::chrono::milliseconds(
+                                     m_last_attempt_ms + m_refresh_coalesce_ms - now_wall);
+                m_refresh_cv.wait_until(lock, cooldown_end,
+                                        [this] { return !m_worker_running; });
+                if (!m_worker_running)
+                {
+                    return;
+                }
+                continue; // pending stays set; the loop re-evaluates
             }
         }
         // Attempt body with fault containment (§5): an escaping fault
@@ -795,7 +806,7 @@ void RuntimeHost::refresh_worker_body()
 
 // --- MVP-4 hook surface (batch design section 3.4; host-server LL-2a) ------
 
-RuntimeHost::HookSession& RuntimeHost::ensure_session(const ipc::Request& request, u64 now_ms)
+RuntimeHost::HookSession* RuntimeHost::ensure_session(const ipc::Request& request, u64 now_ms)
 {
     // FIRST-CONTACT MINTING (LL-2a): any event naming an unseen harness
     // handle mints the runtime session — idempotently within one host
@@ -804,7 +815,7 @@ RuntimeHost::HookSession& RuntimeHost::ensure_session(const ipc::Request& reques
     if (found != m_hook_sessions.end())
     {
         found->second.last_seen_ms = now_ms;
-        return found->second;
+        return &found->second;
     }
     HookSession session;
     const SortableId128 id = m_minter.next();
@@ -816,21 +827,20 @@ RuntimeHost::HookSession& RuntimeHost::ensure_session(const ipc::Request& reques
     auto row        = m_journal->open_session(open, now_ms);
     if (!row.is_ok())
     {
-        // Minting failure must not crash the serve thread (fault
-        // containment); the caller degrades this event honestly.
-        session.journal_row = 0;
+        // Minting failure must NOT be cached (a cached unjournaled session
+        // would deny that harness handle for the whole host lifetime — the
+        // LL-4 state-poisoning class). Nothing is inserted; the NEXT call
+        // retries the mint.
+        return nullptr;
     }
-    else
-    {
-        session.journal_row = row.value();
-    }
+    session.journal_row          = row.value();
     session.last_seen_ms         = now_ms;
     auto [inserted, inserted_ok] = m_hook_sessions.emplace(request.session_handle,
                                                            std::move(session));
     (void)inserted_ok;
     append_event(*m_journal, "session_registered",
                  inserted->second.id_hex + "|" + request.session_handle, now_ms);
-    return inserted->second;
+    return &inserted->second;
 }
 
 ipc::Reply RuntimeHost::handle_hook_event(const ipc::Request& request, u64 now_ms)
@@ -855,8 +865,14 @@ ipc::Reply RuntimeHost::handle_session_start(const ipc::Request& request, u64 no
     ack.request_id = request.request_id;
     ack.generation = m_generation;
 
-    HookSession& session = ensure_session(request, now_ms);
-    ack.session_id       = session.id_hex;
+    HookSession* session = ensure_session(request, now_ms);
+    if (session == nullptr)
+    {
+        return ipc::make_error(request.request_id, ipc::err_host_recovering,
+                               "session identity could not be journaled (transient); "
+                               "the next event retries registration");
+    }
+    ack.session_id = session->id_hex;
 
     // Advisory manifest handshake (LL-2a): a DECLARED mediated-tools
     // surface is checked against the profile inventory and ONLY the
@@ -868,11 +884,11 @@ ipc::Reply RuntimeHost::handle_session_start(const ipc::Request& request, u64 no
         auto profile = cached_profile();
         if (!profile.is_ok())
         {
-            session.degraded_tools.clear();
-            session.degraded_detail = "profile reload failed: " + profile.reason().detail;
+            session->degraded_tools.clear();
+            session->degraded_detail = "profile reload failed: " + profile.reason().detail;
             for (const char* tool : { "Bash", "Write", "Edit" })
             {
-                session.degraded_tools.insert(tool);
+                session->degraded_tools.insert(tool);
             }
         }
         else
@@ -895,10 +911,10 @@ ipc::Reply RuntimeHost::handle_session_start(const ipc::Request& request, u64 no
             {
                 if (declared_tokens.count(entry.tool) == 0)
                 {
-                    session.degraded_tools.insert(entry.tool);
-                    session.degraded_detail +=
-                        (session.degraded_detail.empty() ? std::string()
-                                                         : std::string("; ")) +
+                    session->degraded_tools.insert(entry.tool);
+                    session->degraded_detail +=
+                        (session->degraded_detail.empty() ? std::string()
+                                                          : std::string("; ")) +
                         "hook manifest lacks declared tool '" + entry.tool + "'";
                 }
             }
@@ -906,11 +922,11 @@ ipc::Reply RuntimeHost::handle_session_start(const ipc::Request& request, u64 no
     }
     // NO refresh runs here (LL-2b): the reply reports the host's current
     // autonomous refresh state and returns immediately.
-    ack.verdict       = session.degraded_tools.empty() ? "allow" : "degraded";
-    ack.reason_code   = static_cast<i64>(session.degraded_tools.empty()
+    ack.verdict       = session->degraded_tools.empty() ? "allow" : "degraded";
+    ack.reason_code   = static_cast<i64>(session->degraded_tools.empty()
                                              ? 0
                                              : hook_reason_scope_mismatch);
-    ack.reason_detail = session.degraded_detail;
+    ack.reason_detail = session->degraded_detail;
     ack.refresh       = refresh_state_now(now_ms);
     return ack;
 }
@@ -932,17 +948,19 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
     // FIRST CONTACT IS SUFFICIENT (LL-2a): the session mints here if this
     // harness session never registered — the deny-114 "register first"
     // class is RETIRED; a lost session_start has no governance consequence.
-    HookSession& session = ensure_session(request, now_ms);
-    ack.session_id       = session.id_hex;
-    if (session.journal_row == 0)
+    HookSession* session_ptr = ensure_session(request, now_ms);
+    if (session_ptr == nullptr)
     {
-        // Session minting could not journal (fault-containment path): the
-        // event is judged only on transport honesty — fail closed.
+        // Transient mint failure: fail closed for THIS call; nothing is
+        // cached, so the next call retries (no permanent poisoning).
         ack.verdict       = "deny";
         ack.reason_code   = static_cast<i64>(ipc::err_host_recovering);
-        ack.reason_detail = "session identity could not be journaled";
+        ack.reason_detail = "session identity could not be journaled (transient); "
+                            "the next call retries";
         return ack;
     }
+    HookSession& session = *session_ptr;
+    ack.session_id       = session.id_hex;
     if (session.degraded_tools.count(request.tool_name) != 0)
     {
         // Per-tool manifest degradation (LL-2a): only the mismatched tool
@@ -1028,11 +1046,10 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
                 // is an uncertainty on the mediated path — FAIL CLOSED
                 // (never allow-blind; the unknown-tool/no-target branches
                 // deny for the same reason).
-                ack.verdict       = "deny";
-                ack.reason_code   = static_cast<i64>(adapter::hook_reason_payload);
-                ack.reason_detail = "accepted profile unavailable - target unverifiable, "
-                                    "
-                                    "fail closed";
+                ack.verdict     = "deny";
+                ack.reason_code = static_cast<i64>(adapter::hook_reason_payload);
+                ack.reason_detail =
+                    "accepted profile unavailable - target unverifiable, fail closed";
                 append_event(*m_journal, "hook_deny_profile_unavailable", tool, now_ms);
                 return ack;
             }
@@ -1194,7 +1211,15 @@ ipc::Reply RuntimeHost::handle_post_tool(const ipc::Request& request, u64 now_ms
 
     // First contact mints (LL-2a); an outcome for a never-seen harness
     // session is recorded as an honest unmatched observation.
-    HookSession& session = ensure_session(request, now_ms);
+    HookSession* session_ptr = ensure_session(request, now_ms);
+    if (session_ptr == nullptr)
+    {
+        ack.verdict       = "degraded";
+        ack.reason_code   = static_cast<i64>(adapter::hook_reason_correlation);
+        ack.reason_detail = "session unavailable; outcome unobserved (transient)";
+        return ack;
+    }
+    HookSession& session = *session_ptr;
     ack.session_id       = session.id_hex;
     ack.refresh          = refresh_state_now(now_ms); // informational
 

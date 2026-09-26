@@ -740,90 +740,107 @@ void ServeLoop::run()
 
 void ServeLoop::arm_thread_body(usize arm_index)
 {
-    HANDLE instance = nullptr;
-    if (arm_index == 0)
+    // Whole-body containment: an escaping exception on an ARM thread is
+    // std::terminate = process death — the one path the design forbids.
+    try
     {
-        instance = static_cast<HANDLE>(std::exchange(m_first_instance, nullptr));
-    }
-    u64 consecutive_create_failures = 0;
-    while (!stop_requested())
-    {
-        if (instance == nullptr)
+        HANDLE instance = nullptr;
+        if (arm_index == 0)
         {
-            auto created = create_listen_instance(m_pipe, false);
-            if (!created.is_ok())
+            instance = static_cast<HANDLE>(std::exchange(m_first_instance, nullptr));
+        }
+        u64 consecutive_create_failures = 0;
+        while (!stop_requested())
+        {
+            if (instance == nullptr)
             {
-                // NEVER fatal (LL-1): degraded-loud, backoff, keep retrying.
-                ++consecutive_create_failures;
-                m_stats.accept_recreates.fetch_add(1);
-                if (consecutive_create_failures >= 4)
+                auto created = create_listen_instance(m_pipe, false);
+                if (!created.is_ok())
                 {
-                    bool was = m_stats.degraded_listener.exchange(true);
-                    if (!was && m_hooks.log)
+                    // NEVER fatal (LL-1): degraded-loud, backoff, keep retrying.
+                    ++consecutive_create_failures;
+                    m_stats.accept_recreates.fetch_add(1);
+                    if (consecutive_create_failures >= 4)
                     {
-                        m_hooks.log("[degraded] listener instance creation keeps failing; "
-                                    "retrying (host stays up)");
+                        bool was = m_stats.degraded_listener.exchange(true);
+                        if (!was && m_hooks.log)
+                        {
+                            m_hooks.log("[degraded] listener instance creation keeps failing; "
+                                        "retrying (host stays up)");
+                        }
                     }
+                    const auto retry_at = std::chrono::steady_clock::now() +
+                                          std::chrono::milliseconds(
+                                              std::min<u64>(500 * consecutive_create_failures, 5000));
+                    while (!stop_requested() && std::chrono::steady_clock::now() < retry_at)
+                    {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    }
+                    continue;
                 }
-                const auto retry_at = std::chrono::steady_clock::now() +
-                                      std::chrono::milliseconds(
-                                          std::min<u64>(500 * consecutive_create_failures, 5000));
-                while (!stop_requested() && std::chrono::steady_clock::now() < retry_at)
-                {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                }
-                continue;
+                instance = created.value();
             }
-            instance = created.value();
-        }
-        consecutive_create_failures = 0;
-        m_stats.degraded_listener.store(false);
+            consecutive_create_failures = 0;
+            m_stats.degraded_listener.store(false);
 
-        const ConnectOutcome outcome = wait_connect(instance, &m_stop, m_options.connect_slice_ms);
-        switch (outcome)
-        {
-        case ConnectOutcome::Connected:
-        {
-            PipeConnection connection(instance);
-            instance = nullptr;
-            ++m_stats.connections_served;
-            dispatch_connection(std::move(connection));
-            break; // loop re-arms
+            const ConnectOutcome outcome = wait_connect(instance, &m_stop, m_options.connect_slice_ms);
+            switch (outcome)
+            {
+            case ConnectOutcome::Connected:
+            {
+                PipeConnection connection(instance);
+                instance = nullptr;
+                ++m_stats.connections_served;
+                dispatch_connection(std::move(connection));
+                break; // loop re-arms
+            }
+            case ConnectOutcome::Stopped:
+                if (instance != nullptr)
+                {
+                    DisconnectNamedPipe(instance);
+                    CloseHandle(instance);
+                    instance = nullptr;
+                }
+                return;
+            case ConnectOutcome::Vanished:
+                // A client connected and died inside the accept window: replace
+                // the dead instance and keep accepting (bounded internal retry
+                // is subsumed by the never-fatal loop).
+                if (instance != nullptr)
+                {
+                    CloseHandle(instance);
+                    instance = nullptr;
+                }
+                m_stats.accept_recreates.fetch_add(1);
+                continue;
+            case ConnectOutcome::Failed:
+                if (instance != nullptr)
+                {
+                    CloseHandle(instance);
+                    instance = nullptr;
+                }
+                m_stats.accept_recreates.fetch_add(1);
+                continue; // never-fatal: recreate and retry
+            }
         }
-        case ConnectOutcome::Stopped:
-            if (instance != nullptr)
-            {
-                DisconnectNamedPipe(instance);
-                CloseHandle(instance);
-                instance = nullptr;
-            }
-            return;
-        case ConnectOutcome::Vanished:
-            // A client connected and died inside the accept window: replace
-            // the dead instance and keep accepting (bounded internal retry
-            // is subsumed by the never-fatal loop).
-            if (instance != nullptr)
-            {
-                CloseHandle(instance);
-                instance = nullptr;
-            }
-            m_stats.accept_recreates.fetch_add(1);
-            continue;
-        case ConnectOutcome::Failed:
-            if (instance != nullptr)
-            {
-                CloseHandle(instance);
-                instance = nullptr;
-            }
-            m_stats.accept_recreates.fetch_add(1);
-            continue; // never-fatal: recreate and retry
+        if (instance != nullptr)
+        {
+            DisconnectNamedPipe(instance);
+            CloseHandle(instance);
+            instance = nullptr;
         }
     }
-    if (instance != nullptr)
+    catch (...)
     {
-        DisconnectNamedPipe(instance);
-        CloseHandle(instance);
-        instance = nullptr;
+        // Contained: degrade loud, back off, and KEEP ARMING (never exit).
+        ++m_stats.serve_thread_faults;
+        if (m_hooks.log)
+        {
+            m_hooks.log("[fault] arm thread contained an exception; re-arming");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::thread rearm([this, arm_index] { arm_thread_body(arm_index); });
+        rearm.detach();
     }
 }
 
@@ -849,6 +866,8 @@ void ServeLoop::dispatch_connection(PipeConnection connection)
             m_live_serve_threads += 1;
         }
     }
+    // NOTE: everything below this point must not throw onto the ARM
+    // thread (fault containment §5) — the busy/log paths are guarded.
     if (over_cap)
     {
         // Typed busy frame + the SHARED bounded linger every typed error
@@ -871,10 +890,33 @@ void ServeLoop::dispatch_connection(PipeConnection connection)
         linger_for_client_read(connection);
         return;
     }
-    std::thread server([this, connection = std::move(connection)]() mutable {
-        serve_thread_body(std::move(connection));
-    });
-    server.detach();
+    try
+    {
+        std::thread server([this, connection = std::move(connection)]() mutable {
+            serve_thread_body(std::move(connection));
+        });
+        server.detach();
+    }
+    catch (...)
+    {
+        // Thread creation failed (resource exhaustion under a client
+        // storm): the arm NEVER dies (§5 no-accept-path-exit). Release the
+        // registry slot and answer with the typed busy frame instead.
+        {
+            std::lock_guard<std::mutex> guard(m_serve_mutex);
+            if (m_live_serve_threads > 0)
+            {
+                m_live_serve_threads -= 1;
+            }
+        }
+        m_serve_cv.notify_all();
+        const Reply busy = make_error(0, m_options.busy_code,
+                                      "server busy: serve thread unavailable");
+        FrameHeader header;
+        (void)connection.write_bytes(m_codec.encode(header, encode_reply(busy)),
+                                     m_options.write_deadline_ms);
+        linger_for_client_read(connection);
+    }
 }
 
 void ServeLoop::serve_thread_body(PipeConnection connection)

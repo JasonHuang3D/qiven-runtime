@@ -162,7 +162,9 @@ private:
     [[nodiscard]] ipc::Reply handle_pre_tool(const ipc::Request& request, u64 now_ms);
     [[nodiscard]] ipc::Reply handle_post_tool(const ipc::Request& request, u64 now_ms);
     // First-contact minting: finds or creates the session for a handle.
-    [[nodiscard]] HookSession& ensure_session(const ipc::Request& request, u64 now_ms);
+    // Returns nullptr when the mint could NOT be journaled (transient) —
+    // nothing is cached, so the next call retries (no permanent poisoning).
+    [[nodiscard]] HookSession* ensure_session(const ipc::Request& request, u64 now_ms);
     [[nodiscard]] bool refresh_cognition(u64 now_ms, std::string& refresh_state,
                                          std::string& detail);
     void refresh_worker_body();

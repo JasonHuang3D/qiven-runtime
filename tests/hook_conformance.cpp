@@ -103,6 +103,7 @@ Request hook_request(const char* event, const char* tool, const char* command,
 int main()
 {
     using qiven::runtime::adapter::hook_reason_bash_reference;
+    using qiven::runtime::adapter::hook_reason_cognition_expired;
     using qiven::runtime::adapter::hook_reason_correlation;
     using qiven::runtime::adapter::hook_reason_governed_write;
     using qiven::runtime::adapter::hook_reason_host_unavailable;
