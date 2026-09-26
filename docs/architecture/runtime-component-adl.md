@@ -175,6 +175,15 @@ Canonical cognition transaction path
 Canonical Cognition
 ```
 
+> **Amendment 2026-09-26 (ADR-0043 and its 2026-09-26 forfeiture
+> amendment):** the separate `qiven-host` box is historical topology. The
+> execution-authority role is absorbed into the RuntimeHost-internal
+> execution-authority subsystem behind `IExecutionAuthorityPort`; the
+> qiven-host repository is deleted with its history forfeited
+> (`DELETED_REMOTE + ARCHIVE_FORFEITED`). Read "qiven-host or equivalent"
+> above as that internal subsystem. The conjunctive cognition+execution
+> gates invariant is unchanged.
+
 The most important separation is:
 
 ```text
@@ -308,6 +317,12 @@ Long-lived RuntimeHost
         ├──── qiven-host / execution authority
         └──── resolver mechanisms
 ```
+
+> **Amendment 2026-09-26 (ADR-0043 forfeiture):** the "qiven-host /
+> execution authority" arm above is the RuntimeHost-internal
+> execution-authority subsystem (lease/fencing/quarantine/journal
+> semantics absorbed per the 2026-09-21 amendment); there is no separate
+> host process, and the separate repository no longer exists.
 
 This process is **not** `qiven-context` canonical authority and is **not** the Host execution broker.
 
@@ -2851,6 +2866,16 @@ bypass execution authority
 ```
 
 The final action requires both domains.
+
+> **Amendment 2026-09-26 (ADR-0043 forfeiture):** the separate qiven-host
+> process no longer exists; "no second machine authority" now reads as
+> "no machine authority outside the RuntimeHost execution-authority
+> subsystem" — a direct mutating path around RuntimeHost remains a safety
+> defect. The invariant above is unchanged in force and is exactly what
+> survives the seal: cognition and execution authority remain separate
+> gates inside the one trusted process; a cognitive ALLOW still cannot
+> override fencing, quarantine, lease, reconciliation, or execution
+> authority.
 
 ---
 
