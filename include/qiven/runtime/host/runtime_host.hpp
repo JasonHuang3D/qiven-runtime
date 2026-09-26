@@ -49,6 +49,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 
 namespace qiven::runtime::host
@@ -111,6 +112,12 @@ public:
     // Indeterminate, the worker stops, and the state flips to draining.
     // The exe calls this after its serve loop has drained.
     void drain(u64 now_ms);
+
+    // Embedder audit channel: appends one durable audit event under the
+    // state mutex. The serve-loop library layer has no journal access, so
+    // the EMBEDDER surfaces library-level observations (e.g. the typed 125
+    // busy occupancy breakdown, the S-5 discriminator) through this seam.
+    void record_audit(std::string_view kind, std::string_view detail);
 
     // Test seam ONLY (registry-eviction row): shrink the idle-eviction
     // bound so the sweep is exercisable in bounded test time. Production

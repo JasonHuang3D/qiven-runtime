@@ -740,17 +740,20 @@ void ServeLoop::run()
 
 void ServeLoop::arm_thread_body(usize arm_index)
 {
-    // Whole-body containment: an escaping exception on an ARM thread is
-    // std::terminate = process death — the one path the design forbids.
-    try
+    // Whole-body containment WITHOUT respawn: each loop ITERATION is
+    // wrapped, so an escaping exception backs off and retries IN THIS
+    // THREAD. The arm must remain the joinable thread run()/the destructor
+    // know — a detached respawn thread would outlive a stopped loop and
+    // touch freed memory (unjoinable fault containment, found by review).
+    HANDLE instance = nullptr;
+    if (arm_index == 0)
     {
-        HANDLE instance = nullptr;
-        if (arm_index == 0)
-        {
-            instance = static_cast<HANDLE>(std::exchange(m_first_instance, nullptr));
-        }
-        u64 consecutive_create_failures = 0;
-        while (!stop_requested())
+        instance = static_cast<HANDLE>(std::exchange(m_first_instance, nullptr));
+    }
+    u64 consecutive_create_failures = 0;
+    while (!stop_requested())
+    {
+        try
         {
             if (instance == nullptr)
             {
@@ -827,33 +830,29 @@ void ServeLoop::arm_thread_body(usize arm_index)
                 continue; // never-fatal: recreate and retry
             }
         }
-        if (instance != nullptr)
-        {
-            DisconnectNamedPipe(instance);
-            CloseHandle(instance);
-            instance = nullptr;
-        }
-    }
-    catch (...)
-    {
-        // Contained: degrade loud, back off, and KEEP ARMING (never exit).
-        ++m_stats.serve_thread_faults;
-        if (m_hooks.log)
-        {
-            m_hooks.log("[fault] arm thread contained an exception; re-arming");
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        try
-        {
-            std::thread rearm([this, arm_index] { arm_thread_body(arm_index); });
-            rearm.detach();
-        }
         catch (...)
         {
-            // Even thread-construction failure stays contained: stop the
-            // loop cleanly (the exe drains) instead of terminating.
-            request_stop();
+            // Contained: degrade loud, drop any held instance, back off,
+            // and KEEP ARMING in this thread (never exit, never respawn).
+            ++m_stats.serve_thread_faults;
+            if (m_hooks.log)
+            {
+                m_hooks.log("[fault] arm thread contained an exception; re-arming");
+            }
+            if (instance != nullptr)
+            {
+                DisconnectNamedPipe(instance);
+                CloseHandle(instance);
+                instance = nullptr;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
+    }
+    if (instance != nullptr)
+    {
+        DisconnectNamedPipe(instance);
+        CloseHandle(instance);
+        instance = nullptr;
     }
 }
 

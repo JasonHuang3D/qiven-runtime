@@ -342,6 +342,8 @@ int main(int argc, char** argv)
     // authenticated Shutdown observed on a serve thread).
     std::thread heartbeat([&loop, &host, started = std::chrono::steady_clock::now()] {
         qiven::u64 last_beat_s = 0;
+        qiven::u64 busy_rejected_at_last_beat =
+            loop.value()->stats().busy_rejected.load();
         while (!loop.value()->stop_requested() && !g_stop)
         {
             // Sliced sleep: a stop must not wait out a 10 s tick.
@@ -362,16 +364,35 @@ int main(int argc, char** argv)
             {
                 last_beat_s         = uptime_s;
                 const auto snapshot = host.value()->status();
+                const qiven::u64 busy_total =
+                    loop.value()->stats().busy_rejected.load();
+                const qiven::u64 busy_occupancy =
+                    loop.value()->stats().busy_occupancy_last.load();
                 std::printf("[beat] serving %llus, connections %llu, refresh %s, "
-                            "listener %s, journal events %llu\n",
+                            "listener %s, journal events %llu, busy %llu (last occupancy "
+                            "%llu)\n",
                             static_cast<unsigned long long>(uptime_s),
                             static_cast<unsigned long long>(
                                 loop.value()->stats().connections_served.load()),
                             snapshot.refresh_state.c_str(),
                             loop.value()->stats().degraded_listener.load() ? "DEGRADED"
                                                                            : "ok",
-                            static_cast<unsigned long long>(snapshot.journal_events));
+                            static_cast<unsigned long long>(snapshot.journal_events),
+                            static_cast<unsigned long long>(busy_total),
+                            static_cast<unsigned long long>(busy_occupancy));
                 std::fflush(stdout);
+                // The 125 audit row (LL-3 S-5 discriminator): the library
+                // layer cannot journal, so the embedder makes each busy
+                // episode durable here — one row per beat window in which
+                // the busy counter moved, carrying the occupancy breakdown.
+                if (busy_total > busy_rejected_at_last_beat)
+                {
+                    busy_rejected_at_last_beat = busy_total;
+                    host.value()->record_audit(
+                        "connection_cap_busy",
+                        "busy_total=" + std::to_string(busy_total) + ";occupancy_last=" +
+                            std::to_string(busy_occupancy));
+                }
             }
         }
     });

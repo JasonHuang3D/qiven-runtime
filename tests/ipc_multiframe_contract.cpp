@@ -561,6 +561,96 @@ int main()
             iso_runner.join();
         }
 
+        // Client busy etiquette (§5 accept topology): with every armed
+        // instance held by stalled connections, concurrent clients still
+        // connect within their bounded busy budget — the WaitNamedPipe
+        // etiquette recovers through arm churn; a healthy pool NEVER
+        // surfaces ERROR_PIPE_BUSY as a 120-class denial to a bounded
+        // client (the design row this carrier owes).
+        {
+            using qiven::runtime::ipc::ServeLoop;
+            ServeLoop::Options etq;
+            etq.listen_arms     = 2;
+            etq.max_connections = 10; // cap above the pressure set: busy is
+                                      // NOT the subject here; slot pressure is
+            etq.idle_timeout_ms = 4000;
+            ServeLoop::Hooks etq_hooks;
+            etq_hooks.handle = [](const Request& request) {
+                Reply reply;
+                reply.kind       = Reply::Kind::HelloAck;
+                reply.request_id = request.request_id;
+                return reply;
+            };
+            auto etq_loop = ServeLoop::create(unique_install_id("serveloop-etiquette"), codec,
+                                              etq, std::move(etq_hooks));
+            QIVEN_VERIFY(etq_loop.is_ok());
+            std::thread etq_runner([&] { etq_loop.value()->run(); });
+
+            // Two stalled connections hold both armed instances (partial
+            // frame + stall keeps each serve thread busy on its instance).
+            std::vector<PipeClient> stalled;
+            for (int i = 0; i < 2; ++i)
+            {
+                auto held = PipeClient::connect(
+                    qiven::runtime::ipc::pipe_name(unique_install_id("serveloop-etiquette")));
+                QIVEN_VERIFY(held.is_ok());
+                QIVEN_VERIFY(held.value().write_bytes("H", 2000)); // partial frame + stall
+                stalled.push_back(std::move(held.value()));
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+            // Pressure set: six concurrent bounded clients under slot
+            // pressure — every one connects within its budget and completes
+            // a hello round trip (etiquette, never a false no-listener).
+            constexpr int pressure_clients = 6;
+            std::vector<int> results(pressure_clients, -3);
+            std::vector<std::thread> pressers;
+            for (int i = 0; i < pressure_clients; ++i)
+            {
+                pressers.emplace_back([&, i] {
+                    auto client = PipeClient::connect(
+                        qiven::runtime::ipc::pipe_name(
+                            unique_install_id("serveloop-etiquette")),
+                        3000);
+                    if (!client.is_ok())
+                    {
+                        results[static_cast<std::size_t>(i)] = -1;
+                        return;
+                    }
+                    if (!write_request(client.value(), codec, hello_request(20 + i), 1))
+                    {
+                        results[static_cast<std::size_t>(i)] = -2;
+                        return;
+                    }
+                    auto frame = client.value().read_frame(3000);
+                    if (!frame.has_value())
+                    {
+                        results[static_cast<std::size_t>(i)] = -4;
+                        return;
+                    }
+                    const Reply reply = decode_client_reply(codec, frame.value());
+                    results[static_cast<std::size_t>(i)] =
+                        reply.kind == Reply::Kind::HelloAck ? 0 : -5;
+                });
+            }
+            for (auto& presser : pressers)
+            {
+                presser.join();
+            }
+            for (const int result : results)
+            {
+                QIVEN_VERIFY(result == 0);
+            }
+            QIVEN_VERIFY(etq_loop.value()->stats().connections_served.load() >=
+                         pressure_clients + 2);
+
+            etq_loop.value()->request_stop();
+            etq_runner.join();
+            std::printf("[ OK ] client etiquette: %d concurrent bounded clients under slot "
+                        "pressure all served\n",
+                        pressure_clients);
+        }
+
         // Stop lost-wakeup window (recheck law): a stop issued while arms
         // are between instance creation and ConnectNamedPipe still exits
         // run() within the grace — exercised by stopping a FRESH loop

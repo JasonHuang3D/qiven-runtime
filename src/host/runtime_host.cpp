@@ -678,6 +678,15 @@ void RuntimeHost::drain(u64 now_ms)
     }
 }
 
+void RuntimeHost::record_audit(std::string_view kind, std::string_view detail)
+{
+    // Embedder audit channel (one state mutex, like every journal mutation):
+    // library-layer observations the serve loop cannot journal itself ride
+    // this seam (the typed-125 occupancy breakdown is the first consumer).
+    std::lock_guard<std::mutex> guard(m_state_mutex);
+    append_event(*m_journal, kind, detail, wall_now_ms());
+}
+
 void RuntimeHost::start_refresh_worker()
 {
     std::lock_guard<std::mutex> guard(m_refresh_mutex);
@@ -757,11 +766,12 @@ void RuntimeHost::refresh_worker_body()
             {
                 continue; // spurious wake: keep waiting for the cadence point
             }
-            m_refresh_pending = false;
             // Coalescing (§5): a trigger inside the cooldown waits for the
             // cooldown's end. The wait predicate EXCLUDES m_refresh_pending —
             // with pending in the predicate this loop busy-spins the whole
-            // cooldown (found by review).
+            // cooldown (found by review). The flag is cleared ONLY when an
+            // attempt will actually run, so a trigger that arrived during
+            // the cooldown still attempts at the cooldown's end.
             const u64 now_wall = wall_now_ms();
             if (now_wall < m_last_attempt_ms + m_refresh_coalesce_ms)
             {
@@ -776,6 +786,7 @@ void RuntimeHost::refresh_worker_body()
                 }
                 continue; // pending stays set; the loop re-evaluates
             }
+            m_refresh_pending = false;
         }
         // Attempt body with fault containment (§5): an escaping fault
         // degrades refresh state, journals an audit row, and the worker

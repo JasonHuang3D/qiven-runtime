@@ -19,6 +19,7 @@
 // ============================================================================
 
 #include <qiven/runtime/cognition/bundle.hpp>
+#include <qiven/runtime/journal/runtime_journal.hpp>
 #include <qiven/types.hpp>
 
 #include <windows.h>
@@ -176,6 +177,31 @@ int run_hook(const Procs& procs, const std::filesystem::path& root, const char* 
                                                  "\"cwd\":\"D:/nowhere\",\"timestamp\":\"2026-09-27T00:00:00Z\"}";
     }
     return run_command(procs.hook.string(), args, payload, 30, err);
+}
+
+// Wall-clock ms for journal read-opens: the journal rejects a now_ms before
+// its last written event (D-8 monotonicity), so reads carry wall time.
+qiven::u64 journal_wall_now_ms() noexcept
+{
+    return static_cast<qiven::u64>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+}
+
+// Read-only scalar over the scratch journal (WAL mode: safe concurrent with
+// a live host process; the host connection never blocks a reader).
+qiven::i64 journal_scalar(const std::filesystem::path& journal_file, const char* sql)
+{
+    auto db = qiven::runtime::journal::JournalDb::open(
+        journal_file, qiven::runtime::journal::JournalOpenIntent::OpenExisting,
+        journal_wall_now_ms());
+    QIVEN_VERIFY(db.is_ok());
+    auto stmt = db.value().prepare(sql);
+    QIVEN_VERIFY(stmt.is_ok());
+    auto row = stmt.value().step();
+    QIVEN_VERIFY(row.is_ok() && row.value());
+    return stmt.value().col_i64(0);
 }
 } // namespace
 
@@ -442,6 +468,27 @@ int main()
                     static_cast<long long>(ms));
     }
 
+    // 5c. Outstanding pre observation + the restart row's session baseline:
+    // a not_governed allow records the outstanding correlation (no post_tool
+    // is ever sent for it), and the session count is the minting baseline
+    // the restart leg below asserts its +1 against.
+    qiven::i64 sessions_before_restart = 0;
+    {
+        std::string err;
+        const int code = run_hook(procs, repo, "pre_tool", "Bash", "hsl-outstanding", &err);
+        QIVEN_VERIFY(code == 0);
+        const std::filesystem::path journal_file =
+            repo / ".qiven" / "runtime" / "journal.sqlite3";
+        QIVEN_VERIFY(std::filesystem::exists(journal_file));
+        sessions_before_restart = journal_scalar(journal_file, "SELECT COUNT(*) FROM sessions");
+        QIVEN_VERIFY(sessions_before_restart >= 9); // one minted session per handle used above
+        QIVEN_VERIFY(journal_scalar(journal_file,
+                                    "SELECT COUNT(*) FROM audit_events WHERE kind = "
+                                    "'hook_outcome_indeterminate'") == 0);
+        std::printf("[ OK ] outstanding pre recorded (sessions so far: %lld)\n",
+                    static_cast<long long>(sessions_before_restart));
+    }
+
     // 6. Authenticated shutdown EXITS the real process (bounded grace).
     {
         std::string shutdown_out;
@@ -466,6 +513,20 @@ int main()
         QIVEN_VERIFY(exit_code == 0);
         CloseHandle(server);
         std::printf("[ OK ] shutdown: process exited cleanly (code 0)\n");
+    }
+
+    // 6b. Drain marked the outstanding pre Indeterminate (§5 stop
+    // semantics): the audit row is durable in the journal the drain
+    // checkpointed before exit.
+    {
+        const std::filesystem::path journal_file =
+            repo / ".qiven" / "runtime" / "journal.sqlite3";
+        const qiven::i64 indeterminate_rows =
+            journal_scalar(journal_file, "SELECT COUNT(*) FROM audit_events WHERE kind = "
+                                         "'hook_outcome_indeterminate'");
+        QIVEN_VERIFY(indeterminate_rows >= 1);
+        std::printf("[ OK ] drain: %lld outstanding observation(s) marked Indeterminate\n",
+                    static_cast<long long>(indeterminate_rows));
     }
 
     // 7. Restart resumes with no ritual (LL-4): the next verdict works
@@ -500,6 +561,23 @@ int main()
         }
         QIVEN_VERIFY(answered);
         std::printf("[ OK ] restart: verdicts resume with no ritual\n");
+
+        // 7a. A handle from BEFORE the restart re-contacts: a FRESH runtime
+        // session is minted (the second open_session row; cross-restart
+        // correlation is never guessed — §5 restart semantics, the journal
+        // row count is the oracle).
+        {
+            std::string err;
+            const int code = run_hook(procs, repo, "pre_tool", "Bash", "hsl-outstanding", &err);
+            QIVEN_VERIFY(code == 0);
+            const qiven::i64 sessions_after =
+                journal_scalar(repo / ".qiven" / "runtime" / "journal.sqlite3",
+                               "SELECT COUNT(*) FROM sessions");
+            QIVEN_VERIFY(sessions_after == sessions_before_restart + 2);
+            std::printf("[ OK ] restart: re-contact minted a fresh session (%lld -> %lld)\n",
+                        static_cast<long long>(sessions_before_restart),
+                        static_cast<long long>(sessions_after));
+        }
 
         // Leave the scratch server in a clean state.
         (void)run_command(procs.ctl.string(), { "host", "shutdown", "--root", repo.string() }, "",

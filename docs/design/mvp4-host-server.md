@@ -627,6 +627,28 @@ laws:
    assertion sites. (c) The heartbeat thread's catch-all containment is
    exe-level polish on the same hardening list.
 
+8. **Follow-up landing notes (same batch).** (a) The coalesced operator
+   refresh trigger had been silently dropped until the next cadence tick
+   (the pending flag cleared BEFORE the cooldown check) while the reply
+   claimed `coalesced_pending` — fixed: the flag clears only when an
+   attempt will actually run, so a trigger inside the cooldown attempts
+   at the cooldown's end as §5 states. (b) Arm-thread fault containment
+   no longer respawns a DETACHED re-arm thread (unjoinable past a stopped
+   loop — a use-after-free window on the loop object): containment is
+   per-iteration inside the same joinable arm thread. (c) Test-row
+   completions: the §7 client-etiquette leg has its carrier
+   (ipc_multiframe_contract — bounded concurrent clients under slot
+   pressure all served within budget); the restart row now asserts the
+   drain's `hook_outcome_indeterminate` audit row and the fresh-session
+   mint on re-contact via the journal's session-row count
+   (host_server_lifecycle 5c/6b/7a); a lying `body_len` header is
+   rejected typed before any MAC work (pipe_frame_security). (d) The 125
+   audit row (LL-3, the S-5 discriminator) is emitted by the EMBEDDER —
+   the library layer cannot journal: the heartbeat line prints busy
+   totals + last occupancy, and `connection_cap_busy` is journaled once
+   per beat window in which the busy counter moved (≤30 s latency — a
+   durable discriminator, not a realtime feed).
+
 ## 13. Review record
 
 Design authored 2026-09-27 (v37 session, designation
