@@ -104,7 +104,6 @@ private:
     void arm_thread_body(usize arm_index);
     void dispatch_connection(PipeConnection connection);
     void serve_thread_body(PipeConnection connection);
-    void linger_for_peer_read(PipeConnection& connection);
 
     const std::wstring m_pipe;
     const FrameCodec m_codec; // copied: the loop outlives caller temporaries

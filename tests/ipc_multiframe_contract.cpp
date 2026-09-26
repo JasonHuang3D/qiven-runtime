@@ -487,6 +487,34 @@ int main()
             QIVEN_VERIFY(reply.kind == Reply::Kind::HelloAck);
         }
 
+        // Client-independence of survival (LL-1/LL-3): a storm of abrupt
+        // garbage connections (connect, garbage byte, vanish) never ends
+        // the loop, and a well-formed client is still served afterwards.
+        for (int storm = 0; storm < 8; ++storm)
+        {
+            auto junk = PipeClient::connect(
+                qiven::runtime::ipc::pipe_name(unique_install_id("serveloop")));
+            if (junk.is_ok())
+            {
+                (void)junk.value().write_bytes("X", 500);                // garbage byte, no frame
+                junk = qiven::Result<PipeClient>::fail(qiven::Error {}); // abrupt close
+            }
+        }
+        // Let the storm's serve threads hit their idle bound and release
+        // the cap (cap 1 in this fixture) before the well-formed client.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+        {
+            auto after = PipeClient::connect(
+                qiven::runtime::ipc::pipe_name(unique_install_id("serveloop")));
+            QIVEN_VERIFY(after.is_ok());
+            QIVEN_VERIFY(write_request(after.value(), codec, hello_request(4), 1));
+            auto frame = after.value().read_frame(3000);
+            QIVEN_VERIFY(frame.has_value());
+            const Reply reply = decode_client_reply(codec, frame.value());
+            QIVEN_VERIFY(reply.kind == Reply::Kind::HelloAck);
+        }
+        QIVEN_VERIFY(!loop.value()->stop_requested()); // the loop SURVIVED
+
         // Phased stop: request_stop wakes arms and serve threads inside
         // their slices; run() returns within the grace.
         const auto begin = std::chrono::steady_clock::now();

@@ -603,6 +603,19 @@ laws:
    the request path; the refresh worker observability leg proves the
    worker is the only cognition-touching path).
 
+6. **Residuals from the batch-b review (honestly recorded).** (a) The
+   refresh-worker fault row needs an injection seam (
+   is neither virtual nor injectable) — the catch-all containment landed;
+   the seam plus the  regression is added to the pre-MVP-5
+   hardening list. (b) Listener degradation is observable via the log
+   line and the heartbeat's  field; carrying it into
+    + a journal audit row requires a host↔loop stats
+   coupling that is also deferred to the same hardening list. (c) The
+   verdict-latency-under-publish row runs at exe level (trigger + verdict
+   < 2 s); an in-process publish-overlap row rides the same hardening
+   batch. None of these weaken the laws; they name not-yet-mechanized
+   proofs.
+
 ## 13. Review record
 
 Design authored 2026-09-27 (v37 session, designation

@@ -442,14 +442,39 @@ int main()
 
     // --- registry eviction (§5): idle + no outstanding -> fresh mint ---------
     {
-        host.value()->set_session_eviction_bound_for_test(0); // next sweep evicts
+        std::string first_id;
+        {
+            Request fresh        = hook_request("pre_tool", "Bash", "echo one", nullptr);
+            fresh.session_handle = "sess-eviction";
+            auto ack             = host.value()->handle(fresh, now + 26);
+            QIVEN_VERIFY(ack.kind == Reply::Kind::HookAck);
+            first_id = ack.session_id;
+            QIVEN_VERIFY(!first_id.empty());
+            // Clear the outstanding pre (eviction skips sessions with one).
+            Request post        = hook_request("post_tool", "Bash", nullptr, nullptr);
+            post.session_handle = "sess-eviction";
+            (void)host.value()->handle(post, now + 26);
+        }
+        host.value()->set_session_eviction_bound_for_test(0); // every idle session
+        host.value()->evict_idle_sessions_for_test(now + 27); // the sweep itself
         Request fresh        = hook_request("pre_tool", "Bash", "echo evicted", nullptr);
-        fresh.session_handle = "sess-first-contact"; // already-minted handle
-        auto ack             = host.value()->handle(fresh, now + 27);
+        fresh.session_handle = "sess-eviction"; // already-minted handle
+        auto ack             = host.value()->handle(fresh, now + 28);
         QIVEN_VERIFY(ack.kind == Reply::Kind::HookAck);
-        QIVEN_VERIFY(!ack.session_id.empty());
+        QIVEN_VERIFY(ack.session_id != first_id); // FRESH mint after eviction
         std::printf("[ OK ] eviction: re-contact after eviction mints fresh\n");
-        host.value()->set_session_eviction_bound_for_test(86'400'000);
+        host.value()->set_session_eviction_bound_for_test(86400000);
+    }
+
+    // --- hook client 125 mapping (§7): the classifier is taught the code ----
+    {
+        using qiven::runtime::adapter::classify_transport_failure;
+        using qiven::runtime::adapter::hook_reason_server_busy;
+        const auto error = qiven::Error::make(qiven::error_category::unavailable,
+                                              hook_reason_server_busy, "server busy");
+        QIVEN_VERIFY(classify_transport_failure(error) == hook_reason_server_busy);
+        QIVEN_VERIFY(hook_reason_server_busy == 125);
+        std::printf("[ OK ] hook client: 125 maps to the fail-closed busy class\n");
     }
 
     // --- H-4 shutdown: ack precedes drain; state drains ---------------------

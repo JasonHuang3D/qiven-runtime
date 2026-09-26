@@ -329,7 +329,9 @@ qiven::Result<std::unique_ptr<RuntimeHost>> RuntimeHost::boot(const HostBoot& bo
     }
 
     // 4. Accepted profile (+ its file digest as the generation's profile
-    //    identity -- the ACCEPTED instance, content-identified).
+    //    identity -- the ACCEPTED instance, content-identified). The loaded
+    //    instance is CACHED: it is static accepted configuration, and the
+    //    request path must not touch the disk under the state mutex.
     std::ifstream profile_bytes_in(boot.profile_file, std::ios::binary);
     std::string profile_bytes((std::istreambuf_iterator<char>(profile_bytes_in)),
                               std::istreambuf_iterator<char> {});
@@ -341,6 +343,8 @@ qiven::Result<std::unique_ptr<RuntimeHost>> RuntimeHost::boot(const HostBoot& bo
         host->m_failure_detail = "profile: " + profile.reason().detail;
         return HostResult(std::move(host));
     }
+
+    host->m_profile_cache = profile.value(); // cached; request paths read this copy
 
     // 5. Publish + pin the ACTIVE bundle from the authorized LOCAL ref
     //    (remote fetch + freshness window land with MVP-4 SessionStart).
@@ -589,32 +593,26 @@ ipc::Reply RuntimeHost::handle(const ipc::Request& request, u64 now_ms)
     {
         // Operator convenience TRIGGER (§6): coalesced, never blocking, and
         // the host is complete without it (LL-2b). The reply is immediate.
-        bool triggered = false;
+        std::string result = "no_worker"; // honest: nothing will consume it
         {
             std::lock_guard<std::mutex> refresh_guard(m_refresh_mutex);
             if (m_worker_running)
             {
-                if (now_ms >= m_last_attempt_ms + m_refresh_coalesce_ms)
-                {
-                    m_refresh_pending = true;
-                    triggered         = true;
-                }
-                else
-                {
-                    m_refresh_pending = true; // coalesced: runs at cooldown end
-                }
+                m_refresh_pending = true;
+                result            = now_ms >= m_last_attempt_ms + m_refresh_coalesce_ms
+                                        ? "triggered"
+                                        : "coalesced_pending"; // runs at cooldown end
             }
         }
         m_refresh_cv.notify_all();
-        append_event(*m_journal, "refresh_triggered",
-                     triggered ? "immediate" : "coalesced", now_ms);
+        append_event(*m_journal, "refresh_triggered", result, now_ms);
         ipc::Reply reply;
         reply.kind                = ipc::Reply::Kind::RefreshAck;
         reply.request_id          = request.request_id;
         reply.refresh_state       = refresh_state_now(now_ms);
         reply.last_refresh_ok_ms  = m_last_refresh_ok_ms;
         reply.next_refresh_due_ms = m_last_attempt_ms + m_refresh_interval_ms;
-        reply.refresh_result      = triggered ? "triggered" : "coalesced_pending";
+        reply.refresh_result      = result;
         return reply;
     }
     }
@@ -659,6 +657,13 @@ void RuntimeHost::drain(u64 now_ms)
         m_worker_running = false;
     }
     m_refresh_cv.notify_all();
+    // The WAL checkpoint lives HERE (not only in the destructor): the exe
+    // exits without running local destructors after the drain (straggler
+    // serve threads past the grace would otherwise race object teardown).
+    if (m_journal != nullptr)
+    {
+        (void)m_journal->checkpoint();
+    }
 }
 
 void RuntimeHost::start_refresh_worker()
@@ -853,7 +858,7 @@ ipc::Reply RuntimeHost::handle_session_start(const ipc::Request& request, u64 no
     // mismatched tools degrade (per-tool 113). No manifest ever arriving
     // degrades nothing — governance runs at the profile-declared scope.
     {
-        auto profile = load_profile_file(m_profile_file);
+        auto profile = cached_profile();
         if (!profile.is_ok())
         {
             session.degraded_tools.clear();
@@ -865,10 +870,23 @@ ipc::Reply RuntimeHost::handle_session_start(const ipc::Request& request, u64 no
         }
         else
         {
-            const std::string declared = request.mediated_tools;
+            // Exact TOKEN match on the comma-separated manifest (a
+            // substring match would let "EditSuite" satisfy "Edit").
+            std::set<std::string> declared_tokens;
+            {
+                std::string token;
+                std::istringstream stream(request.mediated_tools);
+                while (std::getline(stream, token, ','))
+                {
+                    if (!token.empty())
+                    {
+                        declared_tokens.insert(token);
+                    }
+                }
+            }
             for (const auto& entry : profile.value().tool_inventory)
             {
-                if (declared.find(entry.tool) == std::string::npos)
+                if (declared_tokens.count(entry.tool) == 0)
                 {
                     session.degraded_tools.insert(entry.tool);
                     session.degraded_detail +=
@@ -928,6 +946,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
         return ack;
     }
 
+    ack.refresh            = refresh_state_now(now_ms); // informational on every hook event
     const std::string tool = request.tool_name;
     const bool freshness_expired =
         m_freshness_window_ms != 0 && m_last_refresh_ok_ms + m_freshness_window_ms <= now_ms;
@@ -937,7 +956,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
     std::string detector;
     bool known_tool = false;
     {
-        auto profile = load_profile_file(m_profile_file);
+        auto profile = cached_profile();
         if (profile.is_ok())
         {
             for (const auto& row : profile.value().tool_inventory)
@@ -1048,7 +1067,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
             return ack;
         }
         {
-            auto profile = load_profile_file(m_profile_file);
+            auto profile = cached_profile();
             if (profile.is_ok())
             {
                 for (const auto& path : profile.value().governed_paths)
@@ -1154,6 +1173,7 @@ ipc::Reply RuntimeHost::handle_post_tool(const ipc::Request& request, u64 now_ms
     // session is recorded as an honest unmatched observation.
     HookSession& session = ensure_session(request, now_ms);
     ack.session_id       = session.id_hex;
+    ack.refresh          = refresh_state_now(now_ms); // informational
 
     auto outstanding = session.outstanding.find(request.tool_name);
     if (outstanding == session.outstanding.end())

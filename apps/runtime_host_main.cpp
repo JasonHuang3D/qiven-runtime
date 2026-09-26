@@ -41,6 +41,11 @@
 namespace
 {
 volatile BOOL g_stop = FALSE;
+// The console events (Ctrl+C / close / logoff / shutdown) must reach the
+// serve loop: the handler cannot capture, so the main flow publishes the
+// loop pointer here BEFORE the loop starts serving (a handler that only
+// sets g_stop while nobody reads it would be a dead stop path).
+qiven::runtime::ipc::ServeLoop* g_loop = nullptr;
 
 BOOL WINAPI console_handler(DWORD type)
 {
@@ -51,6 +56,10 @@ BOOL WINAPI console_handler(DWORD type)
         type == CTRL_LOGOFF_EVENT || type == CTRL_SHUTDOWN_EVENT)
     {
         g_stop = TRUE;
+        if (g_loop != nullptr)
+        {
+            g_loop->request_stop(); // phased stop: arms + serve threads drain
+        }
         return TRUE;
     }
     return FALSE;
@@ -312,6 +321,12 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    g_loop = loop.value().get();
+    // g_stop (a console event that fired before the loop existed) also stops it.
+    if (g_stop)
+    {
+        loop.value()->request_stop();
+    }
     std::printf("[ OK ] ipc: pipe %ls\n",
                 qiven::runtime::ipc::pipe_name(status.install_id).c_str());
     std::printf("[ OK ] serving -- Ctrl+C stops the host (drain + journal checkpoint)\n");
@@ -322,7 +337,7 @@ int main(int argc, char** argv)
     // authenticated Shutdown observed on a serve thread).
     std::thread heartbeat([&loop, &host, started = std::chrono::steady_clock::now()] {
         qiven::u64 last_beat_s = 0;
-        while (!loop.value()->stop_requested())
+        while (!loop.value()->stop_requested() && !g_stop)
         {
             std::this_thread::sleep_for(std::chrono::seconds(10));
             if (loop.value()->stop_requested())
@@ -338,11 +353,13 @@ int main(int argc, char** argv)
                 last_beat_s         = uptime_s;
                 const auto snapshot = host.value()->status();
                 std::printf("[beat] serving %llus, connections %llu, refresh %s, "
-                            "journal events %llu\n",
+                            "listener %s, journal events %llu\n",
                             static_cast<unsigned long long>(uptime_s),
                             static_cast<unsigned long long>(
                                 loop.value()->stats().connections_served.load()),
                             snapshot.refresh_state.c_str(),
+                            loop.value()->stats().degraded_listener.load() ? "DEGRADED"
+                                                                           : "ok",
                             static_cast<unsigned long long>(snapshot.journal_events));
                 std::fflush(stdout);
             }
@@ -357,5 +374,9 @@ int main(int argc, char** argv)
     std::printf("[ OK ] stopped cleanly (outstanding observations marked; journal "
                 "checkpointed)\n");
     std::fflush(stdout);
-    return 0;
+    // Exit WITHOUT running local destructors: a straggler serve thread past
+    // the grace would race the destruction of the loop/host objects it
+    // still touches (use-after-free window); the journal already
+    // checkpointed inside drain(). Static/global teardown only.
+    std::exit(0);
 }

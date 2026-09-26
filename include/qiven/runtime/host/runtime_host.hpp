@@ -46,6 +46,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -118,6 +119,14 @@ public:
         m_session_idle_evict_ms = ms;
     }
 
+    // Test seam ONLY (eviction row): run the sweep directly (the worker
+    // cadence is the production driver).
+    void evict_idle_sessions_for_test(u64 now_ms)
+    {
+        std::lock_guard<std::mutex> guard(m_state_mutex);
+        evict_idle_sessions(now_ms);
+    }
+
     void request_shutdown() noexcept;
 
     ~RuntimeHost(); // stop worker + checkpoint_wal + release
@@ -159,6 +168,16 @@ private:
     [[nodiscard]] bool refresh_expired(u64 now_ms) const;
     [[nodiscard]] std::string refresh_state_now(u64 now_ms) const;
     void evict_idle_sessions(u64 now_ms);
+    // The accepted profile CACHED at boot: static configuration — request
+    // paths must not touch the disk under the state mutex.
+    [[nodiscard]] qiven::Result<ProfileFile, port::ProfileAcceptError> cached_profile() const
+    {
+        if (m_profile_cache.has_value())
+        {
+            return qiven::Result<ProfileFile, port::ProfileAcceptError>(*m_profile_cache);
+        }
+        return load_profile_file(m_profile_file);
+    }
 
     journal::RuntimeJournal* journal() const noexcept
     {
@@ -176,6 +195,7 @@ private:
     bool m_quarantined      = false;
     void* m_singleton_mutex = nullptr; // named-mutex HANDLE, held for life
     // MVP-4 members
+    std::optional<ProfileFile> m_profile_cache;
     std::filesystem::path m_repo_root;
     std::filesystem::path m_profile_file;
     std::filesystem::path m_git_executable;

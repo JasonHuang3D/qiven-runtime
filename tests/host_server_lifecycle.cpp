@@ -425,6 +425,23 @@ int main()
         std::printf("[ OK ] concurrent connects: 6/6 simultaneous clients served\n");
     }
 
+    // 5b. Verdict DURING a triggered refresh (lock discipline, §5 two-level):
+    // trigger the worker, then hook verdicts while the attempt runs.
+    {
+        (void)run_command(procs.ctl.string(),
+                          { "host", "refresh", "--root", repo.string() }, "", 20);
+        const auto begin = std::chrono::steady_clock::now();
+        std::string err;
+        const int code = run_hook(procs, repo, "pre_tool", "Bash", "hsl-during-refresh", &err);
+        const auto ms  = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - begin)
+                            .count();
+        QIVEN_VERIFY(code == 0);
+        QIVEN_VERIFY(ms < 2000); // verdict never waits behind refresh work
+        std::printf("[ OK ] verdict during refresh trigger in %lld ms (< 2000)\n",
+                    static_cast<long long>(ms));
+    }
+
     // 6. Authenticated shutdown EXITS the real process (bounded grace).
     {
         std::string shutdown_out;

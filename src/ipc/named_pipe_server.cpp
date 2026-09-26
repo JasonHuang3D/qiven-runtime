@@ -206,16 +206,26 @@ bool write_all_ov(HANDLE handle, const char* buffer, usize size, u64 deadline_ms
     return true;
 }
 
-// Frame layout reader over the overlapped exact read (deadline bounds the
-// COMPLETE frame: header + MAC + body under one deadline).
+// Frame layout reader over the overlapped exact read: ONE deadline bounds
+// the COMPLETE frame (header + MAC + body) — the whole-frame M1 semantics
+// preserved (a dribbling peer cannot extend the bound by splitting the
+// frame across the header/tail reads).
 std::optional<std::string> read_bounded_ov(HANDLE handle, u64 timeout_ms,
                                            const std::atomic<bool>* stop, u64 slice_ms,
                                            bool& timed_out, bool& aborted)
 {
-    timed_out = false;
-    aborted   = false;
+    timed_out           = false;
+    aborted             = false;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeout_ms);
+    const auto remaining = [&]() {
+        return static_cast<u64>(std::max<std::int64_t>(
+            0, std::chrono::duration_cast<std::chrono::milliseconds>(
+                   deadline - std::chrono::steady_clock::now())
+                   .count()));
+    };
     std::string header(32, '\0');
-    if (!read_exact_ov(handle, header.data(), header.size(), timeout_ms, stop, slice_ms,
+    if (!read_exact_ov(handle, header.data(), header.size(), remaining(), stop, slice_ms,
                        timed_out, aborted))
     {
         return std::nullopt;
@@ -231,7 +241,7 @@ std::optional<std::string> read_bounded_ov(HANDLE handle, u64 timeout_ms,
     }
     std::string tail(static_cast<usize>(body_len) + 32, '\0');
     if (!tail.empty() &&
-        !read_exact_ov(handle, tail.data(), tail.size(), timeout_ms, stop, slice_ms, timed_out,
+        !read_exact_ov(handle, tail.data(), tail.size(), remaining(), stop, slice_ms, timed_out,
                        aborted))
     {
         return std::nullopt;
@@ -841,16 +851,24 @@ void ServeLoop::dispatch_connection(PipeConnection connection)
     }
     if (over_cap)
     {
-        // Typed busy frame + the SAME bounded linger every typed error close
-        // uses, so the frame is never discarded by the close that follows it.
-        const Reply busy = make_error(0, static_cast<i32>(m_options.busy_code),
+        // Typed busy frame + the SHARED bounded linger every typed error
+        // close uses (pipe_service), so the frame is never discarded by the
+        // close that follows it. The log line is the observable record for
+        // the S-5 discriminator (occupancy vs arms).
+        if (m_hooks.log)
+        {
+            m_hooks.log("[busy] connection cap " + std::to_string(m_options.max_connections) +
+                        " reached; occupancy " + std::to_string(occupancy) + "; arms " +
+                        std::to_string(m_options.listen_arms));
+        }
+        const Reply busy = make_error(0, m_options.busy_code,
                                       "server busy: connection cap (" +
                                           std::to_string(m_options.max_connections) +
                                           ") reached; occupancy " + std::to_string(occupancy));
         FrameHeader header;
         (void)connection.write_bytes(m_codec.encode(header, encode_reply(busy)),
                                      m_options.write_deadline_ms);
-        linger_for_peer_read(connection);
+        linger_for_client_read(connection);
         return;
     }
     std::thread server([this, connection = std::move(connection)]() mutable {
@@ -903,7 +921,7 @@ void ServeLoop::serve_thread_body(PipeConnection connection)
         // read window (found live by host_server_lifecycle: the ctl
         // delivered shutdown, the host logged the ack, and the client
         // still observed "no reply").
-        linger_for_peer_read(connection);
+        linger_for_client_read(connection);
     }
     {
         std::lock_guard<std::mutex> guard(m_serve_mutex);
@@ -913,20 +931,6 @@ void ServeLoop::serve_thread_body(PipeConnection connection)
         }
     }
     m_serve_cv.notify_all();
-}
-
-void ServeLoop::linger_for_peer_read(PipeConnection& connection)
-{
-    using namespace std::chrono;
-    const auto deadline = steady_clock::now() + milliseconds(500);
-    while (steady_clock::now() < deadline)
-    {
-        if (!connection.peer_connected())
-        {
-            return;
-        }
-        Sleep(5);
-    }
 }
 
 // --- NamedPipeServer (test-surface adapter) ----------------------------------
