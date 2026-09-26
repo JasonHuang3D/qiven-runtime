@@ -225,6 +225,15 @@ void append_event(journal::RuntimeJournal& journal, std::string_view kind,
     return true;
 }
 
+// Case-insensitive equality (the relative exact-file clause: Windows paths
+// are case-insensitive on the filesystem, so a case-varied relative target
+// spelling the governed file must still match — the byte-exact == let
+// "STATE/CURRENT.MD" escape governance).
+[[nodiscard]] bool equals_ci(std::string_view haystack, std::string_view needle)
+{
+    return haystack.size() == needle.size() && contains_ci(haystack, needle);
+}
+
 // Lexical path normalization for the governed-scope test: forward slashes,
 // collapsed separators, trailing-slash trim. Traversal/reparse rejection is
 // the caller's deny (ARCH section 12.3 -- no bypass through traversal).
@@ -1089,11 +1098,16 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
                 // pre-existing containment-anywhere clauses stay as the
                 // documented over-approximation). Evidence: the rig's
                 // B2/B6/B7 old-fail receipts vs the post-fix runs.
+                // Every clause is CASE-INSENSITIVE: the filesystem is
+                // (Windows), so a case-varied spelling of a governed
+                // relative target must not escape (found by review: the
+                // byte-exact relative clauses let "STATE/CURRENT.MD"
+                // through as not_governed).
                 const std::string root_norm = normalize_hook_path(m_repo_root.string());
                 const bool in_root          = starts_with_ci(target, root_norm + "/");
                 for (const auto& path : profile.value().governed_paths)
                 {
-                    if (target == path || target.rfind(path + "/", 0) == 0 ||
+                    if (equals_ci(target, path) || starts_with_ci(target, path + "/") ||
                         (in_root && ends_with_ci(target, "/" + path)) ||
                         target.rfind("/" + path + "/", 0) != std::string::npos ||
                         contains_ci(target, path + "/"))

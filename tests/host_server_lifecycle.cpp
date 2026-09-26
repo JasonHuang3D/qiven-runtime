@@ -452,19 +452,50 @@ int main()
     }
 
     // 5b. Verdict DURING a triggered refresh (lock discipline, §5 two-level):
-    // trigger the worker, then hook verdicts while the attempt runs.
+    // trigger the worker, then hook verdicts while the attempt runs. The
+    // trigger is JOURNALED (§7 refresh-worker row): refresh_triggered audit
+    // rows appear, and the worker's attempt leaves its cognition_* row.
     {
-        (void)run_command(procs.ctl.string(),
-                          { "host", "refresh", "--root", repo.string() }, "", 20);
+        std::string refresh_out;
+        const qiven::i64 events_before =
+            journal_scalar(repo / ".qiven" / "runtime" / "journal.sqlite3",
+                           "SELECT COUNT(*) FROM audit_events");
+        const int code = run_command(procs.ctl.string(),
+                                     { "host", "refresh", "--root", repo.string() }, "", 20,
+                                     &refresh_out);
+        std::printf("[diag] refresh ctl exit %d: %s\n", code, refresh_out.c_str());
+        QIVEN_VERIFY(code == 0);
         const auto begin = std::chrono::steady_clock::now();
         std::string err;
-        const int code = run_hook(procs, repo, "pre_tool", "Bash", "hsl-during-refresh", &err);
-        const auto ms  = std::chrono::duration_cast<std::chrono::milliseconds>(
+        const int verdict = run_hook(procs, repo, "pre_tool", "Bash", "hsl-during-refresh", &err);
+        const auto ms     = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now() - begin)
                             .count();
-        QIVEN_VERIFY(code == 0);
+        QIVEN_VERIFY(verdict == 0);
         QIVEN_VERIFY(ms < 2000); // verdict never waits behind refresh work
-        std::printf("[ OK ] verdict during refresh trigger in %lld ms (< 2000)\n",
+        // Journal assertions (bounded wait for the worker's rows):
+        // refresh_triggered from the trigger, cognition_* from the attempt.
+        const std::filesystem::path journal_file =
+            repo / ".qiven" / "runtime" / "journal.sqlite3";
+        bool rows_seen = false;
+        for (int i = 0; i < 50 && !rows_seen; ++i)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            const qiven::i64 triggered =
+                journal_scalar(journal_file,
+                               "SELECT COUNT(*) FROM audit_events WHERE kind = "
+                               "'refresh_triggered'");
+            const qiven::i64 cognition =
+                journal_scalar(journal_file,
+                               "SELECT COUNT(*) FROM audit_events WHERE kind LIKE "
+                               "'cognition_%'");
+            rows_seen = triggered >= 1 && cognition >= 1;
+        }
+        QIVEN_VERIFY(rows_seen);
+        QIVEN_VERIFY(journal_scalar(journal_file, "SELECT COUNT(*) FROM audit_events") >
+                     events_before);
+        std::printf("[ OK ] verdict during refresh trigger in %lld ms (< 2000); "
+                    "trigger + attempt rows journaled\n",
                     static_cast<long long>(ms));
     }
 

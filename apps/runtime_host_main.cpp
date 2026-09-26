@@ -344,6 +344,8 @@ int main(int argc, char** argv)
         qiven::u64 last_beat_s = 0;
         qiven::u64 busy_rejected_at_last_beat =
             loop.value()->stats().busy_rejected.load();
+        bool listener_degraded_at_last_beat =
+            loop.value()->stats().degraded_listener.load();
         while (!loop.value()->stop_requested() && !g_stop)
         {
             // Sliced sleep: a stop must not wait out a 10 s tick.
@@ -393,6 +395,20 @@ int main(int argc, char** argv)
                         "busy_total=" + std::to_string(busy_total) + ";occupancy_last=" +
                             std::to_string(busy_occupancy));
                 }
+                // Listener degradation is equally durable (§5): the rising
+                // edge journals listener_degraded with the recreate count
+                // (the same embedder seam; ≤30 s observation latency — a
+                // discriminator, not a realtime feed).
+                const bool degraded_now = loop.value()->stats().degraded_listener.load();
+                if (degraded_now && !listener_degraded_at_last_beat)
+                {
+                    host.value()->record_audit(
+                        "listener_degraded",
+                        "accept_recreates=" +
+                            std::to_string(
+                                loop.value()->stats().accept_recreates.load()));
+                }
+                listener_degraded_at_last_beat = degraded_now;
             }
         }
     });

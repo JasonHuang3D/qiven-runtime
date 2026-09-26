@@ -127,6 +127,14 @@ public:
         m_session_idle_evict_ms = ms;
     }
 
+    // Test seam ONLY (refresh-coalescing row): shrink the trigger cooldown
+    // so the coalesce-then-run-at-cooldown-end law is exercisable in
+    // bounded test time. Production uses the default (30 s).
+    void set_refresh_coalesce_for_test(u64 ms) noexcept
+    {
+        m_refresh_coalesce_ms = ms;
+    }
+
     // Test seam ONLY (eviction row): run the sweep directly (the worker
     // cadence is the production driver).
     void evict_idle_sessions_for_test(u64 now_ms)

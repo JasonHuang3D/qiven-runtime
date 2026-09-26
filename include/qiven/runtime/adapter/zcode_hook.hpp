@@ -56,10 +56,11 @@ inline constexpr i32 hook_reason_server_busy = 125;
 // conservatively INSIDE the harness hook budgets (15 s session_start /
 // 10 s pre/post in the registration template) to also cover process spawn
 // and verdict mapping — purely CLIENT-side choices; the wire carries no
-// deadline (protocol shape revision; mvp4-host-server.md).
+// deadline (protocol shape revision; mvp4-host-server.md). Writes and the
+// connect busy-wait draw from the SAME invocation budget (their remainder),
+// so a worst-case host cannot compose the stages past the harness bound.
 inline constexpr u64 session_start_read_budget_ms = 9750;
 inline constexpr u64 tool_read_budget_ms          = 4750;
-inline constexpr u64 client_write_budget_ms       = 2000;
 
 struct HookRun
 {

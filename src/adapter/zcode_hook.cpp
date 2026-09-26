@@ -78,7 +78,10 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
         }
     }
 
-    auto client = ipc::PipeClient::connect(ipc::pipe_name(install_id));
+    // Connect etiquette draws from the SAME invocation budget (a full
+    // busy-wait on top of full reads/writes composes past the harness
+    // budget — found by review).
+    auto client = ipc::PipeClient::connect(ipc::pipe_name(install_id), run.deadline_ms);
     if (!client.is_ok())
     {
         return ReplyResult::fail(qiven::Error::make(
@@ -113,7 +116,7 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     header.request_id     = hello.request_id;
     header.connection_seq = seq;
     if (!client.value().write_bytes(codec.encode(header, ipc::encode_request_body(hello)),
-                                    client_write_budget_ms))
+                                    remaining_budget_ms()))
     {
         return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable,
                                                     hook_reason_host_unavailable,
@@ -195,7 +198,7 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     header.request_id     = request.request_id;
     header.connection_seq = seq;
     if (!client.value().write_bytes(codec.encode(header, ipc::encode_request_body(request)),
-                                    client_write_budget_ms))
+                                    remaining_budget_ms()))
     {
         return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable,
                                                     hook_reason_host_unavailable,

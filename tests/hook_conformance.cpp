@@ -206,6 +206,7 @@ int main()
         "refresh_interval_ms: 3600000\n"
         "governed_paths:\n"
         "  - state\n"
+        "  - state/current.md\n"
         "  - memory/records\n"
         "actors:\n"
         "  - adapter: 1\n"
@@ -304,6 +305,26 @@ int main()
         auto ack = host.value()->handle(
             hook_request("pre_tool", "Edit", nullptr, "D:/x/../state/current.md"), now + 20);
         QIVEN_VERIFY(ack.verdict == "deny");
+    }
+    {
+        // Case-varied target spellings: the filesystem is case-insensitive
+        // (Windows), so a governed FILE named by a relative case-varied
+        // form must still deny — the byte-exact relative clauses once let
+        // "STATE/CURRENT.MD" through as not_governed (found by review).
+        auto rel = host.value()->handle(
+            hook_request("pre_tool", "Write", nullptr, "STATE/CURRENT.MD"), now + 21);
+        QIVEN_VERIFY(rel.kind == Reply::Kind::HookAck);
+        QIVEN_VERIFY(rel.verdict == "deny");
+        QIVEN_VERIFY(rel.reason_code == hook_reason_governed_write);
+        auto dir_child = host.value()->handle(
+            hook_request("pre_tool", "Write", nullptr, "StAtE/DeEp/File.TXT"), now + 22);
+        QIVEN_VERIFY(dir_child.verdict == "deny");
+        QIVEN_VERIFY(dir_child.reason_code == hook_reason_governed_write);
+        auto abs_case = host.value()->handle(
+            hook_request("pre_tool", "Write", nullptr, "D:/JasonWork/CTX/STATE/CURRENT.MD"),
+            now + 23);
+        QIVEN_VERIFY(abs_case.verdict == "deny");
+        QIVEN_VERIFY(abs_case.reason_code == hook_reason_governed_write);
     }
     {
         // Bash referencing the governed scope: deny 111 (conservative).
@@ -520,6 +541,58 @@ int main()
             "\"surprise\":true}";
         auto decoded = qiven::runtime::ipc::decode_request(body);
         QIVEN_VERIFY(!decoded.is_ok());
+    }
+
+    // --- refresh trigger coalescing (§5/§6): a trigger during the cooldown
+    // runs at the cooldown's end — the pending flag must SURVIVE the
+    // cooldown wait (a dropped pending made the reply's coalesced_pending
+    // text a lie; found by review). Runs AFTER the drain rows on purpose:
+    // the worker journals with real wall time, and the synthetic now+N
+    // clock of the rows above must stay monotonic. The worker restarts
+    // from the drained state (start_refresh_worker joins the old thread).
+    {
+        host.value()->set_refresh_coalesce_for_test(400);
+        host.value()->start_refresh_worker();
+        // Boot attempt fires ~2 s after start; wait it out so the first
+        // trigger is OUTSIDE the cooldown.
+        std::this_thread::sleep_for(std::chrono::milliseconds(3200));
+        const auto fire = [&host](qiven::u64 id) {
+            Request trigger;
+            trigger.kind       = Request::Kind::Refresh;
+            trigger.request_id = id;
+            return host.value()->handle(trigger,
+                                        qiven::runtime::host::wall_now_ms());
+        };
+        auto first = fire(30);
+        QIVEN_VERIFY(first.kind == Reply::Kind::RefreshAck);
+        QIVEN_VERIFY(first.refresh_result == "triggered");
+
+        // Detect the triggered attempt's completion by journal growth, then
+        // fire inside the fresh cooldown (the attempt's last_attempt_ms was
+        // just written): the reply must say coalesced_pending.
+        const qiven::u64 events_at_trigger = host.value()->status().journal_events;
+        bool attempt_done                  = false;
+        for (int i = 0; i < 100 && !attempt_done; ++i)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            attempt_done = host.value()->status().journal_events > events_at_trigger;
+        }
+        QIVEN_VERIFY(attempt_done);
+        auto second = fire(31);
+        QIVEN_VERIFY(second.kind == Reply::Kind::RefreshAck);
+        QIVEN_VERIFY(second.refresh_result == "coalesced_pending");
+
+        // The coalesced attempt RUNS at the cooldown's end without any
+        // further trigger: the journal grows again within a bounded wait.
+        const qiven::u64 events_at_coalesce = host.value()->status().journal_events;
+        bool coalesced_ran                  = false;
+        for (int i = 0; i < 50 && !coalesced_ran; ++i)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            coalesced_ran = host.value()->status().journal_events > events_at_coalesce;
+        }
+        QIVEN_VERIFY(coalesced_ran);
+        std::printf("[ OK ] refresh coalescing: pending trigger ran at cooldown end\n");
     }
 
     std::printf("[ OK ] hook_conformance\n");

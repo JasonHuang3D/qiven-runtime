@@ -24,6 +24,7 @@
 #include <qiven/runtime/ipc/serve_loop.hpp>
 #include <qiven/types.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -671,6 +672,52 @@ int main()
                                 std::chrono::steady_clock::now() - begin)
                                 .count();
             QIVEN_VERIFY(ms < 6000);
+        }
+
+        // Stop DURING arm churn (the recheck law under real re-arm cycles):
+        // a connect/die storm keeps the arms cycling through instance
+        // creation and ConnectNamedPipe; a stop issued mid-churn must still
+        // exit run() within the grace — the slot-cycle window, not just the
+        // fresh-loop parked window (the row's honest carrier; found weak by
+        // review).
+        {
+            using qiven::runtime::ipc::ServeLoop;
+            ServeLoop::Options churn;
+            churn.listen_arms     = 2;
+            churn.max_connections = 8;
+            churn.idle_timeout_ms = 500;
+            ServeLoop::Hooks churn_hooks;
+            churn_hooks.handle = [](const Request&) { return Reply {}; };
+            auto churn_loop    = ServeLoop::create(unique_install_id("serveloop-churn"), codec,
+                                                   churn, std::move(churn_hooks));
+            QIVEN_VERIFY(churn_loop.is_ok());
+            std::thread churn_runner([&] { churn_loop.value()->run(); });
+            std::atomic<bool> churning { true };
+            std::thread storm([&churn_loop, &churning] {
+                while (churning.load())
+                {
+                    auto junk = PipeClient::connect(
+                        qiven::runtime::ipc::pipe_name(unique_install_id("serveloop-churn")),
+                        500);
+                    if (junk.is_ok())
+                    {
+                        (void)junk.value().write_bytes("X", 200);
+                    }
+                    // abrupt close: the arm re-arms through its full cycle
+                }
+            });
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            const auto begin = std::chrono::steady_clock::now();
+            churn_loop.value()->request_stop();
+            churn_runner.join();
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - begin)
+                                .count();
+            churning.store(false);
+            storm.join();
+            QIVEN_VERIFY(ms < 6000);
+            std::printf("[ OK ] stop under arm churn exits within grace (%lld ms)\n",
+                        static_cast<long long>(ms));
         }
 
         // Phased stop: request_stop wakes arms and serve threads inside

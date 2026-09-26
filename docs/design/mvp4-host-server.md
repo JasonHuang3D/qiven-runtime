@@ -312,8 +312,12 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
   (a vanish storm) and any other accept failure both degrade to the
   never-fatal path — recreate the listen instance and retry with
   internal backoff; a persistently failing listener enters a loud
-  DEGRADED state (heartbeat lines + `status.state` report it;
-  journal audit row) and keeps retrying. No accept-path outcome
+  DEGRADED state (heartbeat lines report it; the EMBEDDER's heartbeat
+  journals a `listener_degraded` audit row on the rising edge through
+  the record_audit seam, ≤30 s observation latency — a durable
+  discriminator, not a realtime feed; carrying it into `status.state`
+  is a hardening item recorded with the other §12 residuals) and keeps
+  retrying. No accept-path outcome
   reaches process exit; the process exits only on operator stop
   (Ctrl+C, console close, logoff/shutdown, authenticated Shutdown)
   or boot-class failure before serving begins.
@@ -464,8 +468,8 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
 | registration independence | `hook_conformance` | LL-2a: full pre/post flow with NO `session_start` at all behaves identically to the registered flow |
 | no-deadline wire | `hook_conformance` | LL-3: requests carry no `deadline_ms`; a request containing it fails closed typed (unknown field); the transition behavior of an old client is the honest 116-class fail-closed deny |
 | request-path cost bound | `hook_conformance` | LL-2b, structural + timed: during verdicts with git a marker-writing stub / nonexistent executable, NO `cognition_*` audit row appears and the marker file stays absent (no child spawned, no fetch attempted — the timing bound below cannot be fooled by a fast-failing environment), AND verdicts return within **250 ms** (expected single-digit ms) |
-| degraded listener observability | `host_server_lifecycle` (real exe) | §5: with the pipe instance forced uncreatable, the host enters DEGRADED — heartbeat lines report it, `status.state` carries it, an audit row records it, and the process keeps retrying without exiting |
-| stop lost-wakeup window | `host_server_lifecycle` (real exe) | §5: a stop issued exactly while an accept slot is between instance creation and `ConnectNamedPipe` still exits the process within the grace (the recheck law is exercised by a stop timed against a slot cycle) |
+| degraded listener observability | §5 honest state (amended): forcing instance-creation failure deterministically needs an injection seam (named in the §12 hardening list); the LANDED observables are the heartbeat line, the embedder's `listener_degraded` journal row (rising edge, ≤30 s), and `ServeLoop::stats().degraded_listener`; `status.state` coupling is deferred with the same hardening item |
+| stop lost-wakeup window | `ipc_multiframe_contract` (library; carrier amended from the exe rig) | §5: a stop issued while arms cycle through instance creation and `ConnectNamedPipe` (a live connect/die churn storm keeps the slots cycling) still exits `run()` within the grace — plus the fresh-loop stop proxy; the deterministic in-window stop needs a slot-cycle injection seam (§12 hardening list) |
 | hook client 125 mapping | `hook_conformance` | LL-3: a typed 125 busy error frame maps client-side to a fail-closed deny with honest text for `pre_tool` and an exit-0 note for advisory events (the classifier is taught the code) |
 | refresh worker faults | `hook_conformance` | §5: an injected fault in the worker's attempt body journals `refresh_fault`, degrades refresh state, and the host KEEPS SERVING verdicts; the next cadence tick runs a normal attempt |
 | registry eviction | `hook_conformance` | §5: with a test-injected small `session_idle_evict_ms`, an idle session evicts and a re-contact mints FRESH (same honest semantics as restart); the sim-gate oracle's one-`session_registered`-row-per-handle expectation is amended in batch (c) accordingly |
@@ -648,6 +652,30 @@ laws:
    totals + last occupancy, and `connection_cap_busy` is journaled once
    per beat window in which the busy counter moved (≤30 s latency — a
    durable discriminator, not a realtime feed).
+
+9. **Second fix-batch landing notes (same batch).** (a) The relative
+   exact-file/prefix governed-path clauses were byte-case-sensitive: a
+   relative case-varied Write target ("STATE/CURRENT.MD") escaped
+   governance on the case-insensitive Windows filesystem — every clause
+   is now case-insensitive (equals_ci/starts_with_ci), with
+   hook_conformance regression rows (relative file, dir child, absolute
+   case-varied). Kept machinery, but this design re-asserts it as
+   proven, so the fix rides this batch. (b) The hook client's writes and
+   connect busy-wait now draw from the invocation-wide budget remainder
+   (the fixed per-write budget composed worst-case to ~14.75 s against
+   the 15 s session_start harness budget); the client_write_budget_ms
+   constant is retired. (c) Serve-thread registry notifies moved INSIDE
+   the mutex: the post-decrement notify outside the lock could touch the
+   condition variable after run() returned and the embedder destroyed
+   the loop. (d) The refresh-worker §7 legs landed: the operator
+   trigger's `refresh_triggered` + `cognition_*` journal rows are
+   asserted at the exe rig (5b), and the coalescing law has a
+   handle()-level oracle (cooldown shrunk via a test seam; the pending
+   trigger must RUN at the cooldown's end — the regression for (a)
+   above). (e) Stop-under-arm-churn row added at the library carrier
+   (§7 row amended); the deterministic in-window stop and the forced
+   degraded-listener leg need injection seams — added to the pre-MVP-5
+   hardening list with their revisit triggers.
 
 ## 13. Review record
 

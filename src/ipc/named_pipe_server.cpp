@@ -915,13 +915,17 @@ void ServeLoop::dispatch_connection(PipeConnection connection)
         // storm): the arm NEVER dies (§5 no-accept-path-exit). Release the
         // registry slot and answer with the typed busy frame instead.
         {
+            // Notify INSIDE the lock: the countdown reaching zero releases
+            // run()'s drain wait, and an embedder may destroy the loop the
+            // moment run() returns — a notify after the unlock can touch
+            // the destroyed condition variable (found by review).
             std::lock_guard<std::mutex> guard(m_serve_mutex);
             if (m_live_serve_threads > 0)
             {
                 m_live_serve_threads -= 1;
             }
+            m_serve_cv.notify_all();
         }
-        m_serve_cv.notify_all();
         const Reply busy = make_error(0, m_options.busy_code,
                                       "server busy: serve thread unavailable");
         FrameHeader header;
@@ -978,13 +982,17 @@ void ServeLoop::serve_thread_body(PipeConnection connection)
         linger_for_client_read(connection);
     }
     {
+        // Notify INSIDE the lock (same lifetime law as the creation-failure
+        // path): once the countdown hits zero, run() may return and the
+        // embedder may destroy the loop — the notify must not race that
+        // destruction from outside the lock.
         std::lock_guard<std::mutex> guard(m_serve_mutex);
         if (m_live_serve_threads > 0)
         {
             m_live_serve_threads -= 1;
         }
+        m_serve_cv.notify_all();
     }
-    m_serve_cv.notify_all();
 }
 
 // --- NamedPipeServer (test-surface adapter) ----------------------------------
