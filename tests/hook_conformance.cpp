@@ -477,6 +477,23 @@ int main()
         std::printf("[ OK ] hook client: 125 maps to the fail-closed busy class\n");
     }
 
+    // --- freshness expiry gates GOVERNED mutations (117, scoped) -----------
+    {
+        const qiven::u64 far_future =
+            host.value()->status().last_refresh_ok_ms + 604800000 + 1000;
+        Request governed        = hook_request("pre_tool", "Write", nullptr,
+                                               "D:/z/state/current.md");
+        governed.session_handle = "sess-expiry";
+        auto ack                = host.value()->handle(governed, far_future);
+        QIVEN_VERIFY(ack.verdict == "deny");
+        QIVEN_VERIFY(ack.reason_code == hook_reason_cognition_expired); // 117
+        Request clean        = hook_request("pre_tool", "Bash", "echo fine", nullptr);
+        clean.session_handle = "sess-expiry";
+        auto clean_ack       = host.value()->handle(clean, far_future);
+        QIVEN_VERIFY(clean_ack.verdict == "not_governed"); // telemetry stays up
+        std::printf("[ OK ] freshness expiry: governed 117; not_governed unaffected\n");
+    }
+
     // --- H-4 shutdown: ack precedes drain; state drains ---------------------
     {
         Request request;

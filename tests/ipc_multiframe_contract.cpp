@@ -515,6 +515,74 @@ int main()
         }
         QIVEN_VERIFY(!loop.value()->stop_requested()); // the loop SURVIVED
 
+        // Stalled-peer isolation (serial-loop old-fail): a connection that
+        // writes a PARTIAL frame and stalls must not delay another
+        // client's verdict — the pool serves it on another thread. Cap is
+        // 1 in this fixture, so raise it first (recreate is not possible;
+        // instead this leg runs against a SECOND loop instance).
+        {
+            using qiven::runtime::ipc::ServeLoop;
+            ServeLoop::Options iso;
+            iso.listen_arms     = 2;
+            iso.max_connections = 2;
+            iso.idle_timeout_ms = 3000;
+            ServeLoop::Hooks iso_hooks;
+            iso_hooks.handle = [](const Request& request) {
+                Reply reply;
+                reply.kind       = Reply::Kind::HelloAck;
+                reply.request_id = request.request_id;
+                return reply;
+            };
+            auto iso_loop = ServeLoop::create(unique_install_id("serveloop-iso"), codec,
+                                              iso, std::move(iso_hooks));
+            QIVEN_VERIFY(iso_loop.is_ok());
+            std::thread iso_runner([&] { iso_loop.value()->run(); });
+            auto stalled = PipeClient::connect(
+                qiven::runtime::ipc::pipe_name(unique_install_id("serveloop-iso")));
+            QIVEN_VERIFY(stalled.is_ok());
+            QIVEN_VERIFY(stalled.value().write_bytes("H", 2000)); // partial frame + stall
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            {
+                auto healthy = PipeClient::connect(
+                    qiven::runtime::ipc::pipe_name(unique_install_id("serveloop-iso")));
+                QIVEN_VERIFY(healthy.is_ok());
+                const auto begin = std::chrono::steady_clock::now();
+                QIVEN_VERIFY(write_request(healthy.value(), codec, hello_request(9), 1));
+                auto frame    = healthy.value().read_frame(3000);
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - begin)
+                                    .count();
+                QIVEN_VERIFY(frame.has_value());
+                QIVEN_VERIFY(ms < 1000); // NOT delayed by the stalled peer
+                const Reply reply = decode_client_reply(codec, frame.value());
+                QIVEN_VERIFY(reply.kind == Reply::Kind::HelloAck);
+            }
+            iso_loop.value()->request_stop();
+            iso_runner.join();
+        }
+
+        // Stop lost-wakeup window (recheck law): a stop issued while arms
+        // are between instance creation and ConnectNamedPipe still exits
+        // run() within the grace — exercised by stopping a FRESH loop
+        // immediately after run() starts (arms are in their first cycle).
+        {
+            using qiven::runtime::ipc::ServeLoop;
+            ServeLoop::Hooks wake_hooks;
+            wake_hooks.handle = [](const Request&) { return Reply {}; };
+            auto wake_loop    = ServeLoop::create(unique_install_id("serveloop-wake"), codec,
+                                                  ServeLoop::Options {}, std::move(wake_hooks));
+            QIVEN_VERIFY(wake_loop.is_ok());
+            std::thread wake_runner([&] { wake_loop.value()->run(); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            const auto begin = std::chrono::steady_clock::now();
+            wake_loop.value()->request_stop();
+            wake_runner.join();
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - begin)
+                                .count();
+            QIVEN_VERIFY(ms < 6000);
+        }
+
         // Phased stop: request_stop wakes arms and serve threads inside
         // their slices; run() returns within the grace.
         const auto begin = std::chrono::steady_clock::now();

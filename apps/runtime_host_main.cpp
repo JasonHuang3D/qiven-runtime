@@ -82,13 +82,18 @@ int main(int argc, char** argv)
     std::string build_id      = "qiven-runtime-host-mvp3";
     std::filesystem::path log_file;
     bool profile_explicit = false;
-    for (int i = 1; i + 1 < argc; ++i)
+    for (int i = 1; i < argc; ++i)
     {
         const std::string flag = argv[i];
         if (flag == "--help" || flag == "-h")
         {
             std::cout << "qiven-runtime-host (host-server redesign)\n";
             return 0;
+        }
+        if (i + 1 >= argc)
+        {
+            std::cerr << "flag '" << flag << "' requires a value\n";
+            return usage(); // a trailing lone flag is a usage error, never a silent boot
         }
         if (flag == "--root")
         {
@@ -339,7 +344,12 @@ int main(int argc, char** argv)
         qiven::u64 last_beat_s = 0;
         while (!loop.value()->stop_requested() && !g_stop)
         {
-            std::this_thread::sleep_for(std::chrono::seconds(10));
+            // Sliced sleep: a stop must not wait out a 10 s tick.
+            for (int slice = 0; slice < 40 && !loop.value()->stop_requested() && !g_stop;
+                 ++slice)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            }
             if (loop.value()->stop_requested())
             {
                 break;

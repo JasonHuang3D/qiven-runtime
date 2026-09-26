@@ -331,9 +331,11 @@ int host_refresh(const std::vector<std::string>& args)
     {
         return exit_ok;
     }
-    // Bounded outcome wait: poll the status verb until the reported
-    // last_refresh_ok advances past the trigger time or the budget ends.
-    const auto deadline = std::chrono::steady_clock::now() +
+    // Bounded outcome wait: the trigger reply's last_refresh_ok is the
+    // PRE-attempt clock; the wait ends when status reports a NEWER one
+    // (the attempt completed) or the budget ends.
+    const qiven::u64 before_ms = reply.value().last_refresh_ok_ms;
+    const auto deadline        = std::chrono::steady_clock::now() +
                           std::chrono::milliseconds(wait_ms);
     while (std::chrono::steady_clock::now() < deadline)
     {
@@ -343,7 +345,8 @@ int host_refresh(const std::vector<std::string>& args)
         poll.request_id = 2;
         auto state      = transact(repo_root / ".qiven" / "runtime", poll);
         if (state.is_ok() &&
-            state.value().kind == qiven::runtime::ipc::Reply::Kind::StatusView)
+            state.value().kind == qiven::runtime::ipc::Reply::Kind::StatusView &&
+            state.value().last_refresh_ok_ms != before_ms)
         {
             std::cout << "refresh: outcome " << state.value().refresh_state
                       << " (last ok " << state.value().last_refresh_ok_ms << " ms)\n";

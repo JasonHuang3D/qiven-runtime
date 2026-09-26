@@ -10,11 +10,13 @@
 
 #include <cctype>
 #include <chrono>
+#include <cwctype>
 #include <fstream>
 #include <iterator>
 #include <locale>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -76,7 +78,10 @@ qiven::Result<MutexHandle> acquire_singleton(const std::filesystem::path& repo_r
     }
     wchar_t final_path[MAX_PATH * 2] {};
     std::string canonical;
-    if (GetFinalPathNameByHandleW(dir, final_path, MAX_PATH * 2, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS) > 0)
+    const DWORD final_len =
+        GetFinalPathNameByHandleW(dir, final_path, MAX_PATH * 2,
+                                  FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (final_len > 0 && final_len < MAX_PATH * 2) // == size means truncated
     {
         std::wstring folded(final_path);
         for (auto& c : folded)
@@ -857,6 +862,8 @@ ipc::Reply RuntimeHost::handle_session_start(const ipc::Request& request, u64 no
     // surface is checked against the profile inventory and ONLY the
     // mismatched tools degrade (per-tool 113). No manifest ever arriving
     // degrades nothing — governance runs at the profile-declared scope.
+    // An EMPTY manifest is absence, not an empty declaration.
+    if (!request.mediated_tools.empty())
     {
         auto profile = cached_profile();
         if (!profile.is_ok())
@@ -980,15 +987,6 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
         append_event(*m_journal, "hook_deny_unknown_tool", tool, now_ms);
         return ack;
     }
-    if (freshness_expired)
-    {
-        ack.verdict       = "deny";
-        ack.reason_code   = static_cast<i64>(hook_reason_cognition_expired);
-        ack.reason_detail = "cognition freshness window exceeded and the last refresh failed "
-                            "(ARCH section 7.4: governed mutations are denied)";
-        append_event(*m_journal, "hook_deny_expired_cognition", tool, now_ms);
-        return ack;
-    }
     if (session.outstanding.find(tool) != session.outstanding.end())
     {
         ack.verdict       = "deny";
@@ -1017,14 +1015,28 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
             return ack;
         }
         {
-            auto profile             = load_profile_file(m_profile_file);
+            auto profile             = cached_profile(); // boot-cached; no disk under the mutex
             const std::string target = normalize_hook_path(request.file_path);
             if (target.find("..") != std::string::npos)
             {
                 governed = true;
                 detail   = "traversal form rejected: " + request.file_path;
             }
-            else if (profile.is_ok())
+            else if (!profile.is_ok())
+            {
+                // The accepted profile is cached at boot; a cache miss here
+                // is an uncertainty on the mediated path — FAIL CLOSED
+                // (never allow-blind; the unknown-tool/no-target branches
+                // deny for the same reason).
+                ack.verdict       = "deny";
+                ack.reason_code   = static_cast<i64>(adapter::hook_reason_payload);
+                ack.reason_detail = "accepted profile unavailable - target unverifiable, "
+                                    "
+                                    "fail closed";
+                append_event(*m_journal, "hook_deny_profile_unavailable", tool, now_ms);
+                return ack;
+            }
+            else
             {
                 // 2026-09-26 simulated-gate finding (first dev run): the
                 // old match required the governed path to be followed by
@@ -1112,6 +1124,17 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
                                "judgment journaling failed: " + transaction.reason().message);
     }
 
+    if (governed && freshness_expired)
+    {
+        // The freshness LAW gates GOVERNED mutations (ARCH section 7.4 /
+        // design section 6): not_governed telemetry stays available.
+        ack.verdict       = "deny";
+        ack.reason_code   = static_cast<i64>(hook_reason_cognition_expired);
+        ack.reason_detail = "cognition freshness window exceeded and the last refresh failed "
+                            "(ARCH section 7.4: governed mutations are denied)";
+        append_event(*m_journal, "hook_deny_expired_cognition", tool, now_ms);
+        return ack;
+    }
     if (governed)
     {
         // Raw-tool governed writes are denied until the mediated typed path
@@ -1292,6 +1315,16 @@ bool RuntimeHost::refresh_cognition(u64 now_ms, std::string& refresh_state,
             {
                 detail = "generation activation failed: " + generation.reason().message;
             }
+        }
+        if (!detail.empty() && detail.rfind("generation activation failed", 0) == 0)
+        {
+            // The publish succeeded but the generation did NOT advance: the
+            // ACTIVE bundle is stale. Report degraded honestly — never mask
+            // it behind a fresh freshness clock; the next cadence retries.
+            refresh_state = "degraded";
+            append_event(*m_journal, "refresh_activation_failed",
+                         m_bundle_revision + "|" + detail, now_ms);
+            return false;
         }
         m_last_refresh_ok_ms = now_ms;
         (void)m_journal->set_meta("last_refresh_ok_ms", std::to_string(now_ms));

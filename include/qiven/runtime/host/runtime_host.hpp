@@ -102,8 +102,9 @@ public:
     [[nodiscard]] ipc::Reply handle(const ipc::Request& request, u64 now_ms);
 
     // Starts the host-autonomous refresh worker (boot + cadence + coalesced
-    // operator triggers, §6). Called by boot(); exposed for tests that
-    // construct the host directly.
+    // operator triggers, §6). NOT called by boot(): the EMBEDDER starts it
+    // (the exe does right after boot; tests opt in) — an embedder that
+    // forgets gets `no_worker` refresh replies and freshness decay.
     void start_refresh_worker();
 
     // Graceful drain: outstanding pre observations are audit-marked

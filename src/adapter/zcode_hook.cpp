@@ -319,7 +319,15 @@ HookOutcome run_zcode_hook(const HookRun& run)
                                         : " -- fail-closed deny (no governed status without a "
                                           "completed handshake)"));
         }
-        return advisory_note(run.event + ": host unreachable -- " + reply.reason().message +
+        // Host-ANSWERED classes (121/122/123/125) are not unreachability
+        // — the advisory text names the class honestly (the pre_tool
+        // branch was corrected for this; the advisory branch matches).
+        const bool host_unreachable_class =
+            code == hook_reason_host_unavailable || code == hook_reason_no_listener ||
+            code == hook_reason_timeout;
+        const char* cause = host_unreachable_class ? "host unreachable -- "
+                                                   : "host rejected the call -- ";
+        return advisory_note(run.event + ": " + cause + reply.reason().message +
                              (run.event == "session_start"
                                   ? "; session NOT registered"
                                   : "; outcome unobserved"));
@@ -347,6 +355,11 @@ HookOutcome run_zcode_hook(const HookRun& run)
     if (ack.verdict == "deny")
     {
         return deny_host(static_cast<i32>(ack.reason_code), ack.reason_detail);
+    }
+    if (run.event == "session_start" && ack.verdict == "degraded")
+    {
+        return advisory_note("session registered (id " + ack.session_id + "); DEGRADED: " +
+                             ack.reason_detail);
     }
     if (run.event == "session_start" && !ack.refresh.empty() && ack.refresh != "current")
     {
