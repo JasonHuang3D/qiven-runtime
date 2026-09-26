@@ -58,6 +58,16 @@ Each scenario group gets a fresh scratch governed root:
 - The host boots with `--root <scratch> [--profile <file>]` exactly as the
   kit launchers do; the hook runs with `--event … --root <scratch>
   [--tool …] [--session-handle …]` and the fixture payload on stdin.
+- **Servable roots are minimal git fixture repos** (implementation-discovered:
+  `RuntimeHost::boot` step 5 publishes the active cognition bundle from the
+  root's `refs/heads/main` tree, so a bare directory cannot boot). Each
+  scratch root carries the pinned `runtime/invocation-policy.yaml` (the
+  REAL accepted instance, tracked at `tests/fixtures/h1-sim/invocation-
+  policy.yaml`, digest-matched to the profile pin) plus stub files for the
+  remaining `cognition.source_paths`, committed on a local `main` — the
+  boot-real publish path, offline and deterministic. A policy change in
+  qiven-context forces a visible fixture diff (the receipt binds its
+  digest).
 - Admission stays real: the rig never disables the install record; the
   same-directory rule (host boot merges sibling client images) is what the
   admission fault case deliberately violates by copying the hook exe
@@ -189,11 +199,27 @@ its new-pass leg on the candidate:
    interaction ceiling (≤ 5000 ms) regardless of the event's refresh-grade
    budget; the event frame keeps `run.deadline_ms`. This is the trial-4
    one-line fix; the conformance "hello-with-refresh-deadline" case (a
-   session_start round trip) is the regression.
+   session_start round trip) is the regression. **Old-fail evidence**: the
+   `old-fail-i4` mode reproduced the recorded mechanism byte-exact against
+   the preserved pre-fix binaries (hello rejected "(0, 5000]" → registration
+   died as an advisory → later probes denied 114), 2026-09-26.
 2. **Preflight `session_start` coverage (`tools/h1_kit.py`)** — the enable-
    gated preflight now drives a session_start registration (not only a
    pre_tool round trip) before its PASS line, closing the trial-4 preflight
    blind spot.
+3. **Governed exact-file matching (`src/host/runtime_host.cpp`)** — a
+   DEFECT THE GATE ITSELF DETECTED on its first dev run (ADR-0055 decision
+   10: fixes at the semantic owner with old-fail/new-pass evidence): the
+   governed-path match required the governed path to be followed by "/",
+   so an absolute target naming a governed FILE exactly
+   (`<root>/state/current.md`) never matched — only children of DIR
+   entries did. The fix matches the relative exact form, the absolute
+   exact form bounded by the governed ROOT prefix (`starts_with_ci` +
+   `ends_with_ci`; an outside tree repeating the relative suffix is not
+   governed by exact matching), and keeps the pre-existing
+   containment-anywhere clauses as the documented over-approximation.
+   Old-fail: the B2/B6/B7 receipts of the first two dev runs; new-pass:
+   the green 104-case receipt. The C++ suite (41 tests) stayed green.
 
 ## 8. Receipt binding and publication gate (ADR-0055 decisions 5 + 7)
 

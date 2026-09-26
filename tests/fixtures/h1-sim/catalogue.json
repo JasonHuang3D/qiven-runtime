@@ -1,0 +1,150 @@
+{
+  "schema": "qiven-h1-sim-fixture-catalogue-v1",
+  "description": "Fixture corpus for the MVP-4 simulated ZCode hook lifecycle gate (ADR-0055; qiven-runtime tools/h1_sim_gate.py). Every template records its provenance class and source. Oracles live in the rig's scenario table and cite these sources; expected outcomes are NEVER derived from current implementation output.",
+  "provenance_sources": {
+    "pinned-zcode-29628c9": {
+      "kind": "pinned_source",
+      "reference": "zai-org/ZCode commit 29628c9acdb81b703bbd4080c207a0e7ce5e276e, apps/zcode-cli/packages/contracts/src/hooks/index.ts (hook input interfaces) and apps/zcode-cli/packages/core/src/runtime/methods/hooks.ts (SessionStart dispatch, source enum startup|resume|clear|compact)",
+      "note": "Shapes constructed exactly per the published interfaces (camelCase canonical form). Source parity with the installed Desktop build is a documented assumption, not a test oracle (ADR-0055 decision 2)."
+    },
+    "capture-2026-09-23": {
+      "kind": "historical_capture",
+      "reference": "trial-4 H1 kit evidence payload-probe.log (kit 0.1.0-g7b3ce515, evidence/ payload dump captured live 2026-09-23..25; rows indexed 0..17 in dump order)",
+      "note": "The real dual-key wire form (camelCase AND snake_case identity fields both present, transcript_path, riskLevel, sideEffectScope). Machine-identity literals are replaced by placeholders per collaboration/public-repo-information-hygiene.md; shapes are otherwise verbatim. The dual-key form is itself evidence: the harness emits both key spellings."
+    },
+    "contract-derived": {
+      "kind": "published_contract",
+      "reference": "SessionStartHookInput.source enum and BaseHookInput required keys (cwd, hookEventName, mode, sessionId, timestamp, traceId) at the pinned revision",
+      "note": "Parameter sets (e.g. all four sources; minimal required-key forms) derived from the contract text."
+    },
+    "incident-audit": {
+      "kind": "accepted_audit",
+      "reference": "qiven-context evidence/audits: 2026-09-23-mvp4-h1-deny118-incident.md (trials 1+2), 2026-09-24-mvp4-h1-deny116-incident.md (trial 3 + admission second cause), 2026-09-24-mvp4-h1-kit-preflight-incident.md (kit incident), 2026-09-26-mvp4-h1-trial4-deadline-incident.md (trial 4)",
+      "note": "Oracle values: deny code classes, journal row expectations, and the defect mechanisms the old-fail legs reproduce."
+    }
+  },
+  "substitution_contract": {
+    "description": "Templates are raw payload bytes with plain-text placeholders; the rig substitutes per run before feeding stdin. Unconsumed identity fields stay as permanent placeholders (hygiene law).",
+    "placeholders": {
+      "{SESSION_ID}": "the harness session id (rig-generated stable per simulated session)",
+      "{SIM_ROOT}": "the scratch governed root, forward-slash drive form (D:/...); replaces the captured governed-checkout path",
+      "{SIM_ROOT_BSLASH}": "same root, backslash form (Windows alias fixture form)",
+      "{OUTSIDE_ROOT}": "the scratch outside-target root, forward-slash drive form; replaces the captured outside-repository path",
+      "{WORKSPACE_ROOT}": "permanent placeholder for the owner workspace root (unconsumed field, hygiene law)",
+      "{WORKSPACE_ROOT_POSIX}": "permanent placeholder, POSIX form (unconsumed; bash command bodies use {SIM_ROOT} forms instead so the detector sees the scratch root)",
+      "{TRANSCRIPT}": "permanent placeholder for the owner temp transcript path (unconsumed)",
+      "{MODEL}": "permanent placeholder for the serving model string (unconsumed)",
+      "{TS}": "ISO timestamp (rig-generated)",
+      "{TRACE}": "trace id (rig-generated)",
+      "{TURN}": "turn id (rig-generated)",
+      "{CALL}": "tool call id (rig-generated)"
+    }
+  },
+  "templates": {
+    "pinned.session-start.startup": {
+      "provenance": "pinned-zcode-29628c9",
+      "source_clause": "SessionStartHookInput, source=startup",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"SessionStart\",\"mode\":\"yolo\",\"model\":\"{MODEL}\",\"sessionId\":\"{SESSION_ID}\",\"source\":\"startup\",\"timestamp\":\"{TS}\",\"traceId\":\"{TRACE}\",\"turnId\":\"{TURN}\"}"
+    },
+    "pinned.session-start.resume": {
+      "provenance": "pinned-zcode-29628c9",
+      "source_clause": "SessionStartHookInput, source=resume",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"SessionStart\",\"mode\":\"yolo\",\"model\":\"{MODEL}\",\"sessionId\":\"{SESSION_ID}\",\"source\":\"resume\",\"timestamp\":\"{TS}\",\"traceId\":\"{TRACE}\"}"
+    },
+    "pinned.session-start.clear": {
+      "provenance": "pinned-zcode-29628c9",
+      "source_clause": "SessionStartHookInput, source=clear",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"SessionStart\",\"mode\":\"yolo\",\"model\":\"{MODEL}\",\"sessionId\":\"{SESSION_ID}\",\"source\":\"clear\",\"timestamp\":\"{TS}\",\"traceId\":\"{TRACE}\"}"
+    },
+    "pinned.session-start.compact": {
+      "provenance": "pinned-zcode-29628c9",
+      "source_clause": "SessionStartHookInput, source=compact",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"SessionStart\",\"mode\":\"yolo\",\"model\":\"{MODEL}\",\"sessionId\":\"{SESSION_ID}\",\"source\":\"compact\",\"timestamp\":\"{TS}\",\"traceId\":\"{TRACE}\"}"
+    },
+    "pinned.session-start.no-session-field": {
+      "provenance": "contract-derived",
+      "source_clause": "BaseHookInput required keys minus sessionId -- the exact trial-1 breaking shape (no session-identity field anywhere)",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"SessionStart\",\"mode\":\"yolo\",\"timestamp\":\"{TS}\",\"traceId\":\"{TRACE}\"}"
+    },
+    "pinned.pre-tool.write": {
+      "provenance": "pinned-zcode-29628c9",
+      "source_clause": "PreToolUseHookInput with Write toolInput",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"PreToolUse\",\"mode\":\"yolo\",\"riskLevel\":\"medium\",\"sessionId\":\"{SESSION_ID}\",\"sideEffectScope\":\"workspace\",\"timestamp\":\"{TS}\",\"toolCallId\":\"{CALL}\",\"toolInput\":{\"file_path\":\"{SIM_ROOT}/state/current.md\",\"content\":\"probe\\n\"},\"toolName\":\"Write\",\"traceId\":\"{TRACE}\",\"turnId\":\"{TURN}\"}"
+    },
+    "pinned.pre-tool.edit": {
+      "provenance": "pinned-zcode-29628c9",
+      "source_clause": "PreToolUseHookInput with Edit toolInput",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"PreToolUse\",\"mode\":\"yolo\",\"riskLevel\":\"medium\",\"sessionId\":\"{SESSION_ID}\",\"sideEffectScope\":\"workspace\",\"timestamp\":\"{TS}\",\"toolCallId\":\"{CALL}\",\"toolInput\":{\"file_path\":\"{SIM_ROOT}/memory/records/MEM-TEST.md\",\"old_string\":\"a\",\"new_string\":\"b\",\"replace_all\":false},\"toolName\":\"Edit\",\"traceId\":\"{TRACE}\",\"turnId\":\"{TURN}\"}"
+    },
+    "pinned.pre-tool.bash": {
+      "provenance": "pinned-zcode-29628c9",
+      "source_clause": "PreToolUseHookInput with Bash toolInput",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"PreToolUse\",\"mode\":\"yolo\",\"riskLevel\":\"high\",\"sessionId\":\"{SESSION_ID}\",\"sideEffectScope\":\"system\",\"timestamp\":\"{TS}\",\"toolCallId\":\"{CALL}\",\"toolInput\":{\"command\":\"echo probe > {SIM_ROOT}/state/h1-probe-pin.md\",\"description\":\"sim probe\"},\"toolName\":\"Bash\",\"traceId\":\"{TRACE}\",\"turnId\":\"{TURN}\"}"
+    },
+    "pinned.post-tool.write": {
+      "provenance": "pinned-zcode-29628c9",
+      "source_clause": "PostToolUseHookInput (toolResponse + toolResultPreview); no live capture exists -- the trials never reached PostToolUse",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"PostToolUse\",\"mode\":\"yolo\",\"sessionId\":\"{SESSION_ID}\",\"timestamp\":\"{TS}\",\"toolCallId\":\"{CALL}\",\"toolInput\":{\"file_path\":\"{OUTSIDE_ROOT}/done.txt\",\"content\":\"x\"},\"toolName\":\"Write\",\"toolResponse\":{\"ok\":true},\"toolResultPreview\":\"wrote 2 bytes\",\"traceId\":\"{TRACE}\",\"turnId\":\"{TURN}\"}"
+    },
+    "capture.0.session-start.resume.dualkey": {
+      "provenance": "capture-2026-09-23",
+      "source_clause": "payload-probe.log row 0 (verbatim shape; 2026-09-23T12:55:42Z, source=resume)",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"SessionStart\",\"mode\":\"yolo\",\"model\":\"{MODEL}\",\"sessionId\":\"{SESSION_ID}\",\"source\":\"resume\",\"timestamp\":\"{TS}\",\"traceId\":\"{TRACE}\",\"hook_event_name\":\"SessionStart\",\"permission_mode\":\"yolo\",\"session_id\":\"{SESSION_ID}\",\"transcript_path\":\"{TRANSCRIPT}\",\"transcriptPath\":\"{TRANSCRIPT}\"}"
+    },
+    "capture.1.session-start.startup.dualkey": {
+      "provenance": "capture-2026-09-23",
+      "source_clause": "payload-probe.log row 1 (verbatim shape, source=startup, turnId present)",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"SessionStart\",\"mode\":\"yolo\",\"model\":\"{MODEL}\",\"sessionId\":\"{SESSION_ID}\",\"source\":\"startup\",\"timestamp\":\"{TS}\",\"traceId\":\"{TRACE}\",\"turnId\":\"{TURN}\",\"hook_event_name\":\"SessionStart\",\"permission_mode\":\"yolo\",\"session_id\":\"{SESSION_ID}\",\"transcript_path\":\"{TRANSCRIPT}\",\"transcriptPath\":\"{TRANSCRIPT}\"}"
+    },
+    "capture.2.pre-tool.write.governed.dualkey": {
+      "provenance": "capture-2026-09-23",
+      "source_clause": "payload-probe.log row 2 (the trial-4 P1 probe: governed Write to state/h1-probe.md)",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"PreToolUse\",\"mode\":\"yolo\",\"riskLevel\":\"medium\",\"sessionId\":\"{SESSION_ID}\",\"sideEffectScope\":\"workspace\",\"timestamp\":\"{TS}\",\"toolCallId\":\"{CALL}\",\"toolInput\":{\"file_path\":\"{SIM_ROOT}/state/h1-probe.md\",\"content\":\"ok\\n\"},\"toolName\":\"Write\",\"traceId\":\"{TRACE}\",\"turnId\":\"{TURN}\",\"hook_event_name\":\"PreToolUse\",\"permission_mode\":\"yolo\",\"session_id\":\"{SESSION_ID}\",\"transcript_path\":\"{TRANSCRIPT}\",\"transcriptPath\":\"{TRANSCRIPT}\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"{SIM_ROOT}/state/h1-probe.md\",\"content\":\"ok\\n\"},\"tool_use_id\":\"{CALL}\"}"
+    },
+    "capture.4.pre-tool.bash.inert.dualkey": {
+      "provenance": "capture-2026-09-23",
+      "source_clause": "payload-probe.log row 4 (ls -la listing; riskLevel high, sideEffectScope system)",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"PreToolUse\",\"mode\":\"yolo\",\"riskLevel\":\"high\",\"sessionId\":\"{SESSION_ID}\",\"sideEffectScope\":\"system\",\"timestamp\":\"{TS}\",\"toolCallId\":\"{CALL}\",\"toolInput\":{\"command\":\"ls -la {WORKSPACE_ROOT_POSIX}\",\"description\":\"List files in working directory\"},\"toolName\":\"Bash\",\"traceId\":\"{TRACE}\",\"turnId\":\"{TURN}\",\"hook_event_name\":\"PreToolUse\",\"permission_mode\":\"yolo\",\"session_id\":\"{SESSION_ID}\",\"transcript_path\":\"{TRANSCRIPT}\",\"transcriptPath\":\"{TRANSCRIPT}\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls -la {WORKSPACE_ROOT_POSIX}\",\"description\":\"List files in working directory\"},\"tool_use_id\":\"{CALL}\"}"
+    },
+    "capture.12.pre-tool.edit.governed.dualkey": {
+      "provenance": "capture-2026-09-23",
+      "source_clause": "payload-probe.log row 12 (the trial-4 P2 probe: governed Edit)",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"PreToolUse\",\"mode\":\"yolo\",\"riskLevel\":\"medium\",\"sessionId\":\"{SESSION_ID}\",\"sideEffectScope\":\"workspace\",\"timestamp\":\"{TS}\",\"toolCallId\":\"{CALL}\",\"toolInput\":{\"file_path\":\"{SIM_ROOT}/state/h1-probe.md\",\"old_string\":\"ok\",\"new_string\":\"ok-edited\",\"replace_all\":false},\"toolName\":\"Edit\",\"traceId\":\"{TRACE}\",\"turnId\":\"{TURN}\",\"hook_event_name\":\"PreToolUse\",\"permission_mode\":\"yolo\",\"session_id\":\"{SESSION_ID}\",\"transcript_path\":\"{TRANSCRIPT}\",\"transcriptPath\":\"{TRANSCRIPT}\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"{SIM_ROOT}/state/h1-probe.md\",\"old_string\":\"ok\",\"new_string\":\"ok-edited\",\"replace_all\":false},\"tool_use_id\":\"{CALL}\"}"
+    },
+    "capture.13.pre-tool.bash.governed.dualkey": {
+      "provenance": "capture-2026-09-23",
+      "source_clause": "payload-probe.log row 13 (the trial-4 P3 probe: bash redirect into the governed scope)",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"PreToolUse\",\"mode\":\"yolo\",\"riskLevel\":\"high\",\"sessionId\":\"{SESSION_ID}\",\"sideEffectScope\":\"system\",\"timestamp\":\"{TS}\",\"toolCallId\":\"{CALL}\",\"toolInput\":{\"command\":\"echo probe > {SIM_ROOT}/state/h1-probe-bash.md\",\"description\":\"Write probe text to h1-probe-bash.md\"},\"toolName\":\"Bash\",\"traceId\":\"{TRACE}\",\"turnId\":\"{TURN}\",\"hook_event_name\":\"PreToolUse\",\"permission_mode\":\"yolo\",\"session_id\":\"{SESSION_ID}\",\"transcript_path\":\"{TRANSCRIPT}\",\"transcriptPath\":\"{TRANSCRIPT}\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo probe > {SIM_ROOT}/state/h1-probe-bash.md\",\"description\":\"Write probe text to h1-probe-bash.md\"},\"tool_use_id\":\"{CALL}\"}"
+    },
+    "capture.14.pre-tool.bash.outside.dualkey": {
+      "provenance": "capture-2026-09-23",
+      "source_clause": "payload-probe.log row 14 (the trial-4 P4 probe: outside the governed scope -- MUST allow)",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"PreToolUse\",\"mode\":\"yolo\",\"riskLevel\":\"high\",\"sessionId\":\"{SESSION_ID}\",\"sideEffectScope\":\"system\",\"timestamp\":\"{TS}\",\"toolCallId\":\"{CALL}\",\"toolInput\":{\"command\":\"echo outside > {OUTSIDE_ROOT}/outside.txt\",\"description\":\"Write outside.txt to outside temp dir\"},\"toolName\":\"Bash\",\"traceId\":\"{TRACE}\",\"turnId\":\"{TURN}\",\"hook_event_name\":\"PreToolUse\",\"permission_mode\":\"yolo\",\"session_id\":\"{SESSION_ID}\",\"transcript_path\":\"{TRANSCRIPT}\",\"transcriptPath\":\"{TRANSCRIPT}\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo outside > {OUTSIDE_ROOT}/outside.txt\",\"description\":\"Write outside.txt to outside temp dir\"},\"tool_use_id\":\"{CALL}\"}"
+    },
+    "capture.17.pre-tool.bash.governed-late.dualkey": {
+      "provenance": "capture-2026-09-23",
+      "source_clause": "payload-probe.log row 17 (the P6 no-host probe payload: governed bash used for the fail-closed no-listener leg)",
+      "payload": "{\"cwd\":\"{WORKSPACE_ROOT}\",\"hookEventName\":\"PreToolUse\",\"mode\":\"yolo\",\"riskLevel\":\"high\",\"sessionId\":\"{SESSION_ID}\",\"sideEffectScope\":\"system\",\"timestamp\":\"{TS}\",\"toolCallId\":\"{CALL}\",\"toolInput\":{\"command\":\"echo late > {SIM_ROOT}/state/h1-late.md\",\"description\":\"Write late.md probe file\"},\"toolName\":\"Bash\",\"traceId\":\"{TRACE}\",\"turnId\":\"{TURN}\",\"hook_event_name\":\"PreToolUse\",\"permission_mode\":\"yolo\",\"session_id\":\"{SESSION_ID}\",\"transcript_path\":\"{TRANSCRIPT}\",\"transcriptPath\":\"{TRANSCRIPT}\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo late > {SIM_ROOT}/state/h1-late.md\",\"description\":\"Write late.md probe file\"},\"tool_use_id\":\"{CALL}\"}"
+    }
+  },
+  "fixture_files": {
+    "invocation-policy.yaml": {
+      "provenance": "canonical qiven-context runtime/invocation-policy.yaml at the 2026-09-26 main (digest c3a767fddd28e4e7db84575ba1ca84f391d7d37d990dd12ff044fe1ddf51b672, pinned by the deployment profile cognition.policy_sha256)",
+      "note": "RuntimeHost::boot publishes the active bundle from the governed root's refs/heads/main tree; the sim's scratch roots commit this exact file so the boot-real publish path is exercised offline. A qiven-context policy change forces a visible fixture diff."
+    }
+  },
+  "oracle_bindings": {
+    "governed_deny_110": "profile governed_paths (state/active-work.yaml, state/current.md, memory/records, memory/index.yaml, obligations, obligations/index.yaml, sessions) + host write-target policy; deny code 110 (hook_reason_governed_write, zcode_hook.hpp)",
+    "bash_deny_111": "conservative_text_reference detector + repo-root containment (profile honesty note: over-approximates to deny)",
+    "unregistered_deny_114": "trial-4 audit chain: registration failure collapses every later probe into deny 114 BEFORE scope classification",
+    "correlation_115": "one outstanding pre per tool; unmatched post is Indeterminate (host handle_post_tool)",
+    "payload_118": "deny-118 audit (trial 1): NO payload field is required; contradiction and unreadable/oversize payloads still fail closed in the 118 class",
+    "expired_117": "cognition freshness window (profile freshness_window_ms) + refresh_cognition fallback law",
+    "degraded_113": "capability-handshake mismatch law (hook manifest vs profile tool_inventory)",
+    "no_listener_120": "2026-09-24 taxonomy split: typed no-listener with honest fail-closed text",
+    "admission_121": "deny-116 audit addendum: install-record admission, typed 121 with the rejected image path",
+    "hello_deadline": "trial-4 audit: hello ceiling 5000 vs session_start event ceiling 10000 (protocol.cpp); the hello is a handshake, not the event",
+    "idempotent_registration": "host handle_session_start idempotence clause (one runtime identity per harness handle)",
+    "restart_isolation": "in-memory hook sessions die with the host; the journal survives (RuntimeHost::boot recovery law)"
+  }
+}

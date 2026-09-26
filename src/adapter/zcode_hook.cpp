@@ -89,12 +89,18 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     u64 seq = 1;
     // hello first: the host answers or rejects the version BEFORE the
     // event is processed; a rejected handshake is a deny for pre_tool.
+    // The hello frame is a HANDSHAKE, not the event: its budget is the
+    // interaction ceiling (protocol.cpp caps every non-session_start frame
+    // at 5000), never the event's refresh-grade deadline. Carrying the
+    // session_start budget here made the host reject the hello and the
+    // registration die as an invisible advisory -- the 2026-09-26 trial-4
+    // incident; the conformance case is hello-with-refresh-deadline.
     ipc::Request hello;
     hello.kind         = ipc::Request::Kind::Hello;
     hello.client_kind  = "zcode-hook";
     hello.client_build = 1;
     hello.request_id   = 1;
-    hello.deadline_ms  = run.deadline_ms;
+    hello.deadline_ms  = run.deadline_ms < hello_ceiling_ms ? run.deadline_ms : hello_ceiling_ms;
     ipc::FrameHeader header;
     header.request_id     = hello.request_id;
     header.connection_seq = seq;
@@ -104,7 +110,7 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
                                                     hook_reason_host_unavailable,
                                                     "hello write failed"));
     }
-    auto hello_frame = client.value().read_frame(run.deadline_ms);
+    auto hello_frame = client.value().read_frame(hello.deadline_ms);
     if (!hello_frame.has_value())
     {
         if (client.value().last_read_timed_out())

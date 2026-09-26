@@ -107,6 +107,11 @@ void append_event(journal::RuntimeJournal& journal, std::string_view kind,
 // Case-insensitive ASCII contains (governed-prefix scan for the Bash
 // conservative detector; Unicode case folding is out of scope for the
 // governed-path vocabulary, which is ASCII).
+[[nodiscard]] char lower_ascii(char c)
+{
+    return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+}
+
 [[nodiscard]] bool contains_ci(std::string_view haystack, std::string_view needle)
 {
     if (needle.empty() || haystack.size() < needle.size())
@@ -135,6 +140,45 @@ void append_event(journal::RuntimeJournal& journal, std::string_view kind,
     return false;
 }
 
+// Case-insensitive "haystack starts with needle" (the governed-root prefix
+// bound for the exact-file form).
+[[nodiscard]] bool starts_with_ci(const std::string& haystack, const std::string& needle)
+{
+    if (needle.size() > haystack.size())
+    {
+        return false;
+    }
+    for (usize i = 0; i < needle.size(); i += 1)
+    {
+        if (lower_ascii(haystack[i]) != lower_ascii(needle[i]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Case-insensitive "haystack ends with needle" (the governed-path
+// exact-file form: an absolute target naming the governed file itself; the
+// needle's leading separator is the boundary -- "current.md.bak" and
+// "notstate/current.md" cannot match "/state/current.md").
+[[nodiscard]] bool ends_with_ci(const std::string& haystack, const std::string& needle)
+{
+    if (needle.size() > haystack.size())
+    {
+        return false;
+    }
+    const usize at = haystack.size() - needle.size();
+    for (usize i = 0; i < needle.size(); i += 1)
+    {
+        if (lower_ascii(haystack[at + i]) != lower_ascii(needle[i]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Lexical path normalization for the governed-scope test: forward slashes,
 // collapsed separators, trailing-slash trim. Traversal/reparse rejection is
 // the caller's deny (ARCH section 12.3 -- no bypass through traversal).
@@ -159,8 +203,9 @@ RuntimeHost::~RuntimeHost()
     if (m_journal != nullptr)
     {
         // Graceful-shutdown checkpoint (WAL truncate); recovery at next
-        // boot is still authoritative (MVP-1 law).
-        m_journal->checkpoint();
+        // boot is still authoritative (MVP-1 law). A destructor cannot
+        // propagate the failure surface; the discard is deliberate.
+        (void)m_journal->checkpoint();
     }
     m_state = "stopped";
 }
@@ -698,11 +743,25 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
             }
             else if (profile.is_ok())
             {
+                // 2026-09-26 simulated-gate finding (first dev run): the
+                // old match required the governed path to be followed by
+                // "/", so an absolute target naming a governed FILE
+                // exactly (state/current.md) never matched -- only
+                // children of DIR entries did. A governed file is now
+                // matched exactly (relative form) and by its absolute
+                // form inside the governed ROOT (the suffix bound is the
+                // root prefix: an outside tree that repeats the relative
+                // suffix is not governed by exact-file matching; the
+                // pre-existing containment-anywhere clauses stay as the
+                // documented over-approximation). Evidence: the rig's
+                // B2/B6/B7 old-fail receipts vs the post-fix runs.
+                const std::string root_norm = normalize_hook_path(m_repo_root.string());
+                const bool in_root = starts_with_ci(target, root_norm + "/");
                 for (const auto& path : profile.value().governed_paths)
                 {
-                    if (target.rfind(path + "/", 0) == 0 || target == path ||
+                    if (target == path || target.rfind(path + "/", 0) == 0 ||
+                        (in_root && ends_with_ci(target, "/" + path)) ||
                         target.rfind("/" + path + "/", 0) != std::string::npos ||
-                        target.rfind(path + "\t", 0) == 0 ||
                         contains_ci(target, path + "/"))
                     {
                         governed = true;

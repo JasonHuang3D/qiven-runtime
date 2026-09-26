@@ -48,6 +48,14 @@ inline constexpr i32 hook_reason_version_skew = 122; // protocol version mismatc
 inline constexpr i32 hook_reason_secret_skew  = 123; // HMAC fails (stale/different root)
 inline constexpr i32 hook_reason_timeout      = 124; // no reply within the deadline
 
+// The hello frame's deadline ceiling (protocol.cpp caps every non-
+// session_start frame at 5000 ms). The hello is a handshake, not the
+// event: even a refresh-grade session_start budget (9750) must not ride
+// the hello frame -- the 2026-09-26 trial-4 incident (hello rejected,
+// registration died as an invisible advisory, every later probe denied
+// 114). Exposed for the conformance table.
+inline constexpr u64 hello_ceiling_ms = 5000;
+
 struct HookRun
 {
     std::filesystem::path runtime_root; // <governed checkout>/.qiven/runtime
