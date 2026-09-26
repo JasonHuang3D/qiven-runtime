@@ -18,6 +18,7 @@
 #include <qiven/runtime/ipc/named_pipe_server.hpp>
 #include <qiven/runtime/ipc/protocol.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <filesystem>
@@ -25,6 +26,7 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -40,7 +42,9 @@ int usage()
               << "       qiven-runtimectl status show [--root <qiven-context checkout>]\n"
               << "       qiven-runtimectl doctor show [--root <qiven-context checkout>]\n"
               << "       qiven-runtimectl host shutdown [--root <qiven-context checkout>] "
-                 "[--grace-ms N]\n";
+                 "[--grace-ms N]\n"
+              << "       qiven-runtimectl host refresh [--root <qiven-context checkout>] "
+                 "[--wait-ms N]\n";
     return exit_usage;
 }
 
@@ -125,9 +129,12 @@ int profile_show(const std::vector<std::string>& args)
     return exit_ok;
 }
 
-// One authenticated round-trip over the installation pipe.
+// One authenticated round-trip over the installation pipe. EVERY client
+// read is bounded (host-server redesign LL-3: no operator tool may hang
+// against the server); default budget 5000 ms.
 qiven::Result<qiven::runtime::ipc::Reply> transact(
-    const std::filesystem::path& runtime_root, const qiven::runtime::ipc::Request& request)
+    const std::filesystem::path& runtime_root, const qiven::runtime::ipc::Request& request,
+    qiven::u64 read_budget_ms = 5000)
 {
     using ReplyResult = qiven::Result<qiven::runtime::ipc::Reply>;
     auto secret       = qiven::runtime::ipc::InstallationSecret::ensure(runtime_root);
@@ -162,12 +169,13 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(
     header.request_id     = 1;
     header.connection_seq = 1;
     if (!client.value().write_bytes(codec.encode(
-            header, qiven::runtime::ipc::encode_request_body(request))))
+                                        header, qiven::runtime::ipc::encode_request_body(request)),
+                                    read_budget_ms))
     {
         return ReplyResult::fail(
             qiven::Error::make(qiven::error_category::unavailable, 65, "request write failed"));
     }
-    auto frame = client.value().read_frame();
+    auto frame = client.value().read_frame(read_budget_ms);
     if (!frame.has_value())
     {
         return ReplyResult::fail(
@@ -232,6 +240,9 @@ int ipc_show(const std::vector<std::string>& args, bool doctor)
               << "  generation      : " << reply.value().generation << "\n"
               << "  bundle_revision : " << reply.value().bundle_revision << "\n"
               << "  journal_events  : " << reply.value().journal_events << "\n"
+              << "  refresh_state   : " << reply.value().refresh_state << "\n"
+              << "  last_refresh_ok : " << reply.value().last_refresh_ok_ms << " ms\n"
+              << "  next_refresh_due: " << reply.value().next_refresh_due_ms << " ms\n"
               << "  quarantined     : " << (reply.value().quarantined ? "yes" : "no") << "\n";
     return exit_ok;
 }
@@ -256,11 +267,10 @@ int host_shutdown(const std::vector<std::string>& args)
         return exit_usage;
     }
     qiven::runtime::ipc::Request request;
-    request.kind        = qiven::runtime::ipc::Request::Kind::Shutdown;
-    request.request_id  = 1;
-    request.grace_ms    = grace_ms;
-    request.deadline_ms = 3000;
-    auto reply          = transact(repo_root / ".qiven" / "runtime", request);
+    request.kind       = qiven::runtime::ipc::Request::Kind::Shutdown;
+    request.request_id = 1;
+    request.grace_ms   = grace_ms;
+    auto reply         = transact(repo_root / ".qiven" / "runtime", request);
     if (!reply.is_ok())
     {
         std::cout << "shutdown: HOST UNREACHABLE (" << reply.reason().message
@@ -274,6 +284,74 @@ int host_shutdown(const std::vector<std::string>& args)
     }
     std::cout << "shutdown: HOST DENIED (" << reply.value().error_code << ": "
               << reply.value().error_detail << ")\n";
+    return exit_fail;
+}
+
+// Host-server redesign §6: the operator refresh TRIGGER — authenticated,
+// audit-logged, coalesced server-side, never blocking the server. With
+// --wait-ms N the tool ALSO waits bounded for the worker's outcome (a
+// bounded human-facing CLI poll of the status verb, never an LLM loop).
+int host_refresh(const std::vector<std::string>& args)
+{
+    std::filesystem::path repo_root = std::filesystem::current_path();
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        repo_root = given;
+    }
+    qiven::u64 wait_ms = 0;
+    if (const auto given = flag_value(args, "--wait-ms"); !given.empty())
+    {
+        wait_ms = static_cast<qiven::u64>(std::strtoull(given.string().c_str(), nullptr, 10));
+    }
+    if (wait_ms > 60000)
+    {
+        std::cout << "refresh: --wait-ms must be <= 60000\n";
+        return exit_usage;
+    }
+    qiven::runtime::ipc::Request request;
+    request.kind       = qiven::runtime::ipc::Request::Kind::Refresh;
+    request.request_id = 1;
+    auto reply         = transact(repo_root / ".qiven" / "runtime", request);
+    if (!reply.is_ok())
+    {
+        std::cout << "refresh: HOST UNREACHABLE (" << reply.reason().message
+                  << ") - nothing is reported governed\n";
+        return exit_fail;
+    }
+    if (reply.value().kind != qiven::runtime::ipc::Reply::Kind::RefreshAck)
+    {
+        std::cout << "refresh: HOST DENIED (" << reply.value().error_code << ": "
+                  << reply.value().error_detail << ")\n";
+        return exit_fail;
+    }
+    std::cout << "refresh: " << reply.value().refresh_result << " (state "
+              << reply.value().refresh_state << ", next due "
+              << reply.value().next_refresh_due_ms << " ms)\n";
+    if (wait_ms == 0)
+    {
+        return exit_ok;
+    }
+    // Bounded outcome wait: poll the status verb until the reported
+    // last_refresh_ok advances past the trigger time or the budget ends.
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(wait_ms);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        qiven::runtime::ipc::Request poll;
+        poll.kind       = qiven::runtime::ipc::Request::Kind::Status;
+        poll.request_id = 2;
+        auto state      = transact(repo_root / ".qiven" / "runtime", poll);
+        if (state.is_ok() &&
+            state.value().kind == qiven::runtime::ipc::Reply::Kind::StatusView)
+        {
+            std::cout << "refresh: outcome " << state.value().refresh_state
+                      << " (last ok " << state.value().last_refresh_ok_ms << " ms)\n";
+            return exit_ok;
+        }
+    }
+    std::cout << "refresh: outcome not observed within " << wait_ms
+              << " ms (the worker retries on its cadence)\n";
     return exit_fail;
 }
 } // namespace
@@ -306,6 +384,10 @@ int main(int argc, char** argv)
     if (object == "host" && verb == "shutdown")
     {
         return host_shutdown(args);
+    }
+    if (object == "host" && verb == "refresh")
+    {
+        return host_refresh(args);
     }
     return usage();
 }

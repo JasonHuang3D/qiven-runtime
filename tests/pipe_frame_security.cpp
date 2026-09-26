@@ -51,7 +51,7 @@ int main()
     FrameHeader header;
     header.request_id      = 42;
     header.connection_seq  = 7;
-    const std::string body = R"({"kind":"status","request_id":42,"deadline_ms":3000})";
+    const std::string body = R"({"kind":"status","request_id":42})";
     const std::string wire = codec.encode(header, body);
     {
         auto verified = codec.decode(wire);

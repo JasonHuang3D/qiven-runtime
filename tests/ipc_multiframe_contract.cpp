@@ -21,6 +21,7 @@
 #include <qiven/runtime/ipc/named_pipe_server.hpp>
 #include <qiven/runtime/ipc/pipe_service.hpp>
 #include <qiven/runtime/ipc/protocol.hpp>
+#include <qiven/runtime/ipc/serve_loop.hpp>
 #include <qiven/types.hpp>
 
 #include <chrono>
@@ -59,7 +60,8 @@ bool write_request(PipeClient& client, const FrameCodec& codec, const Request& r
     FrameHeader header;
     header.request_id     = request.request_id;
     header.connection_seq = connection_seq;
-    return client.write_bytes(codec.encode(header, qiven::runtime::ipc::encode_request_body(request)));
+    return client.write_bytes(codec.encode(header, qiven::runtime::ipc::encode_request_body(request)),
+                              5000);
 }
 
 Request hello_request(qiven::u64 id)
@@ -67,9 +69,8 @@ Request hello_request(qiven::u64 id)
     Request hello;
     hello.kind         = Request::Kind::Hello;
     hello.client_kind  = "contract-test";
-    hello.client_build = 1;
+    hello.client_build = 2;
     hello.request_id   = id;
-    hello.deadline_ms  = 2000;
     return hello;
 }
 
@@ -81,7 +82,6 @@ Request hook_request(qiven::u64 id)
     request.tool_name      = "Bash";
     request.session_handle = "contract-test-session";
     request.request_id     = id;
-    request.deadline_ms    = 2000;
     request.payload_sha256 = std::string(64, 'a');
     request.payload_bytes  = 8;
     return request;
@@ -167,7 +167,7 @@ int main()
             auto connection = server.value().accept();
             QIVEN_VERIFY(connection.is_ok());
             stats = qiven::runtime::ipc::serve_connection(
-                connection.value(), codec, [] { return std::string(""); },
+                connection.value(), codec, [](qiven::runtime::ipc::PipeConnection&) { return std::string(""); },
                 [](const Request& request) { return canned_reply(request); });
         });
 
@@ -209,7 +209,7 @@ int main()
             auto connection = server.value().accept();
             QIVEN_VERIFY(connection.is_ok());
             const auto stats = qiven::runtime::ipc::serve_connection(
-                connection.value(), codec, [] { return std::string("unit-test image rejection"); },
+                connection.value(), codec, [](qiven::runtime::ipc::PipeConnection&) { return std::string("unit-test image rejection"); },
                 [](const Request& request) { return canned_reply(request); });
             QIVEN_VERIFY(stats.admission_rejected);
             QIVEN_VERIFY(stats.frames_served == 0);
@@ -244,7 +244,7 @@ int main()
             auto connection = server.value().accept();
             QIVEN_VERIFY(connection.is_ok());
             const auto stats = qiven::runtime::ipc::serve_connection(
-                connection.value(), codec, [] { return std::string(""); },
+                connection.value(), codec, [](qiven::runtime::ipc::PipeConnection&) { return std::string(""); },
                 [](const Request& request) { return canned_reply(request); });
             QIVEN_VERIFY(stats.seq_violation);
         });
@@ -285,7 +285,7 @@ int main()
             qiven::runtime::ipc::ServeOptions options;
             options.idle_timeout_ms = 200;
             stats                   = qiven::runtime::ipc::serve_connection(
-                connection.value(), codec, [] { return std::string(""); },
+                connection.value(), codec, [](qiven::runtime::ipc::PipeConnection&) { return std::string(""); },
                 [](const Request& request) { return canned_reply(request); }, options);
         });
 
@@ -363,7 +363,7 @@ int main()
             qiven::runtime::ipc::ServeOptions options;
             options.max_frames = 2;
             stats              = qiven::runtime::ipc::serve_connection(
-                connection.value(), codec, [] { return std::string(""); },
+                connection.value(), codec, [](qiven::runtime::ipc::PipeConnection&) { return std::string(""); },
                 [](const Request& request) { return canned_reply(request); }, options);
         });
 
@@ -406,17 +406,98 @@ int main()
             qiven::runtime::ipc::ServeOptions options;
             options.idle_timeout_ms = 300;
             stats                   = qiven::runtime::ipc::serve_connection(
-                connection.value(), codec, [] { return std::string(""); },
+                connection.value(), codec, [](qiven::runtime::ipc::PipeConnection&) { return std::string(""); },
                 [](const Request& request) { return canned_reply(request); }, options);
         });
 
         // One byte of a header, then silence: the prior blocking read held
         // the serve thread forever (only first-byte arrival was bounded).
-        QIVEN_VERIFY(client.value().write_bytes("Q"));
+        QIVEN_VERIFY(client.value().write_bytes("Q", 2000));
         server_thread.join(); // must return within the bound, not hang
         QIVEN_VERIFY(stats.idle_closed);
         QIVEN_VERIFY(stats.frames_served == 0);
         std::printf("[ OK ] drip: partial-frame stall closed within the bound\n");
+    }
+
+    // --- ServeLoop (host-server redesign): the production listen pool ------
+    {
+        using qiven::runtime::ipc::ServeLoop;
+        ServeLoop::Options options;
+        options.listen_arms     = 2;
+        options.max_connections = 1; // tiny cap so the busy path is reachable
+        options.idle_timeout_ms = 1000;
+        ServeLoop::Hooks hooks;
+        hooks.handle = [](const Request& request) {
+            Reply reply;
+            reply.kind       = Reply::Kind::HelloAck;
+            reply.request_id = request.request_id;
+            reply.host_build = "serve-loop-test";
+            return reply;
+        };
+        auto loop = ServeLoop::create(unique_install_id("serveloop"), codec, options,
+                                      std::move(hooks));
+        QIVEN_VERIFY(loop.is_ok());
+        std::thread runner([&] { loop.value()->run(); });
+
+        // One client is served; the over-cap client receives the typed 125
+        // busy frame (never an ERROR_PIPE_BUSY fake-120 against a healthy
+        // pool).
+        auto served = PipeClient::connect(
+            qiven::runtime::ipc::pipe_name(unique_install_id("serveloop")));
+        QIVEN_VERIFY(served.is_ok());
+        QIVEN_VERIFY(write_request(served.value(), codec, hello_request(1), 1));
+        {
+            auto frame = served.value().read_frame(3000);
+            QIVEN_VERIFY(frame.has_value());
+            const Reply reply = decode_client_reply(codec, frame.value());
+            QIVEN_VERIFY(reply.kind == Reply::Kind::HelloAck);
+        }
+        auto busy = PipeClient::connect(
+            qiven::runtime::ipc::pipe_name(unique_install_id("serveloop")));
+        QIVEN_VERIFY(busy.is_ok());
+        QIVEN_VERIFY(write_request(busy.value(), codec, hello_request(2), 1));
+        {
+            auto frame = busy.value().read_frame(3000);
+            QIVEN_VERIFY(frame.has_value());
+            const Reply reply = decode_client_reply(codec, frame.value());
+            QIVEN_VERIFY(reply.kind == Reply::Kind::ErrorView);
+            QIVEN_VERIFY(reply.error_code == 125); // typed server-busy
+        }
+        QIVEN_VERIFY(loop.value()->stats().busy_rejected.load() >= 1);
+        QIVEN_VERIFY(loop.value()->stats().busy_occupancy_last.load() >= 1);
+
+        // Release the connections; after the idle close a fresh client is
+        // served promptly (the cap frees with the connection).
+        busy   = qiven::Result<PipeClient>::fail(qiven::Error {});
+        served = qiven::Result<PipeClient>::fail(qiven::Error {});
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200)); // idle close (1 s)
+        {
+            auto fresh = PipeClient::connect(
+                qiven::runtime::ipc::pipe_name(unique_install_id("serveloop")));
+            QIVEN_VERIFY(fresh.is_ok());
+            const auto begin = std::chrono::steady_clock::now();
+            QIVEN_VERIFY(write_request(fresh.value(), codec, hello_request(3), 1));
+            auto frame    = fresh.value().read_frame(3000);
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - begin)
+                                .count();
+            QIVEN_VERIFY(frame.has_value());
+            QIVEN_VERIFY(ms < 1000);
+            const Reply reply = decode_client_reply(codec, frame.value());
+            QIVEN_VERIFY(reply.kind == Reply::Kind::HelloAck);
+        }
+
+        // Phased stop: request_stop wakes arms and serve threads inside
+        // their slices; run() returns within the grace.
+        const auto begin = std::chrono::steady_clock::now();
+        loop.value()->request_stop();
+        runner.join();
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - begin)
+                            .count();
+        QIVEN_VERIFY(ms < 6000); // grace (5 s) + margin; far faster in practice
+        std::printf("[ OK ] serve loop: pool admits, 125 busy typed, stop drains in %lld ms\n",
+                    static_cast<long long>(ms));
     }
 
     std::printf("[ OK ] ipc_multiframe_contract: all corrective regressions pass\n");

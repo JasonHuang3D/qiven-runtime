@@ -24,17 +24,18 @@ qiven::Result<Request, ProtocolError> decode_request(std::string_view body)
     {
         return qiven::Result<Request, ProtocolError>::fail(bad("body must be an object"));
     }
-    // Closed vocabulary: every present key must be known.
+    // Closed vocabulary: every present key must be known. deadline_ms is
+    // RETIRED from the envelope (host-server redesign LL-3): an old client
+    // carrying it fails closed here, typed — the honest transition.
     for (const auto& member : value.object)
     {
         if (member.first != "kind" && member.first != "request_id" &&
-            member.first != "deadline_ms" && member.first != "client_kind" &&
-            member.first != "client_build" && member.first != "body" &&
-            member.first != "event" && member.first != "session_handle" &&
-            member.first != "tool_name" && member.first != "payload_sha256" &&
-            member.first != "payload_bytes" && member.first != "command" &&
-            member.first != "file_path" && member.first != "mediated_tools" &&
-            member.first != "grace_ms")
+            member.first != "client_kind" && member.first != "client_build" &&
+            member.first != "body" && member.first != "event" &&
+            member.first != "session_handle" && member.first != "tool_name" &&
+            member.first != "payload_sha256" && member.first != "payload_bytes" &&
+            member.first != "command" && member.first != "file_path" &&
+            member.first != "mediated_tools" && member.first != "grace_ms")
         {
             return qiven::Result<Request, ProtocolError>::fail(
                 bad("unknown request field '" + member.first + "'"));
@@ -104,24 +105,16 @@ qiven::Result<Request, ProtocolError> decode_request(std::string_view body)
                 bad("grace_ms must be in (0, 30000]"));
         }
     }
+    else if (kind == "refresh")
+    {
+        request.kind = Request::Kind::Refresh;
+    }
     else
     {
         return qiven::Result<Request, ProtocolError>::fail(bad("unknown request kind '" + kind + "'"));
     }
 
-    request.request_id  = value.number_or("request_id", 0);
-    request.deadline_ms = value.number_or("deadline_ms", 3000);
-    // SessionStart may ask for a refresh-grade budget (MVP-4 H-2); every
-    // other kind stays inside the 5 s interaction ceiling.
-    const u64 ceiling =
-        (request.kind == Request::Kind::HookEvent && request.event == "session_start")
-            ? 10000
-            : 5000;
-    if (request.deadline_ms == 0 || request.deadline_ms > ceiling)
-    {
-        return qiven::Result<Request, ProtocolError>::fail(
-            bad("deadline_ms must be in (0, " + std::to_string(ceiling) + "]"));
-    }
+    request.request_id = value.number_or("request_id", 0);
     return qiven::Result<Request, ProtocolError>(std::move(request));
 }
 
@@ -147,6 +140,9 @@ std::string encode_reply(const Reply& reply)
         object.emplace_back("bundle_revision", JsonValue::make_string(reply.bundle_revision));
         object.emplace_back("journal_events", JsonValue::make_number(reply.journal_events));
         object.emplace_back("quarantined", JsonValue::make_bool(reply.quarantined));
+        object.emplace_back("refresh_state", JsonValue::make_string(reply.refresh_state));
+        object.emplace_back("last_refresh_ok_ms", JsonValue::make_number(reply.last_refresh_ok_ms));
+        object.emplace_back("next_refresh_due_ms", JsonValue::make_number(reply.next_refresh_due_ms));
         break;
     case Reply::Kind::DoctorView:
     {
@@ -188,6 +184,15 @@ std::string encode_reply(const Reply& reply)
     {
         object.emplace_back("kind", JsonValue::make_string("shutdown_ack"));
         object.emplace_back("draining", JsonValue::make_bool(reply.draining));
+        break;
+    }
+    case Reply::Kind::RefreshAck:
+    {
+        object.emplace_back("kind", JsonValue::make_string("refresh_ack"));
+        object.emplace_back("refresh_state", JsonValue::make_string(reply.refresh_state));
+        object.emplace_back("last_refresh_ok_ms", JsonValue::make_number(reply.last_refresh_ok_ms));
+        object.emplace_back("next_refresh_due_ms", JsonValue::make_number(reply.next_refresh_due_ms));
+        object.emplace_back("refresh_result", JsonValue::make_string(reply.refresh_result));
         break;
     }
     }
@@ -238,9 +243,11 @@ std::string encode_request_body(const Request& request)
         object.emplace_back("kind", JsonValue::make_string("shutdown"));
         object.emplace_back("grace_ms", JsonValue::make_number(request.grace_ms));
         break;
+    case Request::Kind::Refresh:
+        object.emplace_back("kind", JsonValue::make_string("refresh"));
+        break;
     }
     object.emplace_back("request_id", JsonValue::make_number(request.request_id));
-    object.emplace_back("deadline_ms", JsonValue::make_number(request.deadline_ms));
     return jsonx::write(JsonValue::make_object(std::move(object)));
 }
 
@@ -265,6 +272,8 @@ qiven::Result<Reply, ProtocolError> decode_reply(std::string_view body)
             member.first != "install_id" && member.first != "boot_epoch" && member.first != "state" &&
             member.first != "generation" && member.first != "bundle_revision" &&
             member.first != "journal_events" && member.first != "quarantined" &&
+            member.first != "refresh_state" && member.first != "last_refresh_ok_ms" &&
+            member.first != "next_refresh_due_ms" && member.first != "refresh_result" &&
             member.first != "integrity_ok" && member.first != "audit_chain_ok" &&
             member.first != "bundle_active_ok" && member.first != "findings" &&
             member.first != "error" && member.first != "verdict" &&
@@ -296,6 +305,9 @@ qiven::Result<Reply, ProtocolError> decode_reply(std::string_view body)
         reply.journal_events  = value.number_or("journal_events", 0);
         reply.quarantined     = value.is("quarantined", JsonValue::Kind::Bool) &&
                             value.find("quarantined")->bool_value;
+        reply.refresh_state       = value.string_or("refresh_state", "");
+        reply.last_refresh_ok_ms  = value.number_or("last_refresh_ok_ms", 0);
+        reply.next_refresh_due_ms = value.number_or("next_refresh_due_ms", 0);
     }
     else if (kind == "doctor")
     {
@@ -353,6 +365,14 @@ qiven::Result<Reply, ProtocolError> decode_reply(std::string_view body)
         reply.kind     = Reply::Kind::ShutdownAck;
         reply.draining = value.is("draining", JsonValue::Kind::Bool) &&
                          value.find("draining")->bool_value;
+    }
+    else if (kind == "refresh_ack")
+    {
+        reply.kind                = Reply::Kind::RefreshAck;
+        reply.refresh_state       = value.string_or("refresh_state", "");
+        reply.last_refresh_ok_ms  = value.number_or("last_refresh_ok_ms", 0);
+        reply.next_refresh_due_ms = value.number_or("next_refresh_due_ms", 0);
+        reply.refresh_result      = value.string_or("refresh_result", "");
     }
     else
     {

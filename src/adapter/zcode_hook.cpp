@@ -89,28 +89,25 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     u64 seq = 1;
     // hello first: the host answers or rejects the version BEFORE the
     // event is processed; a rejected handshake is a deny for pre_tool.
-    // The hello frame is a HANDSHAKE, not the event: its budget is the
-    // interaction ceiling (protocol.cpp caps every non-session_start frame
-    // at 5000), never the event's refresh-grade deadline. Carrying the
-    // session_start budget here made the host reject the hello and the
-    // registration die as an invisible advisory -- the 2026-09-26 trial-4
-    // incident; the conformance case is hello-with-refresh-deadline.
+    // The wire carries NO deadline (host-server redesign LL-3 — the
+    // trial-4 hello-ceiling class is dead by construction); the caller's
+    // read budget below is purely client-side.
     ipc::Request hello;
     hello.kind         = ipc::Request::Kind::Hello;
     hello.client_kind  = "zcode-hook";
-    hello.client_build = 1;
+    hello.client_build = 2;
     hello.request_id   = 1;
-    hello.deadline_ms  = run.deadline_ms < hello_ceiling_ms ? run.deadline_ms : hello_ceiling_ms;
     ipc::FrameHeader header;
     header.request_id     = hello.request_id;
     header.connection_seq = seq;
-    if (!client.value().write_bytes(codec.encode(header, ipc::encode_request_body(hello))))
+    if (!client.value().write_bytes(codec.encode(header, ipc::encode_request_body(hello)),
+                                    client_write_budget_ms))
     {
         return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable,
                                                     hook_reason_host_unavailable,
                                                     "hello write failed"));
     }
-    auto hello_frame = client.value().read_frame(hello.deadline_ms);
+    auto hello_frame = client.value().read_frame(run.deadline_ms);
     if (!hello_frame.has_value())
     {
         if (client.value().last_read_timed_out())
@@ -142,11 +139,18 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     if (hello_reply.value().kind == ipc::Reply::Kind::ErrorView)
     {
         // Typed host rejection at the handshake: the admission surface is a
-        // real reply now (pipe_service), so the class is diagnosable.
+        // real reply now (pipe_service), so the class is diagnosable —
+        // including the connection-cap busy frame (125, host-server LL-3).
         const std::string& detail = hello_reply.value().error_detail;
-        const i32 code            = detail.rfind("admission rejected", 0) == 0
-                                        ? hook_reason_admission
-                                        : static_cast<i32>(hello_reply.value().error_code);
+        i32 code                  = static_cast<i32>(hello_reply.value().error_code);
+        if (detail.rfind("admission rejected", 0) == 0)
+        {
+            code = hook_reason_admission;
+        }
+        else if (detail.rfind("server busy", 0) == 0)
+        {
+            code = hook_reason_server_busy;
+        }
         return ReplyResult::fail(
             qiven::Error::make(qiven::error_category::unavailable, code,
                                "handshake rejected by host: " + detail));
@@ -172,12 +176,12 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     request.file_path      = fields.file_path;
     request.mediated_tools = run.mediated_tools;
     request.request_id     = 2;
-    request.deadline_ms    = run.deadline_ms;
 
     seq += 1;
     header.request_id     = request.request_id;
     header.connection_seq = seq;
-    if (!client.value().write_bytes(codec.encode(header, ipc::encode_request_body(request))))
+    if (!client.value().write_bytes(codec.encode(header, ipc::encode_request_body(request)),
+                                    client_write_budget_ms))
     {
         return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable,
                                                     hook_reason_host_unavailable,
@@ -247,7 +251,7 @@ i32 classify_transport_failure(const qiven::Error& error, bool read_deadline_exp
     }
     if (error.code == hook_reason_no_listener || error.code == hook_reason_admission ||
         error.code == hook_reason_version_skew || error.code == hook_reason_secret_skew ||
-        error.code == hook_reason_timeout)
+        error.code == hook_reason_timeout || error.code == hook_reason_server_busy)
     {
         return error.code; // already classified by transact
     }

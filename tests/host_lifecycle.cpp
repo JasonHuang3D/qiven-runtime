@@ -184,10 +184,9 @@ int main()
     // Mutation kind is a typed HostRecovering denial in MVP-3.
     {
         qiven::runtime::ipc::Request request;
-        request.kind        = qiven::runtime::ipc::Request::Kind::Mutation;
-        request.request_id  = 9;
-        request.deadline_ms = 1000;
-        auto reply          = host.value()->handle(request, boot.now_ms + 1);
+        request.kind       = qiven::runtime::ipc::Request::Kind::Mutation;
+        request.request_id = 9;
+        auto reply         = host.value()->handle(request, boot.now_ms + 1);
         QIVEN_VERIFY(reply.kind == qiven::runtime::ipc::Reply::Kind::ErrorView);
         QIVEN_VERIFY(reply.error_code == qiven::runtime::ipc::err_host_recovering);
     }
@@ -216,14 +215,13 @@ int main()
             qiven::runtime::ipc::pipe_name(status.install_id));
         QIVEN_VERIFY(client.is_ok());
         qiven::runtime::ipc::Request request;
-        request.kind        = qiven::runtime::ipc::Request::Kind::Status;
-        request.request_id  = 77;
-        request.deadline_ms = 3000;
+        request.kind       = qiven::runtime::ipc::Request::Kind::Status;
+        request.request_id = 77;
         qiven::runtime::ipc::FrameHeader header;
         header.request_id     = 77;
         header.connection_seq = 1;
         QIVEN_VERIFY(client.value().write_bytes(
-            codec.encode(header, qiven::runtime::ipc::encode_request_body(request))));
+            codec.encode(header, qiven::runtime::ipc::encode_request_body(request)), 5000));
 
         auto connection = server.value().accept();
         QIVEN_VERIFY(connection.is_ok());
@@ -238,7 +236,7 @@ int main()
         reply_header.request_id     = verified.value().header.request_id;
         reply_header.connection_seq = 1;
         QIVEN_VERIFY(connection.value().write_bytes(
-            codec.encode(reply_header, qiven::runtime::ipc::encode_reply(reply))));
+            codec.encode(reply_header, qiven::runtime::ipc::encode_reply(reply)), 5000));
 
         auto response = client.value().read_frame();
         QIVEN_VERIFY(response.has_value());

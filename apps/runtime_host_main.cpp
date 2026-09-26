@@ -1,12 +1,19 @@
 // ============================================================================
 // apps/runtime_host_main.cpp -- qiven-runtime-host, the production
-// composition root entrypoint (MVP-3; ARCH section 6.1)
+// composition root entrypoint (MVP-3; ARCH section 6.1; host-server
+// redesign LL-1/LL-3 — docs/design/mvp4-host-server.md)
 //
-// Serves the owner-scoped named pipe: accept → client identity validation
-// → frame verify (HMAC/replay) → protocol handle → framed reply. Status
-// and doctor serve from boot; mutation kinds deny typed 61 (HostRecovering
-// / not-implemented-until-MVP-5) -- fail closed, never a hang inside the
-// request deadline. Ctrl+C or console close drains and checkpoints.
+// The LONG-LIVED server: ServeLoop owns the listen pool (concurrently
+// armed instances, thread-per-connection, typed 125 beyond the cap,
+// never-fatal accept policy, phased stop); the RuntimeHost owns the
+// state mutex, first-contact session minting, and the host-autonomous
+// refresh worker. This exe wires them together, prints the staged boot,
+// and exits only on operator stop (Ctrl+C, console close, logoff/
+// shutdown, authenticated `host shutdown`) or boot-class failure.
+//
+// --log <file> runs the server in BACKGROUND mode: every staged marker
+// and heartbeat line APPENDS to the file (the kit's autostart shape);
+// without it the console output is interactive as before.
 //
 // Exit codes: 0 clean shutdown, 1 boot failure, 2 usage.
 // ============================================================================
@@ -16,6 +23,7 @@
 #include <qiven/runtime/ipc/named_pipe_server.hpp>
 #include <qiven/runtime/ipc/pipe_service.hpp>
 #include <qiven/runtime/ipc/protocol.hpp>
+#include <qiven/runtime/ipc/serve_loop.hpp>
 #include <qiven/types.hpp>
 
 #include <windows.h>
@@ -23,8 +31,11 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -33,7 +44,11 @@ volatile BOOL g_stop = FALSE;
 
 BOOL WINAPI console_handler(DWORD type)
 {
-    if (type == CTRL_C_EVENT || type == CTRL_CLOSE_EVENT || type == CTRL_BREAK_EVENT)
+    // The long-lived model's DOMINANT termination source is logoff/reboot
+    // (a Startup-launched server) — those events drain here too; the
+    // unclean-kill backstop is the boot recovery walk (MVP-1 law).
+    if (type == CTRL_C_EVENT || type == CTRL_CLOSE_EVENT || type == CTRL_BREAK_EVENT ||
+        type == CTRL_LOGOFF_EVENT || type == CTRL_SHUTDOWN_EVENT)
     {
         g_stop = TRUE;
         return TRUE;
@@ -44,7 +59,7 @@ BOOL WINAPI console_handler(DWORD type)
 int usage()
 {
     std::cerr << "usage: qiven-runtime-host [--root <qiven-context checkout>] "
-                 "[--profile <file>] [--git <git.exe>] [--build-id <id>]\n";
+                 "[--profile <file>] [--git <git.exe>] [--build-id <id>] [--log <file>]\n";
     return 2;
 }
 } // namespace
@@ -56,13 +71,14 @@ int main(int argc, char** argv)
                                    // RESOLVED root below (never from CWD)
     std::filesystem::path git = "C:/Program Files/Git/cmd/git.exe";
     std::string build_id      = "qiven-runtime-host-mvp3";
-    bool profile_explicit     = false;
+    std::filesystem::path log_file;
+    bool profile_explicit = false;
     for (int i = 1; i + 1 < argc; ++i)
     {
         const std::string flag = argv[i];
         if (flag == "--help" || flag == "-h")
         {
-            std::cout << "qiven-runtime-host (MVP-3)\n";
+            std::cout << "qiven-runtime-host (host-server redesign)\n";
             return 0;
         }
         if (flag == "--root")
@@ -82,6 +98,10 @@ int main(int argc, char** argv)
         {
             build_id = argv[++i];
         }
+        else if (flag == "--log")
+        {
+            log_file = argv[++i];
+        }
         else
         {
             return usage();
@@ -93,7 +113,7 @@ int main(int argc, char** argv)
         return usage();
     }
     // The default profile follows the RESOLVED root, never the caller's
-    // working directory (2026-09-24 MVP-4 preflight incident: --root
+    // working directory (2024-09-24 MVP-4 preflight incident: --root
     // re-pointed the governed root while the profile stayed CWD-derived,
     // so an owner double-click in the kit folder resolved a profile that
     // did not exist). An explicit --profile overrides everything.
@@ -109,6 +129,17 @@ int main(int argc, char** argv)
         }
     }
 
+    // Background mode: append every output line to the log file (the
+    // autostart shape); the console path stays unchanged.
+    if (!log_file.empty())
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(log_file.parent_path(), ec);
+        FILE* redirected = nullptr;
+        freopen_s(&redirected, log_file.string().c_str(), "a", stdout);
+        freopen_s(&redirected, log_file.string().c_str(), "a", stderr);
+    }
+
     qiven::runtime::host::HostBoot boot;
     boot.repo_root      = repo_root;
     boot.profile_file   = profile;
@@ -116,17 +147,20 @@ int main(int argc, char** argv)
     boot.build_id       = build_id;
     boot.now_ms         = qiven::runtime::host::wall_now_ms();
 
-    // Human-facing output law (qiven-context human-facing-executable-
-    // contract + operator human output law): staged markers, every
-    // durable path the boot writes, observable state only, and a serving
-    // heartbeat -- a console window must never look dead while healthy
-    // (the 2026-09-23 owner direction after the MVP-4 H1 kit incident).
+    // Human-facing output law (human-facing-executable contract + operator
+    // human output law): staged markers, every durable path the boot
+    // writes, observable state only, and a serving heartbeat — a console
+    // (or log tail) must never look dead while healthy.
     const std::filesystem::path runtime_root = repo_root / ".qiven" / "runtime";
     std::printf("[ RUN] qiven-runtime-host boot\n");
     std::printf("       root     : %s\n", repo_root.string().c_str());
     std::printf("       profile  : %s\n", profile.string().c_str());
     std::printf("       state at : %s\n",
                 (runtime_root).string().c_str()); // journal.sqlite3, bundles/, install.id
+    if (!log_file.empty())
+    {
+        std::printf("       log      : %s\n", log_file.string().c_str());
+    }
     std::fflush(stdout);
 
     auto host = qiven::runtime::host::RuntimeHost::boot(boot);
@@ -147,9 +181,13 @@ int main(int argc, char** argv)
     std::printf("       cognition bundle: %s (journal events: %llu)\n",
                 status.bundle_revision.substr(0, 12).c_str(),
                 static_cast<unsigned long long>(status.journal_events));
+    std::printf("       refresh  : %s (next due %llu ms)\n",
+                status.refresh_state.c_str(),
+                static_cast<unsigned long long>(status.next_refresh_due_ms));
     std::printf("       journal   : %s\n",
                 (runtime_root / "journal.sqlite3").string().c_str());
-    std::printf("       bundles   : %s\n", (runtime_root / "bundles").string().c_str());
+    std::printf("       bundles   : %s\n",
+                (runtime_root / "bundles").string().c_str());
     std::fflush(stdout);
 
     SetConsoleCtrlHandler(console_handler, TRUE);
@@ -180,7 +218,7 @@ int main(int argc, char** argv)
     // The installation's own-tool allowlist: the host itself plus the
     // sibling clients deployed in the same directory (same installation
     // unit; the owner-only DACL stays the trust boundary). Boot MERGES
-    // missing images — the 2026-09-24 preflight found deployments where
+    // missing images — the 2024-09-24 preflight found deployments where
     // only the host was recorded and every hook client denied admission.
     std::vector<std::string> install_images { self_narrow };
     {
@@ -205,127 +243,119 @@ int main(int argc, char** argv)
     }
     const qiven::runtime::ipc::FrameCodec codec(secret.value());
 
-    auto server = qiven::runtime::ipc::NamedPipeServer::create(status.install_id);
-    if (!server.is_ok())
+    // The HOST-AUTONOMOUS refresh worker (LL-2b): boot + cadence +
+    // coalesced operator triggers — never on a request path.
+    host.value()->start_refresh_worker();
+    std::printf("[ OK ] refresh worker started (host-autonomous cadence)\n");
+    std::fflush(stdout);
+
+    // The serve loop (LL-1/LL-3): listen pool, thread-per-connection,
+    // typed 125 beyond the cap, never-fatal accept, phased stop.
+    qiven::runtime::ipc::ServeLoop::Hooks hooks;
+    hooks.admit = [&allowed_clients](qiven::runtime::ipc::PipeConnection& connection)
+        -> std::string {
+        // Client identity from the connection, never the payload.
+        auto image = connection.client_image();
+        if (!image.is_ok())
+        {
+            return "client identity unavailable";
+        }
+        if (!qiven::runtime::ipc::ClientRecord::image_allowed(allowed_clients.value(),
+                                                              image.value()))
+        {
+            return "client image is not in the install record: " + image.value();
+        }
+        return "";
+    };
+    hooks.handle = [&](const qiven::runtime::ipc::Request& request)
+        -> qiven::runtime::ipc::Reply {
+        auto reply = host.value()->handle(request, qiven::runtime::host::wall_now_ms());
+        // One observable line per request (kind + outcome) — the
+        // human-facing law: healthy silence never looks dead (log or tail).
+        std::string request_label = "request";
+        if (request.kind == qiven::runtime::ipc::Request::Kind::HookEvent && !request.event.empty())
+        {
+            request_label = request.event;
+        }
+        else if (request.kind == qiven::runtime::ipc::Request::Kind::Shutdown)
+        {
+            request_label = "shutdown";
+        }
+        else if (request.kind == qiven::runtime::ipc::Request::Kind::Refresh)
+        {
+            request_label = "refresh";
+        }
+        std::string outcome_label = "ok";
+        if (reply.kind == qiven::runtime::ipc::Reply::Kind::ErrorView)
+        {
+            outcome_label = "error " + std::to_string(reply.error_code);
+        }
+        else if (reply.kind == qiven::runtime::ipc::Reply::Kind::HookAck)
+        {
+            outcome_label = reply.verdict;
+        }
+        std::printf("[conn] %s -> %s\n", request_label.c_str(), outcome_label.c_str());
+        std::fflush(stdout);
+        return reply;
+    };
+    hooks.log = [](std::string_view line) {
+        std::printf("%s\n", line.data());
+        std::fflush(stdout);
+    };
+
+    auto loop = qiven::runtime::ipc::ServeLoop::create(status.install_id, codec,
+                                                       qiven::runtime::ipc::ServeLoop::Options {},
+                                                       std::move(hooks));
+    if (!loop.is_ok())
     {
-        std::cerr << "pipe creation failed: " << server.reason().message << "\n";
+        std::cerr << "pipe creation failed: " << loop.reason().message << "\n";
         return 1;
     }
 
-    // Replay honesty note (2026-09-24 corrective lane): ReplayGuard's
-    // nonce/timestamp window is NOT wired into the wire format (request
-    // bodies carry no nonce/timestamp); a guard was previously constructed
-    // here and never invoked — a dead claim, now removed. Enforced today,
-    // per connection (ipc/pipe_service.hpp): HMAC, frame caps,
-    // strictly-increasing connection_seq, frame budget, idle bound. The
-    // nonce/timestamp wiring is a recorded pre-MVP-5 hardening obligation.
     std::printf("[ OK ] ipc: pipe %ls\n",
                 qiven::runtime::ipc::pipe_name(status.install_id).c_str());
     std::printf("[ OK ] serving -- Ctrl+C stops the host (drain + journal checkpoint)\n");
     std::fflush(stdout);
 
-    // Serving heartbeat (human-facing law): a watching owner must be able
-    // to tell healthy silence from a hang. Observable state only.
-    const auto serving_started    = std::chrono::steady_clock::now();
-    auto last_beat                = serving_started;
-    qiven::u64 connections_served = 0;
-    while (!g_stop)
-    {
-        auto connection = server.value().accept();
-        if (!connection.is_ok())
+    // Serving heartbeat (human-facing law): observable state only. The
+    // loop's run() returns when a stop was requested (console event or an
+    // authenticated Shutdown observed on a serve thread).
+    std::thread heartbeat([&loop, &host, started = std::chrono::steady_clock::now()] {
+        qiven::u64 last_beat_s = 0;
+        while (!loop.value()->stop_requested())
         {
-            if (g_stop)
+            std::this_thread::sleep_for(std::chrono::seconds(10));
+            if (loop.value()->stop_requested())
             {
                 break;
             }
-            std::printf("[FAIL] accept: %s\n", connection.reason().message.c_str());
-            std::fflush(stdout);
-            break;
+            const auto uptime_s = static_cast<qiven::u64>(
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - started)
+                    .count());
+            if (uptime_s / 30 > last_beat_s / 30)
+            {
+                last_beat_s         = uptime_s;
+                const auto snapshot = host.value()->status();
+                std::printf("[beat] serving %llus, connections %llu, refresh %s, "
+                            "journal events %llu\n",
+                            static_cast<unsigned long long>(uptime_s),
+                            static_cast<unsigned long long>(
+                                loop.value()->stats().connections_served.load()),
+                            snapshot.refresh_state.c_str(),
+                            static_cast<unsigned long long>(snapshot.journal_events));
+                std::fflush(stdout);
+            }
         }
-        connections_served += 1;
-        // One line per ACCEPTED connection (flushed): the per-request
-        // [conn] lines cannot distinguish a hello+event pair split across
-        // two connections -- the h1-sim gate counts [open] lines to pin
-        // the one-connection registration contract (INV-9 client side).
-        std::printf("[open] connection %llu accepted\n",
-                    static_cast<unsigned long long>(connections_served));
-        std::fflush(stdout);
+    });
 
-        // Client identity from the connection, never the payload. A
-        // rejected image now receives a TYPED 62 error frame before the
-        // connection ends (pipe_service admission surface) — silence is no
-        // longer an admission verdict the client must guess.
-        const qiven::runtime::ipc::AdmitFn admit = [&]() -> std::string {
-            auto image = connection.value().client_image();
-            if (!image.is_ok())
-            {
-                return "client identity unavailable";
-            }
-            if (!qiven::runtime::ipc::ClientRecord::image_allowed(allowed_clients.value(),
-                                                                  image.value()))
-            {
-                return "client image is not in the install record: " + image.value();
-            }
-            return "";
-        };
+    loop.value()->run();
+    g_stop = TRUE;
+    heartbeat.join();
 
-        const qiven::runtime::ipc::HandleFn handle =
-            [&](const qiven::runtime::ipc::Request& request) -> qiven::runtime::ipc::Reply {
-            auto reply = host.value()->handle(request, qiven::runtime::host::wall_now_ms());
-
-            // An authenticated shutdown ENDS the serve loop: the ack rides
-            // this connection back first (serve_connection writes it before
-            // the client's EOF), then g_stop ends the accept loop and the
-            // process exits cleanly (adversarial-review M3, 2026-09-24:
-            // `runtimectl host shutdown` previously acked draining while
-            // the exe kept serving forever).
-            if (request.kind == qiven::runtime::ipc::Request::Kind::Shutdown)
-            {
-                g_stop = TRUE;
-            }
-
-            // One observable line per request (kind + outcome), then the
-            // periodic heartbeat -- healthy silence never exceeds ~30 s.
-            std::string request_label = "request";
-            if (request.kind == qiven::runtime::ipc::Request::Kind::HookEvent &&
-                !request.event.empty())
-            {
-                request_label = request.event;
-            }
-            std::string outcome_label = "ok";
-            if (reply.kind == qiven::runtime::ipc::Reply::Kind::ErrorView)
-            {
-                outcome_label = "error " + std::to_string(reply.error_code);
-            }
-            else if (reply.kind == qiven::runtime::ipc::Reply::Kind::HookAck)
-            {
-                outcome_label = reply.verdict;
-            }
-            std::printf("[conn] %s -> %s\n", request_label.c_str(), outcome_label.c_str());
-            const auto now = std::chrono::steady_clock::now();
-            if (now - last_beat >= std::chrono::seconds(30))
-            {
-                last_beat         = now;
-                const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
-                    now - serving_started);
-                std::printf("[beat] serving %llus, connections %llu, journal events %llu\n",
-                            static_cast<unsigned long long>(uptime.count()),
-                            static_cast<unsigned long long>(connections_served),
-                            static_cast<unsigned long long>(host.value()->status().journal_events));
-            }
-            std::fflush(stdout);
-            return reply;
-        };
-
-        // The production serve loop (ipc/pipe_service.hpp): a connection
-        // may carry a bounded frame SEQUENCE — the wire's declared contract
-        // (connection_seq "strictly increasing per connection") and the
-        // hook client's hello+event shape (2026-09-24 corrective decision).
-        (void)qiven::runtime::ipc::serve_connection(connection.value(), codec, admit, handle);
-    }
-
-    host.value()->request_shutdown();
-    std::printf("[ OK ] stopped cleanly (journal checkpointed)\n");
+    host.value()->drain(qiven::runtime::host::wall_now_ms());
+    std::printf("[ OK ] stopped cleanly (outstanding observations marked; journal "
+                "checkpointed)\n");
     std::fflush(stdout);
     return 0;
 }

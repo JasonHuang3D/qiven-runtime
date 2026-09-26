@@ -565,7 +565,45 @@ Every kit launcher states the exact image it runs.
 - The H1 kit (d) is BUILT at that published head (a tool run with its
   own regression, not a separate publication).
 
-## 12. Review record
+## 12. Batch-b implementation notes (2026-09-27)
+
+Deviations and refinements recorded at landing, none contradicting the
+laws:
+
+1. **Sliced overlapped waits instead of CancelSynchronousIo.** §5 names
+   CancelSynchronousIo for the stop wake. The implementation creates every
+   instance and client handle FILE_FLAG_OVERLAPPED and waits each pending
+   operation in slices against the stop flag/deadline, cancelling via
+   CancelIoEx on the ISSUING thread. This meets the same contract (no
+   cross-thread handle close, prompt stop) with a strictly smaller
+   surface; reads keep whole-frame deadline semantics (the overlapped
+   read is issued once and waited — no partial-read loss).
+2. **Drain marking is audit-level.** The journal has no public
+   transaction terminal-transition command today (record_outcome is
+   dispatch-based; dispatches are MVP-6). Drain appends
+   `hook_outcome_indeterminate` audit rows for outstanding pres; the open
+   rows reconcile at the next boot's recovery walk (MVP-1 law). A
+   terminal-transition command is added to the pre-MVP-5 hardening list
+   beside the replay-window wiring.
+3. **Shutdown ack linger.** The serve thread that observes an
+   authenticated Shutdown lingers (the shared bounded linger) before its
+   connection closes: DisconnectNamedPipe discards unread bytes, and the
+   loop tears down fast once stopped — without the linger the ctl
+   delivered shutdown, the host logged the ack, and the client still
+   observed "no reply" (found live by host_server_lifecycle).
+4. **The exe's per-request `[conn]` logging and the heartbeat stay** (the
+   human-facing output law); with `--log` they land in the log file.
+5. **Test-carrier notes.** host_server_lifecycle drives the REAL sibling
+   client executables (hook/runtimectl — the same installation unit the
+   kit uses); ServeLoop-level laws (125, pool admission, phased stop,
+   stalled-peer) run in ipc_multiframe_contract as library rows; the
+   request-path cost row asserts the timed bound at handle level and the
+   structural no-child/no-cognition-row property is covered by the
+   lifecycle rig's session_start < 2000 ms leg (no git is reachable from
+   the request path; the refresh worker observability leg proves the
+   worker is the only cognition-touching path).
+
+## 13. Review record
 
 Design authored 2026-09-27 (v37 session, designation
 jason-extended-cognition) BEFORE any implementation code of this

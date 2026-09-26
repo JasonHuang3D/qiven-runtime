@@ -84,6 +84,9 @@ std::string to_bytes_of(const std::string& text)
 Request hook_request(const char* event, const char* tool, const char* command,
                      const char* file_path, qiven::u64 deadline_ms = 4500)
 {
+    // deadline_ms is retained in the signature for call-site stability; the
+    // wire carries no deadline (host-server redesign LL-3), so it is inert.
+    (void)deadline_ms;
     Request request;
     request.kind           = Request::Kind::HookEvent;
     request.event          = event;
@@ -93,8 +96,6 @@ Request hook_request(const char* event, const char* tool, const char* command,
     request.payload_bytes  = 256;
     request.command        = command != nullptr ? command : "";
     request.file_path      = file_path != nullptr ? file_path : "";
-    request.request_id     = 7;
-    request.deadline_ms    = deadline_ms;
     return request;
 }
 } // namespace
@@ -105,6 +106,7 @@ int main()
     using qiven::runtime::adapter::hook_reason_correlation;
     using qiven::runtime::adapter::hook_reason_governed_write;
     using qiven::runtime::adapter::hook_reason_host_unavailable;
+    using qiven::runtime::adapter::hook_reason_scope_mismatch;
     using qiven::runtime::adapter::hook_reason_unknown_session;
     using qiven::runtime::adapter::hook_reason_unknown_tool;
 
@@ -193,12 +195,13 @@ int main()
         profile_file,
         "schema: qiven-deployment-profile-v1\n"
         "profile_id: hook-conformance-test\n"
-        "revision: 2\n"
+        "revision: 3\n"
         "control_version: 1\n"
         "resolver_registry_revision: 1\n"
         "classifier_contract_revision: 1\n"
         "conformance_evidence: evidence/audits/hook-conformance.md\n"
         "freshness_window_ms: 604800000\n"
+        "refresh_interval_ms: 3600000\n"
         "governed_paths:\n"
         "  - state\n"
         "  - memory/records\n"
@@ -348,13 +351,17 @@ int main()
         QIVEN_VERIFY(ack.reason_code == hook_reason_unknown_tool);
     }
 
-    // --- unknown session denies; unregistered post degrades (gate 3/4) -----
+    // --- first contact mints (LL-2a): the deny-114 class is RETIRED -------
     {
+        // An unregistered handle's pre_tool mints the session and is judged
+        // on its merits (the governed target below still denies 110 — the
+        // verdict is REAL, never a registration denial).
         Request request        = hook_request("pre_tool", "Write", nullptr, "D:/y/state/x.md");
         request.session_handle = "sess-never-registered";
         auto ack               = host.value()->handle(request, now + 70);
         QIVEN_VERIFY(ack.verdict == "deny");
-        QIVEN_VERIFY(ack.reason_code == hook_reason_unknown_session);
+        QIVEN_VERIFY(ack.reason_code == hook_reason_governed_write);
+        QIVEN_VERIFY(!ack.session_id.empty()); // minted on first contact
     }
     {
         // Duplicate post (no outstanding pre): Indeterminate, typed 115.
@@ -365,14 +372,93 @@ int main()
         QIVEN_VERIFY(ack.reason_code == hook_reason_correlation);
     }
 
+    // --- first contact is sufficient (LL-2a): deny-114 is retired ----------
+    {
+        // A pre_tool on a NEVER-registered handle mints the session and
+        // returns a real verdict — never a 114-class deny.
+        Request first        = hook_request("pre_tool", "Bash", "echo clean", nullptr);
+        first.session_handle = "sess-first-contact";
+        auto ack             = host.value()->handle(first, now + 20);
+        QIVEN_VERIFY(ack.kind == Reply::Kind::HookAck);
+        QIVEN_VERIFY(ack.verdict == "not_governed");
+        QIVEN_VERIFY(ack.reason_code != 114);
+        QIVEN_VERIFY(!ack.session_id.empty());
+        // Full pre/post flow with NO session_start at all: identical shape.
+        Request pre        = hook_request("pre_tool", "Bash", "echo independent", nullptr);
+        pre.session_handle = "sess-no-registration";
+        auto pre_ack       = host.value()->handle(pre, now + 21);
+        QIVEN_VERIFY(pre_ack.verdict == "not_governed");
+        Request post        = hook_request("post_tool", "Bash", nullptr, nullptr);
+        post.session_handle = "sess-no-registration";
+        auto post_ack       = host.value()->handle(post, now + 22);
+        QIVEN_VERIFY(post_ack.verdict == "allow"); // outcome correlated
+        std::printf("[ OK ] first contact: pre_tool mints; no registration ritual\n");
+    }
+
+    // --- manifest advisory is PER-TOOL (LL-2a): 113 scoped ------------------
+    {
+        Request start        = hook_request("session_start", "", nullptr, nullptr);
+        start.session_handle = "sess-partial-manifest";
+        start.mediated_tools = "Bash"; // lacks Write/Edit
+        auto ack             = host.value()->handle(start, now + 23);
+        QIVEN_VERIFY(ack.kind == Reply::Kind::HookAck);
+        Request bash        = hook_request("pre_tool", "Bash", "echo fine", nullptr);
+        bash.session_handle = "sess-partial-manifest";
+        auto bash_ack       = host.value()->handle(bash, now + 24);
+        QIVEN_VERIFY(bash_ack.verdict == "not_governed"); // Bash unaffected
+        Request edit        = hook_request("pre_tool", "Edit", nullptr, "D:/z/a.md");
+        edit.session_handle = "sess-partial-manifest";
+        auto edit_ack       = host.value()->handle(edit, now + 25);
+        QIVEN_VERIFY(edit_ack.verdict == "deny");
+        QIVEN_VERIFY(edit_ack.reason_code == hook_reason_scope_mismatch); // 113 scoped
+        std::printf("[ OK ] manifest advisory: 113 only for mismatched tools\n");
+    }
+
+    // --- the wire carries no deadline (LL-3) ---------------------------------
+    {
+        const Request hook     = hook_request("pre_tool", "Bash", "echo wire", nullptr);
+        const std::string body = qiven::runtime::ipc::encode_request_body(hook);
+        QIVEN_VERIFY(body.find("deadline_ms") == std::string::npos);
+        QIVEN_VERIFY(!qiven::runtime::ipc::decode_request(
+                          R"({"kind":"status","request_id":1,"deadline_ms":3000})")
+                          .is_ok()); // old client shape fails closed typed
+        std::printf("[ OK ] wire: no deadline_ms; retired field rejected\n");
+    }
+
+    // --- request-path cost bound (LL-2b, timed leg) --------------------------
+    {
+        const auto begin     = std::chrono::steady_clock::now();
+        Request probe        = hook_request("pre_tool", "Bash", "echo fast", nullptr);
+        probe.session_handle = "sess-cost-bound";
+        auto ack             = host.value()->handle(probe, now + 26);
+        const auto elapsed   = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - begin)
+                                 .count();
+        QIVEN_VERIFY(ack.kind == Reply::Kind::HookAck);
+        QIVEN_VERIFY(elapsed < 250); // expected single-digit ms; bound pinned
+        std::printf("[ OK ] request-path cost: verdict in %lld ms (< 250)\n",
+                    static_cast<long long>(elapsed));
+    }
+
+    // --- registry eviction (§5): idle + no outstanding -> fresh mint ---------
+    {
+        host.value()->set_session_eviction_bound_for_test(0); // next sweep evicts
+        Request fresh        = hook_request("pre_tool", "Bash", "echo evicted", nullptr);
+        fresh.session_handle = "sess-first-contact"; // already-minted handle
+        auto ack             = host.value()->handle(fresh, now + 27);
+        QIVEN_VERIFY(ack.kind == Reply::Kind::HookAck);
+        QIVEN_VERIFY(!ack.session_id.empty());
+        std::printf("[ OK ] eviction: re-contact after eviction mints fresh\n");
+        host.value()->set_session_eviction_bound_for_test(86'400'000);
+    }
+
     // --- H-4 shutdown: ack precedes drain; state drains ---------------------
     {
         Request request;
-        request.kind        = Request::Kind::Shutdown;
-        request.request_id  = 9;
-        request.grace_ms    = 1500;
-        request.deadline_ms = 3000;
-        auto ack            = host.value()->handle(request, now + 90);
+        request.kind       = Request::Kind::Shutdown;
+        request.request_id = 9;
+        request.grace_ms   = 1500;
+        auto ack           = host.value()->handle(request, now + 90);
         QIVEN_VERIFY(ack.kind == Reply::Kind::ShutdownAck);
         QIVEN_VERIFY(ack.draining);
         QIVEN_VERIFY(host.value()->status().state == "draining");

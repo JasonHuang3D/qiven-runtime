@@ -198,11 +198,12 @@ int main()
         QIVEN_VERIFY(loaded.value().cognition.policy_path == "runtime/invocation-policy.yaml");
         QIVEN_VERIFY(loaded.value().git_executable.string().find("git.exe") !=
                      std::string::npos);
-        // Revision 2 (MVP-4): the raw ZCode tool classes are MEDIATED
-        // (ActionInterception) and the complete-mediation claim is data —
-        // the tool inventory enumerates every write-capable entry point
-        // with its extraction and detector scope.
-        QIVEN_VERIFY(loaded.value().revision == 2);
+        // Revision 3 (host-server redesign): the MVP-4 revision-2 facts
+        // stand, plus the host-autonomous refresh cadence.
+        QIVEN_VERIFY(loaded.value().revision == 3);
+        QIVEN_VERIFY(loaded.value().refresh_interval_ms > 0);
+        QIVEN_VERIFY(loaded.value().refresh_interval_ms + 5000 <
+                     loaded.value().freshness_window_ms);
         for (const auto& entry : loaded.value().built.mediation.entries)
         {
             QIVEN_VERIFY(entry.kind == qiven::runtime::profile::MediationKind::ActionInterception);

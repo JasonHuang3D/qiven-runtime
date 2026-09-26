@@ -1,4 +1,5 @@
 #include <qiven/runtime/ipc/named_pipe_server.hpp>
+#include <qiven/runtime/ipc/serve_loop.hpp>
 
 #include <qiven/error.hpp>
 #include <qiven/runtime/ipc/framing.hpp>
@@ -11,8 +12,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <utility>
 
@@ -27,96 +30,174 @@ qiven::Error os_error(i32 code, std::string_view detail)
                                   std::to_string(GetLastError()) + ")");
 }
 
-bool read_exact(HANDLE handle, char* buffer, usize size)
+// --- overlapped primitives (host-server redesign §5 I/O model) ---------------
+//
+// Instances and client handles are FILE_FLAG_OVERLAPPED. Every operation is
+// issued once and its event waited in SLICES: a deadline bounds the whole
+// operation; an optional stop flag aborts the wait promptly (the operation
+// is cancelled — no cross-thread handle close, no handle-reuse hazard; the
+// design's CancelSynchronousIo contract is met with a smaller surface).
+
+struct OverlappedOp
 {
+    OVERLAPPED ov {};
+    HANDLE event = nullptr;
+
+    OverlappedOp()
+    {
+        event     = CreateEventW(nullptr, TRUE, FALSE, nullptr); // manual reset
+        ov.hEvent = event;
+    }
+    ~OverlappedOp()
+    {
+        if (event != nullptr)
+        {
+            CloseHandle(event);
+        }
+    }
+    OverlappedOp(const OverlappedOp&)            = delete;
+    OverlappedOp& operator=(const OverlappedOp&) = delete;
+};
+
+// Wait one slice; returns 0 = signaled, WAIT_TIMEOUT, or WAIT_FAILED.
+DWORD wait_slice(HANDLE event, u64 slice_ms)
+{
+    return WaitForSingleObject(event, static_cast<DWORD>(
+                                          slice_ms > 0xFFFFFFFF ? 0xFFFFFFFF : slice_ms));
+}
+
+// Sliced wait with deadline + optional stop. Outcomes: completed / timed_out /
+// aborted(stop) / failed.
+enum class WaitResult
+{
+    Completed,
+    TimedOut,
+    Aborted,
+    Failed
+};
+
+WaitResult wait_deadline(HANDLE handle, OVERLAPPED& ov, u64 deadline_ms,
+                         const std::atomic<bool>* stop, u64 slice_ms)
+{
+    using clock       = std::chrono::steady_clock;
+    const auto begin  = clock::now();
+    const auto end_at = begin + std::chrono::milliseconds(deadline_ms);
+    while (true)
+    {
+        if (stop != nullptr && stop->load(std::memory_order_acquire))
+        {
+            CancelIoEx(handle, &ov);
+            // Reap the cancelled operation so the OVERLAPPED is not pending.
+            DWORD reaped = 0;
+            GetOverlappedResult(handle, &ov, &reaped, TRUE);
+            return WaitResult::Aborted;
+        }
+        const auto now = clock::now();
+        if (now >= end_at)
+        {
+            CancelIoEx(handle, &ov);
+            DWORD reaped = 0;
+            GetOverlappedResult(handle, &ov, &reaped, TRUE);
+            return WaitResult::TimedOut;
+        }
+        const auto remaining = static_cast<u64>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(end_at - now).count());
+        const u64 this_slice = (std::min)(remaining, slice_ms);
+        const DWORD waited   = wait_slice(ov.hEvent, this_slice);
+        if (waited == WAIT_OBJECT_0)
+        {
+            return WaitResult::Completed;
+        }
+        if (waited == WAIT_FAILED)
+        {
+            return WaitResult::Failed;
+        }
+        // WAIT_TIMEOUT: next loop iteration re-checks stop/deadline.
+    }
+}
+
+// Deadline-bounded exact READ of `size` bytes (the deadline bounds the
+// WHOLE chunk, M1 semantics preserved). Byte-mode pipes return on >=1 byte,
+// so the loop accumulates partial completions. timed_out/aborted close the
+// connection at the caller level (a frame that cannot complete in bounds).
+bool read_exact_ov(HANDLE handle, char* buffer, usize size, u64 deadline_ms,
+                   const std::atomic<bool>* stop, u64 slice_ms, bool& timed_out, bool& aborted)
+{
+    timed_out  = false;
+    aborted    = false;
     usize done = 0;
     while (done < size)
     {
-        DWORD chunk = 0;
-        if (!ReadFile(handle, buffer + done, static_cast<DWORD>(size - done), &chunk, nullptr) ||
-            chunk == 0)
+        OverlappedOp op;
+        op.ov.Offset     = 0;
+        op.ov.OffsetHigh = 0;
+        DWORD chunk      = 0;
+        if (!ReadFile(handle, buffer + done, static_cast<DWORD>(size - done), &chunk, &op.ov))
         {
+            if (GetLastError() != ERROR_IO_PENDING)
+            {
+                return false;
+            }
+        }
+        const WaitResult waited =
+            wait_deadline(handle, op.ov, deadline_ms, stop, slice_ms);
+        if (waited == WaitResult::Aborted)
+        {
+            aborted = true;
             return false;
         }
-        done += chunk;
-    }
-    return true;
-}
-
-bool write_all(HANDLE handle, const char* buffer, usize size)
-{
-    usize done = 0;
-    while (done < size)
-    {
-        DWORD chunk = 0;
-        if (!WriteFile(handle, buffer + done, static_cast<DWORD>(size - done), &chunk, nullptr))
-        {
-            return false;
-        }
-        done += chunk;
-    }
-    return true;
-}
-
-std::optional<std::string> read_bounded(HANDLE handle)
-{
-    // Frame layout (framing.cpp): 32-byte header, 32-byte MAC, body.
-    // Read the header, validate the body length against the cap, then read
-    // MAC + body. Anything oversized drops the connection (the typed
-    // denial policy belongs to the host loop).
-    std::string header(32, '\0');
-    if (!read_exact(handle, header.data(), header.size()))
-    {
-        return std::nullopt;
-    }
-    u64 body_len = 0;
-    for (int i = 0; i < 8; ++i)
-    {
-        body_len |= static_cast<u64>(static_cast<unsigned char>(header[8 + i])) << (8 * i);
-    }
-    if (body_len > max_body_bytes)
-    {
-        return std::nullopt;
-    }
-    std::string tail(static_cast<usize>(body_len) + 32, '\0');
-    if (!tail.empty() && !read_exact(handle, tail.data(), tail.size()))
-    {
-        return std::nullopt;
-    }
-    header.append(tail);
-    return header;
-}
-
-// Deadline-bounded exact read: consumes up to `size` bytes against ONE
-// frame-wide deadline point (M1: the bound covers the WHOLE frame, not
-// just first-byte arrival — a client that writes one byte of a header and
-// stalls must not hold the serve thread). Every chunk is preceded by a
-// peek so ReadFile only runs when bytes are confirmed.
-bool read_exact_deadline(HANDLE handle, char* buffer, usize size,
-                         const std::chrono::steady_clock::time_point& deadline, bool& timed_out)
-{
-    usize done = 0;
-    while (done < size)
-    {
-        if (std::chrono::steady_clock::now() >= deadline)
+        if (waited == WaitResult::TimedOut)
         {
             timed_out = true;
             return false;
         }
-        DWORD available = 0;
-        if (!PeekNamedPipe(handle, nullptr, 0, nullptr, &available, nullptr))
+        if (waited == WaitResult::Failed)
         {
-            return false; // broken/closing
+            return false;
         }
-        if (available == 0)
+        if (!GetOverlappedResult(handle, &op.ov, &chunk, FALSE))
         {
-            Sleep(5);
-            continue;
+            return false;
         }
-        const usize want = (std::min)(static_cast<usize>(available), size - done);
+        if (chunk == 0)
+        {
+            return false; // graceful disconnect
+        }
+        done += chunk;
+    }
+    return true;
+}
+
+// Deadline-bounded write of ALL bytes.
+bool write_all_ov(HANDLE handle, const char* buffer, usize size, u64 deadline_ms)
+{
+    constexpr u64 slice_ms           = 100;
+    const std::atomic<bool>* no_stop = nullptr;
+    usize done                       = 0;
+    while (done < size)
+    {
+        OverlappedOp op;
+        op.ov.Offset     = 0;
+        op.ov.OffsetHigh = 0;
         DWORD chunk      = 0;
-        if (!ReadFile(handle, buffer + done, static_cast<DWORD>(want), &chunk, nullptr) ||
-            chunk == 0)
+        if (!WriteFile(handle, buffer + done, static_cast<DWORD>(size - done), &chunk, &op.ov))
+        {
+            if (GetLastError() != ERROR_IO_PENDING)
+            {
+                return false;
+            }
+        }
+        // A write has no stop flag: its own deadline is the bound (hygiene).
+        const WaitResult waited = wait_deadline(handle, op.ov, deadline_ms, no_stop, slice_ms);
+        if (waited != WaitResult::Completed)
+        {
+            return false;
+        }
+        if (!GetOverlappedResult(handle, &op.ov, &chunk, FALSE))
+        {
+            return false;
+        }
+        if (chunk == 0)
         {
             return false;
         }
@@ -125,15 +206,17 @@ bool read_exact_deadline(HANDLE handle, char* buffer, usize size,
     return true;
 }
 
-// Deadline form of read_bounded: the timeout bounds the COMPLETE frame
-// (header + MAC + body) under one deadline. Returns nullopt with
-// timed_out=true on expiry.
-std::optional<std::string> read_bounded_deadline(HANDLE handle, u64 timeout_ms, bool& timed_out)
+// Frame layout reader over the overlapped exact read (deadline bounds the
+// COMPLETE frame: header + MAC + body under one deadline).
+std::optional<std::string> read_bounded_ov(HANDLE handle, u64 timeout_ms,
+                                           const std::atomic<bool>* stop, u64 slice_ms,
+                                           bool& timed_out, bool& aborted)
 {
-    timed_out           = false;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    timed_out = false;
+    aborted   = false;
     std::string header(32, '\0');
-    if (!read_exact_deadline(handle, header.data(), header.size(), deadline, timed_out))
+    if (!read_exact_ov(handle, header.data(), header.size(), timeout_ms, stop, slice_ms,
+                       timed_out, aborted))
     {
         return std::nullopt;
     }
@@ -147,12 +230,100 @@ std::optional<std::string> read_bounded_deadline(HANDLE handle, u64 timeout_ms, 
         return std::nullopt;
     }
     std::string tail(static_cast<usize>(body_len) + 32, '\0');
-    if (!tail.empty() && !read_exact_deadline(handle, tail.data(), tail.size(), deadline, timed_out))
+    if (!tail.empty() &&
+        !read_exact_ov(handle, tail.data(), tail.size(), timeout_ms, stop, slice_ms, timed_out,
+                       aborted))
     {
         return std::nullopt;
     }
     header.append(tail);
     return header;
+}
+
+// Create one listen instance of the named pipe (overlapped, owner-only
+// DACL). first_instance adds FILE_FLAG_FIRST_PIPE_INSTANCE (the OS-level
+// singleton ownership assertion): ACCESS_DENIED / PIPE_BUSY there is the
+// typed second-host error.
+qiven::Result<HANDLE> create_listen_instance(const std::wstring& name, bool first_instance)
+{
+    using HandleResult              = qiven::Result<HANDLE>;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            owner_only_sddl().c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+    {
+        return HandleResult::fail(os_error(err_auth, "owner-only DACL construction failed"));
+    }
+    SECURITY_ATTRIBUTES attributes { sizeof(SECURITY_ATTRIBUTES), descriptor, FALSE };
+    const DWORD first = first_instance ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0;
+    HANDLE handle     = CreateNamedPipeW(
+        name.c_str(), PIPE_ACCESS_DUPLEX | first | FILE_FLAG_OVERLAPPED,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+        PIPE_UNLIMITED_INSTANCES, 64 * 1024, 64 * 1024, 0, &attributes);
+    if (handle == INVALID_HANDLE_VALUE)
+    {
+        const DWORD error = GetLastError();
+        LocalFree(descriptor);
+        if (first_instance && (error == ERROR_ACCESS_DENIED || error == ERROR_PIPE_BUSY))
+        {
+            return HandleResult::fail(os_error(err_host_singleton,
+                                               "the pipe already exists (another host owns it)"));
+        }
+        return HandleResult::fail(os_error(err_auth, "pipe instance creation failed"));
+    }
+    LocalFree(descriptor);
+    return HandleResult(handle);
+}
+
+// Wait for a client on an armed instance, sliced against the stop flag
+// (indefinite patience — LL-3: the host never times out a connect).
+// Returns: connected / stopped / vanished / failed.
+enum class ConnectOutcome
+{
+    Connected,
+    Stopped,
+    Vanished,
+    Failed
+};
+
+ConnectOutcome wait_connect(HANDLE instance, const std::atomic<bool>* stop, u64 slice_ms)
+{
+    OverlappedOp op;
+    if (!ConnectNamedPipe(instance, &op.ov) && GetLastError() != ERROR_IO_PENDING)
+    {
+        const DWORD error = GetLastError();
+        return error == ERROR_PIPE_CONNECTED ? ConnectOutcome::Connected
+                                             : ConnectOutcome::Failed;
+    }
+    while (true)
+    {
+        if (stop != nullptr && stop->load(std::memory_order_acquire))
+        {
+            CancelIoEx(instance, &op.ov);
+            DWORD reaped = 0;
+            GetOverlappedResult(instance, &op.ov, &reaped, TRUE);
+            return ConnectOutcome::Stopped;
+        }
+        const DWORD waited = wait_slice(op.ov.hEvent, slice_ms);
+        if (waited == WAIT_OBJECT_0)
+        {
+            DWORD transferred = 0;
+            if (GetOverlappedResult(instance, &op.ov, &transferred, FALSE))
+            {
+                return ConnectOutcome::Connected;
+            }
+            const DWORD error = GetLastError();
+            if (error == ERROR_NO_DATA || error == ERROR_BROKEN_PIPE ||
+                error == ERROR_PIPE_NOT_CONNECTED)
+            {
+                return ConnectOutcome::Vanished;
+            }
+            return ConnectOutcome::Failed;
+        }
+        if (waited == WAIT_FAILED)
+        {
+            return ConnectOutcome::Failed;
+        }
+    }
 }
 } // namespace
 
@@ -240,7 +411,7 @@ qiven::Result<std::vector<std::string>> ClientRecord::ensure(
     // The record is the installation's own-tool allowlist: exes deployed in
     // the SAME directory as the host are the same installation unit (the
     // owner-only DACL + same-user pipe remain the trust boundary). Boot
-    // MERGES missing images (idempotent): the 2026-09-24 preflight found
+    // MERGES missing images (idempotent): the 2024-09-24 preflight found
     // real deployments where only the host was recorded and every hook
     // client denied admission — the second root cause hiding behind the
     // trial-3 connection-model defect (silent drop made it look like 116).
@@ -358,7 +529,9 @@ PipeConnection::~PipeConnection()
 }
 
 PipeConnection::PipeConnection(PipeConnection&& other) noexcept :
-m_handle(std::exchange(other.m_handle, nullptr))
+m_handle(std::exchange(other.m_handle, nullptr)),
+m_last_read_timed_out(other.m_last_read_timed_out),
+m_last_read_aborted(other.m_last_read_aborted)
 {
 }
 
@@ -370,42 +543,58 @@ PipeConnection& PipeConnection::operator=(PipeConnection&& other) noexcept
         {
             CloseHandle(static_cast<HANDLE>(m_handle));
         }
-        m_handle = std::exchange(other.m_handle, nullptr);
+        m_handle              = std::exchange(other.m_handle, nullptr);
+        m_last_read_timed_out = other.m_last_read_timed_out;
+        m_last_read_aborted   = other.m_last_read_aborted;
     }
     return *this;
 }
 
 std::optional<std::string> PipeConnection::read_frame()
 {
+    // The undecorated form has no deadline: one frame, however long the
+    // peer takes (single-frame test/admin callers).
     if (m_handle == nullptr)
     {
         return std::nullopt;
     }
-    m_last_read_timed_out = false;
-    return read_bounded(static_cast<HANDLE>(m_handle));
+    m_last_read_timed_out      = false;
+    m_last_read_aborted        = false;
+    constexpr u64 far_deadline = 3'600'000;
+    bool timed_out             = false;
+    bool aborted               = false;
+    auto frame                 = read_bounded_ov(static_cast<HANDLE>(m_handle), far_deadline, nullptr, 200,
+                                                 timed_out, aborted);
+    m_last_read_timed_out      = timed_out;
+    m_last_read_aborted        = aborted;
+    return frame;
 }
 
-std::optional<std::string> PipeConnection::read_frame(u64 timeout_ms)
+std::optional<std::string> PipeConnection::read_frame(u64 timeout_ms,
+                                                      const std::atomic<bool>* stop)
 {
     if (m_handle == nullptr)
     {
         return std::nullopt;
     }
     m_last_read_timed_out = false;
+    m_last_read_aborted   = false;
     bool timed_out        = false;
-    auto frame            = read_bounded_deadline(static_cast<HANDLE>(m_handle), timeout_ms,
-                                                  timed_out);
+    bool aborted          = false;
+    auto frame            = read_bounded_ov(static_cast<HANDLE>(m_handle), timeout_ms, stop, 200,
+                                            timed_out, aborted);
     m_last_read_timed_out = timed_out;
+    m_last_read_aborted   = aborted;
     return frame;
 }
 
-bool PipeConnection::write_bytes(std::string_view bytes)
+bool PipeConnection::write_bytes(std::string_view bytes, u64 deadline_ms)
 {
     if (m_handle == nullptr)
     {
         return false;
     }
-    return write_all(static_cast<HANDLE>(m_handle), bytes.data(), bytes.size());
+    return write_all_ov(static_cast<HANDLE>(m_handle), bytes.data(), bytes.size(), deadline_ms);
 }
 
 bool PipeConnection::peer_connected() const noexcept
@@ -454,7 +643,299 @@ qiven::Result<std::string> PipeConnection::client_image() const
     return ImageResult(std::move(image));
 }
 
-// --- NamedPipeServer --------------------------------------------------------
+// --- ServeLoop (the production listen pool) ----------------------------------
+
+ServeLoop::ServeLoop(std::wstring pipe, void* first_instance, FrameCodec codec,
+                     Options options, Hooks hooks) :
+m_pipe(std::move(pipe)),
+m_codec(std::move(codec)),
+m_options(options),
+m_hooks(std::move(hooks)),
+m_first_instance(first_instance)
+{
+}
+
+ServeLoop::~ServeLoop()
+{
+    request_stop();
+    for (auto& arm : m_arms)
+    {
+        if (arm.joinable())
+        {
+            arm.join();
+        }
+    }
+    if (m_first_instance != nullptr)
+    {
+        CloseHandle(static_cast<HANDLE>(m_first_instance));
+    }
+}
+
+qiven::Result<std::unique_ptr<ServeLoop>> ServeLoop::create(std::string_view install_id,
+                                                            const FrameCodec& codec, Options options,
+                                                            Hooks hooks)
+{
+    using LoopResult = qiven::Result<std::unique_ptr<ServeLoop>>;
+    if (options.listen_arms == 0 || options.max_connections == 0)
+    {
+        return LoopResult::fail(os_error(err_frame, "listen_arms/max_connections must be > 0"));
+    }
+    if (!hooks.handle)
+    {
+        return LoopResult::fail(os_error(err_frame, "ServeLoop requires a handle hook"));
+    }
+    const std::wstring name = pipe_name(install_id);
+    auto first              = create_listen_instance(name, true);
+    if (!first.is_ok())
+    {
+        return LoopResult::fail(first.reason());
+    }
+    return LoopResult(std::unique_ptr<ServeLoop>(
+        new ServeLoop(name, first.value(), codec, options, std::move(hooks))));
+}
+
+void ServeLoop::request_stop() noexcept
+{
+    m_stop.store(true, std::memory_order_release);
+    m_serve_cv.notify_all();
+}
+
+void ServeLoop::run()
+{
+    // Arms: the first arm inherits the FIRST-instance handle from create()
+    // (the singleton assertion), the rest create their own.
+    const u64 arms = m_options.listen_arms;
+    for (u64 i = 0; i < arms; ++i)
+    {
+        m_arms.emplace_back([this, i] { arm_thread_body(static_cast<usize>(i)); });
+    }
+    for (auto& arm : m_arms)
+    {
+        if (arm.joinable())
+        {
+            arm.join();
+        }
+    }
+
+    // Arms have stopped accepting. Grace: wait for the serve countdown (all
+    // in-flight requests completed or their threads observed the stop inside
+    // one read slice). A straggler past the grace is terminated by process
+    // teardown — documented; the journal checkpoints before that in the
+    // caller's drain path.
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(m_options.stop_grace_ms);
+    std::unique_lock<std::mutex> lock(m_serve_mutex);
+    (void)m_serve_cv.wait_until(lock, deadline, [this] { return m_live_serve_threads == 0; });
+}
+
+void ServeLoop::arm_thread_body(usize arm_index)
+{
+    HANDLE instance = nullptr;
+    if (arm_index == 0)
+    {
+        instance = static_cast<HANDLE>(std::exchange(m_first_instance, nullptr));
+    }
+    u64 consecutive_create_failures = 0;
+    while (!stop_requested())
+    {
+        if (instance == nullptr)
+        {
+            auto created = create_listen_instance(m_pipe, false);
+            if (!created.is_ok())
+            {
+                // NEVER fatal (LL-1): degraded-loud, backoff, keep retrying.
+                ++consecutive_create_failures;
+                m_stats.accept_recreates.fetch_add(1);
+                if (consecutive_create_failures >= 4)
+                {
+                    bool was = m_stats.degraded_listener.exchange(true);
+                    if (!was && m_hooks.log)
+                    {
+                        m_hooks.log("[degraded] listener instance creation keeps failing; "
+                                    "retrying (host stays up)");
+                    }
+                }
+                const auto retry_at = std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds(
+                                          std::min<u64>(500 * consecutive_create_failures, 5000));
+                while (!stop_requested() && std::chrono::steady_clock::now() < retry_at)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+                continue;
+            }
+            instance = created.value();
+        }
+        consecutive_create_failures = 0;
+        m_stats.degraded_listener.store(false);
+
+        const ConnectOutcome outcome = wait_connect(instance, &m_stop, m_options.connect_slice_ms);
+        switch (outcome)
+        {
+        case ConnectOutcome::Connected:
+        {
+            PipeConnection connection(instance);
+            instance = nullptr;
+            ++m_stats.connections_served;
+            dispatch_connection(std::move(connection));
+            break; // loop re-arms
+        }
+        case ConnectOutcome::Stopped:
+            if (instance != nullptr)
+            {
+                DisconnectNamedPipe(instance);
+                CloseHandle(instance);
+                instance = nullptr;
+            }
+            return;
+        case ConnectOutcome::Vanished:
+            // A client connected and died inside the accept window: replace
+            // the dead instance and keep accepting (bounded internal retry
+            // is subsumed by the never-fatal loop).
+            if (instance != nullptr)
+            {
+                CloseHandle(instance);
+                instance = nullptr;
+            }
+            m_stats.accept_recreates.fetch_add(1);
+            continue;
+        case ConnectOutcome::Failed:
+            if (instance != nullptr)
+            {
+                CloseHandle(instance);
+                instance = nullptr;
+            }
+            m_stats.accept_recreates.fetch_add(1);
+            continue; // never-fatal: recreate and retry
+        }
+    }
+    if (instance != nullptr)
+    {
+        DisconnectNamedPipe(instance);
+        CloseHandle(instance);
+        instance = nullptr;
+    }
+}
+
+void ServeLoop::dispatch_connection(PipeConnection connection)
+{
+    if (stop_requested())
+    {
+        return; // the destructor closes it
+    }
+    bool over_cap = false;
+    u64 occupancy = 0;
+    {
+        std::lock_guard<std::mutex> guard(m_serve_mutex);
+        occupancy = m_live_serve_threads + 1;
+        if (m_live_serve_threads >= m_options.max_connections)
+        {
+            over_cap = true;
+            ++m_stats.busy_rejected;
+            m_stats.busy_occupancy_last.store(occupancy);
+        }
+        else
+        {
+            m_live_serve_threads += 1;
+        }
+    }
+    if (over_cap)
+    {
+        // Typed busy frame + the SAME bounded linger every typed error close
+        // uses, so the frame is never discarded by the close that follows it.
+        const Reply busy = make_error(0, static_cast<i32>(m_options.busy_code),
+                                      "server busy: connection cap (" +
+                                          std::to_string(m_options.max_connections) +
+                                          ") reached; occupancy " + std::to_string(occupancy));
+        FrameHeader header;
+        (void)connection.write_bytes(m_codec.encode(header, encode_reply(busy)),
+                                     m_options.write_deadline_ms);
+        linger_for_peer_read(connection);
+        return;
+    }
+    std::thread server([this, connection = std::move(connection)]() mutable {
+        serve_thread_body(std::move(connection));
+    });
+    server.detach();
+}
+
+void ServeLoop::serve_thread_body(PipeConnection connection)
+{
+    bool saw_shutdown = false;
+    try
+    {
+        AdmitFn admit   = m_hooks.admit;
+        HandleFn handle = [this, &saw_shutdown](const Request& request) {
+            Reply reply = m_hooks.handle(request);
+            // An authenticated shutdown stops the loop AFTER the ack rides
+            // this connection (serve_connection writes the reply first).
+            if (request.kind == Request::Kind::Shutdown)
+            {
+                saw_shutdown = true;
+                request_stop();
+            }
+            return reply;
+        };
+        ServeOptions options;
+        options.idle_timeout_ms   = m_options.idle_timeout_ms;
+        options.max_frames        = m_options.max_frames;
+        options.write_deadline_ms = m_options.write_deadline_ms;
+        options.stop              = &m_stop;
+        (void)serve_connection(connection, m_codec, admit ? admit : [](PipeConnection&) { return std::string(); }, handle, options);
+    }
+    catch (...)
+    {
+        // Per-connection fault containment (LL-3): the connection object
+        // closes at scope exit; the host and every other connection
+        // continue.
+        ++m_stats.serve_thread_faults;
+        if (m_hooks.log)
+        {
+            m_hooks.log("[fault] serve thread contained an exception; connection closed");
+        }
+    }
+    if (saw_shutdown)
+    {
+        // The shutdown ack must reach the client before teardown closes the
+        // pipe: DisconnectNamedPipe discards unread bytes, and the loop
+        // tears down FAST once stopped (arms join, grace, exit). The same
+        // bounded linger every terminal error frame uses covers the ack's
+        // read window (found live by host_server_lifecycle: the ctl
+        // delivered shutdown, the host logged the ack, and the client
+        // still observed "no reply").
+        linger_for_peer_read(connection);
+    }
+    {
+        std::lock_guard<std::mutex> guard(m_serve_mutex);
+        if (m_live_serve_threads > 0)
+        {
+            m_live_serve_threads -= 1;
+        }
+    }
+    m_serve_cv.notify_all();
+}
+
+void ServeLoop::linger_for_peer_read(PipeConnection& connection)
+{
+    using namespace std::chrono;
+    const auto deadline = steady_clock::now() + milliseconds(500);
+    while (steady_clock::now() < deadline)
+    {
+        if (!connection.peer_connected())
+        {
+            return;
+        }
+        Sleep(5);
+    }
+}
+
+// --- NamedPipeServer (test-surface adapter) ----------------------------------
+//
+// The production serve path is ServeLoop. This adapter remains for tests
+// that need a raw single-instance server (the DACL shape check and the
+// FIRST_PIPE_INSTANCE singleton assertion) and for single-connection
+// library drivers; its accept() blocks on ONE armed instance at a time —
+// the retired serial shape, retained as an explicitly-labeled test surface.
 
 NamedPipeServer::NamedPipeServer(void* handle, std::wstring name) noexcept :
 m_handle(handle),
@@ -492,36 +973,21 @@ NamedPipeServer& NamedPipeServer::operator=(NamedPipeServer&& other) noexcept
 
 qiven::Result<NamedPipeServer> NamedPipeServer::create(std::string_view install_id)
 {
-    using ServerResult              = qiven::Result<NamedPipeServer>;
-    PSECURITY_DESCRIPTOR descriptor = nullptr;
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            owner_only_sddl().c_str(), SDDL_REVISION_1, &descriptor, nullptr))
-    {
-        return ServerResult::fail(os_error(err_auth, "owner-only DACL construction failed"));
-    }
-    SECURITY_ATTRIBUTES attributes { sizeof(SECURITY_ATTRIBUTES), descriptor, FALSE };
-
-    // FILE_FLAG_FIRST_PIPE_INSTANCE asserts ownership: a second host's
-    // create() is denied here (the OS-level singleton half; the named
-    // mutex fires first in practice). Later accept() instances omit the
-    // flag but keep the DACL.
+    using ServerResult      = qiven::Result<NamedPipeServer>;
     const std::wstring name = pipe_name(install_id);
-    HANDLE handle           = CreateNamedPipeW(
-        name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-        PIPE_UNLIMITED_INSTANCES, 64 * 1024, 64 * 1024, 0, &attributes);
-    LocalFree(descriptor);
-    if (handle == INVALID_HANDLE_VALUE)
+    auto first              = create_listen_instance(name, true);
+    if (!first.is_ok())
     {
-        const DWORD error = GetLastError();
-        if (error == ERROR_ACCESS_DENIED || error == ERROR_PIPE_BUSY)
+        const std::string message = first.reason().message;
+        if (message.find("os error 5") != std::string::npos ||
+            message.find("os error 231") != std::string::npos)
         {
-            return ServerResult::fail(os_error(
-                err_host_singleton, "the pipe already exists (another host owns it)"));
+            return ServerResult::fail(
+                os_error(err_host_singleton, "the pipe already exists (another host owns it)"));
         }
-        return ServerResult::fail(os_error(err_auth, "pipe creation failed"));
+        return ServerResult::fail(first.reason());
     }
-    return ServerResult(NamedPipeServer(handle, name));
+    return ServerResult(NamedPipeServer(first.value(), name));
 }
 
 qiven::Result<PipeConnection> NamedPipeServer::accept()
@@ -531,64 +997,43 @@ qiven::Result<PipeConnection> NamedPipeServer::accept()
     {
         return AcceptResult::fail(os_error(err_frame, "server is closed"));
     }
-
-    // A client that connected to this instance and DIED before we called
-    // ConnectNamedPipe (connect-and-close while the host was busy serving
-    // another connection — a NORMAL event since clients carry deadlines)
-    // fails with NO_DATA/BROKEN_PIPE/PIPE_NOT_CONNECTED. That is not a
-    // server error: replace the dead listen instance and keep accepting.
-    // The retry loop is INTERNAL so every caller of accept() gets a real
-    // connection or a hard failure (adversarial-review M2, 2026-09-24;
-    // the prior code killed the host on this path).
-    constexpr int max_vanish_retries = 8;
-    for (int attempt = 0;; ++attempt)
+    while (true)
     {
-        // Stand up the NEXT listen instance first (same owner-only DACL,
-        // no FIRST flag), so the connected instance can be handed to the
-        // caller wholesale — its handle, its connection, no disconnect
-        // mid-service.
-        HANDLE next = nullptr;
+        const ConnectOutcome outcome = wait_connect(static_cast<HANDLE>(m_handle), nullptr, 100);
+        if (outcome == ConnectOutcome::Connected)
         {
-            PSECURITY_DESCRIPTOR descriptor = nullptr;
-            if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    owner_only_sddl().c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+            void* connected = m_handle;
+            auto next       = create_listen_instance(m_name, false);
+            if (!next.is_ok())
             {
-                return AcceptResult::fail(os_error(err_auth,
-                                                   "owner-only DACL construction failed"));
-            }
-            SECURITY_ATTRIBUTES attributes { sizeof(SECURITY_ATTRIBUTES), descriptor, FALSE };
-            next = CreateNamedPipeW(
-                m_name.c_str(), PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                PIPE_UNLIMITED_INSTANCES, 64 * 1024, 64 * 1024, 0, &attributes);
-            LocalFree(descriptor);
-            if (next == INVALID_HANDLE_VALUE)
-            {
+                CloseHandle(static_cast<HANDLE>(connected));
+                m_handle = nullptr;
                 return AcceptResult::fail(os_error(err_frame,
                                                    "next pipe instance creation failed"));
             }
+            m_handle = next.value();
+            return AcceptResult(PipeConnection(connected));
         }
-
-        if (!ConnectNamedPipe(static_cast<HANDLE>(m_handle), nullptr) &&
-            GetLastError() != ERROR_PIPE_CONNECTED)
+        if (outcome == ConnectOutcome::Vanished)
         {
-            const DWORD error = GetLastError();
+            // A client connected and died inside the accept window: replace
+            // the dead instance and keep accepting (INTERNAL retry, M2).
             CloseHandle(static_cast<HANDLE>(m_handle));
-            m_handle = next;
-            if ((error == ERROR_NO_DATA || error == ERROR_BROKEN_PIPE ||
-                 error == ERROR_PIPE_NOT_CONNECTED) &&
-                attempt < max_vanish_retries)
+            auto next = create_listen_instance(m_name, false);
+            if (!next.is_ok())
             {
-                continue; // a client vanished mid-accept; keep listening
+                m_handle = nullptr;
+                return AcceptResult::fail(os_error(err_frame,
+                                                   "next pipe instance creation failed"));
             }
-            return AcceptResult::fail(os_error(err_frame, "accept failed"));
+            m_handle = next.value();
+            continue;
         }
-
-        // The connected instance becomes the connection; the server keeps
-        // listening on the fresh instance.
-        void* connected = m_handle;
-        m_handle        = next;
-        return AcceptResult(PipeConnection(connected));
+        if (outcome == ConnectOutcome::Stopped)
+        {
+            return AcceptResult::fail(os_error(err_frame, "accept stopped"));
+        }
+        return AcceptResult::fail(os_error(err_frame, "accept failed"));
     }
 }
 
@@ -638,7 +1083,8 @@ PipeClient::~PipeClient()
 }
 
 PipeClient::PipeClient(PipeClient&& other) noexcept :
-m_handle(std::exchange(other.m_handle, nullptr))
+m_handle(std::exchange(other.m_handle, nullptr)),
+m_last_read_timed_out(other.m_last_read_timed_out)
 {
 }
 
@@ -650,32 +1096,53 @@ PipeClient& PipeClient::operator=(PipeClient&& other) noexcept
         {
             CloseHandle(static_cast<HANDLE>(m_handle));
         }
-        m_handle = std::exchange(other.m_handle, nullptr);
+        m_handle              = std::exchange(other.m_handle, nullptr);
+        m_last_read_timed_out = other.m_last_read_timed_out;
     }
     return *this;
 }
 
-qiven::Result<PipeClient> PipeClient::connect(const std::wstring& name)
+qiven::Result<PipeClient> PipeClient::connect(const std::wstring& name, u64 busy_wait_ms)
 {
     using ClientResult = qiven::Result<PipeClient>;
-    HANDLE handle      = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (handle == INVALID_HANDLE_VALUE)
+    const auto begin   = std::chrono::steady_clock::now();
+    while (true)
     {
-        return ClientResult::fail(os_error(err_frame, "pipe connect failed"));
+        HANDLE handle = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                                    OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+        if (handle != INVALID_HANDLE_VALUE)
+        {
+            return ClientResult(PipeClient(handle));
+        }
+        const DWORD error = GetLastError();
+        if (error != ERROR_PIPE_BUSY)
+        {
+            return ClientResult::fail(os_error(err_frame, "pipe connect failed"));
+        }
+        // WaitNamedPipe etiquette (LL-3): wait bounded for an instance to
+        // re-arm, then retry the connect. 120-class "no listener" is
+        // classified by the CALLER only when the budget expires.
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= begin + std::chrono::milliseconds(busy_wait_ms))
+        {
+            return ClientResult::fail(os_error(err_frame, "pipe connect failed"));
+        }
+        const u64 remaining = static_cast<u64>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                begin + std::chrono::milliseconds(busy_wait_ms) - now)
+                .count());
+        WaitNamedPipeW(name.c_str(),
+                       static_cast<DWORD>(std::min<u64>(remaining, 1000)));
     }
-    DWORD mode = PIPE_READMODE_BYTE;
-    SetNamedPipeHandleState(handle, &mode, nullptr, nullptr);
-    return ClientResult(PipeClient(handle));
 }
 
-bool PipeClient::write_bytes(std::string_view bytes)
+bool PipeClient::write_bytes(std::string_view bytes, u64 deadline_ms)
 {
     if (m_handle == nullptr)
     {
         return false;
     }
-    return write_all(static_cast<HANDLE>(m_handle), bytes.data(), bytes.size());
+    return write_all_ov(static_cast<HANDLE>(m_handle), bytes.data(), bytes.size(), deadline_ms);
 }
 
 std::optional<std::string> PipeClient::read_frame()
@@ -684,8 +1151,14 @@ std::optional<std::string> PipeClient::read_frame()
     {
         return std::nullopt;
     }
-    m_last_read_timed_out = false;
-    return read_bounded(static_cast<HANDLE>(m_handle));
+    m_last_read_timed_out      = false;
+    constexpr u64 far_deadline = 3'600'000;
+    bool timed_out             = false;
+    bool aborted               = false;
+    auto frame                 = read_bounded_ov(static_cast<HANDLE>(m_handle), far_deadline, nullptr, 200,
+                                                 timed_out, aborted);
+    m_last_read_timed_out      = timed_out;
+    return frame;
 }
 
 std::optional<std::string> PipeClient::read_frame(u64 timeout_ms)
@@ -696,8 +1169,9 @@ std::optional<std::string> PipeClient::read_frame(u64 timeout_ms)
     }
     m_last_read_timed_out = false;
     bool timed_out        = false;
-    auto frame            = read_bounded_deadline(static_cast<HANDLE>(m_handle), timeout_ms,
-                                                  timed_out);
+    bool aborted          = false;
+    auto frame            = read_bounded_ov(static_cast<HANDLE>(m_handle), timeout_ms, nullptr, 200,
+                                            timed_out, aborted);
     m_last_read_timed_out = timed_out;
     return frame;
 }
