@@ -1544,14 +1544,20 @@ class Rig:
     # -- execution ----------------------------------------------------------
 
     def execute(self) -> dict:
-        self.build_scenarios()
         self.run_root.mkdir(parents=True, exist_ok=True)
         results = []
         failed = 0
-        print(f"[ RUN] h1-sim: {len(self.cases)} scenarios, run root {self.run_root}",
-              flush=True)
-        started = time.monotonic()
+        setup_error: str | None = None
+        print(f"[ RUN] h1-sim: scenario build + {len(self.cases) if self.cases else '…'} "
+              f"registered cases, run root {self.run_root}", flush=True)
         try:
+            # Setup (group hosts, registrations) runs INSIDE the guarded
+            # region (control-experiment finding, 2026-09-27): a setup-time
+            # failure must become a typed gate failure with the leak guard
+            # active, never an escaping traceback.
+            self.build_scenarios()
+            print(f"[ RUN] h1-sim: {len(self.cases)} scenarios", flush=True)
+            started = time.monotonic()
             for entry in self.cases:
                 case_id = entry["id"]
                 print(f"[ RUN] {case_id}", flush=True)
@@ -1573,14 +1579,26 @@ class Rig:
                                     "seconds": round(time.monotonic() - t0, 3)})
                     failed += 1
                     print(f"[FAIL] {case_id}: {detail}", flush=True)
+        except (AssertionError, GateFailure, OSError, ConnectionError,
+                subprocess.SubprocessError, sqlite3.Error) as failure:
+            setup_error = f"{type(failure).__name__}: {failure}"
+            print(f"[FAIL] h1-sim SETUP: {setup_error}", flush=True)
+            started = time.monotonic()
         finally:
             # Leak guard: every booted host dies with the rig, pass or fail.
             for proc in self.live_procs:
                 if proc.poll() is None:
                     proc.kill()
         elapsed = time.monotonic() - started
-        verdict = "SIMULATED_HOOK_HOST_PASS" if failed == 0 else "SIMULATED_HOOK_HOST_FAIL"
-        if len(results) != len(self.cases):
+        verdict = "SIMULATED_HOOK_HOST_FAIL"
+        if setup_error is not None:
+            results.append({"id": "<setup>", "result": "FAIL",
+                            "detail": setup_error, "invariants": [],
+                            "oracle": "group setup (host boot / registration)"})
+            failed += 1
+        elif failed == 0 and len(results) == len(self.cases):
+            verdict = "SIMULATED_HOOK_HOST_PASS"
+        if len(results) != len(self.cases) and setup_error is None:
             verdict = "NOT_VALIDATED"
         return {"verdict": verdict, "results": results, "failed": failed,
                 "skipped": 0, "elapsed_s": round(elapsed, 1),
