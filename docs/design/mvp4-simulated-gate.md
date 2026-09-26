@@ -72,6 +72,11 @@ Each scenario group gets a fresh scratch governed root:
   same-directory rule (host boot merges sibling client images) is what the
   admission fault case deliberately violates by copying the hook exe
   elsewhere (the trial-3 second cause, reproduced for the same reason).
+  One honest exception: the WIRE FAULT CLIENT's own admission is granted
+  by the fixture (its python image is pre-listed in clients.json) — the
+  same-user DACL remains its real boundary; lifecycle cases always run
+  the real build-dir hook image, and I3a still discriminates a stray
+  image.
 - Cognition refresh on a scratch root fails its `git fetch` (no origin) and
   falls back inside the boot-seeded freshness window (`local_fallback`), so
   sessions register healthy without network — deterministic and honest. A
@@ -113,10 +118,12 @@ reading; `INSTALLED_DESKTOP_EXECUTION_UNVERIFIED` stays standing).
 
 ## 5. Case taxonomy and invariants
 
-Groups (one host boot each, ordered steps inside), 100 named cases
+Groups (one host boot each, ordered steps inside), 101 named cases
 (2026-09-27 review amendments folded: per-source repeat legs, the second
 independent-root capture replay and the P19 combination were merged away as
-mechanism-duplicates; S9 and the per-connection observability landed):
+mechanism-duplicates; S9, the per-connection observability, uniform
+INV-15 effect-freedom, the short-name alias leg and the mid-session-death
+no-listener leg landed):
 
 | Series | Groups | Covers |
 | --- | --- | --- |
@@ -312,3 +319,26 @@ own mechanics):
 8. **Oracle provenance entries added** for the request-digest composite,
    the astral/unreadable 118 class, and the unregistered-post degraded
    law (`catalogue.json` oracle_bindings).
+
+A second bounded review pass over the amended gate produced further
+amendments, folded the same day (factual record):
+
+9. **INV-15 (deny-without-effect) is asserted uniformly**: the Edit deny
+   matrix, every Bash deny leg and P16/P17 now effect-assert their
+   targets (previously only the Write legs did); the Bash legs extract
+   the command's redirect targets from the payload.
+10. **B11c (backslash lexical gap) binds the allow invariant** (INV-4),
+    consistent with B1/B8 and the P-series allow legs; B1/B8 drop the
+    Bash-specific INV-13.
+11. **P22 short-name alias leg**: GetShortPathName of a governed target —
+    allow + detector-limit when the volume generates 8.3 names, deny when
+    it degenerates to the long form (documented lexical policy either
+    way, honestly labeled per environment).
+12. **C2 covers the mid-session-death shape**: after the authenticated
+    shutdown the next probe must be a typed no-listener 120 (previously
+    only the never-booted cold root was probed).
+13. **Typed containment extends to verify-receipt and old-fail-i4**
+    (unreadable receipts, corrupt catalogues and boot failures report as
+    typed `[FAIL]` lines, never tracebacks).
+14. **S8's exactly-one-row audit covers every registered handle** of the
+    S group.
