@@ -524,6 +524,12 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
         if host_proc is not None and log_path.exists():
             log_text = log_path.read_text(encoding="utf-8", errors="replace")
             registered = registered and "[conn] session_start -> allow" in log_text
+        else:
+            # Pre-existing host (this preflight did not boot one): no host
+            # console is owned here, so the evidence is text-level only -
+            # labeled honestly instead of claimed as log-confirmed.
+            print("[ NOTE ] pre-existing host answered: registration evidence "
+                  "is text-level (no host console owned by this preflight)")
         print(("[ OK ] " if registered else "[FAIL] ") +
               "session_start registers a session (host log confirms the lifecycle row)"
               + ("" if registered else f" -- exit {code}: {err}"))
@@ -561,6 +567,9 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
                   ("" if honest else f" -- exit {code}: {err}"))
             if not honest:
                 return EXIT_FAIL
+        else:
+            print("[SKIP-labeled] no-listener leg inapplicable: a pre-existing "
+                  "host is serving this root (the leg needs an unmediated pipe)")
 
         print("[ OK ] PREFLIGHT PASS - safe to approve the hook config in the ZCode UI")
         result = EXIT_OK

@@ -49,6 +49,7 @@ import ctypes.wintypes as wt
 import hashlib
 import json
 import os
+import platform as _platform
 import re
 import shutil
 import sqlite3
@@ -79,10 +80,15 @@ R_UNKNOWN_SESSION, R_CORRELATION, R_EXPIRED, R_PAYLOAD = 114, 115, 117, 118
 R_NO_LISTENER, R_ADMISSION = 120, 121
 
 MAX_HOOK_PAYLOAD = 1024 * 1024
-HOOK_TIMEOUT_S = 25          # harness budget is 15 s; headroom for CI noise
+HOOK_TIMEOUT_S = 25          # hard subprocess cap; the ASSERTED budget is below
+# The harness budgets from the shipped kit config (h1_kit CONFIG_TEMPLATE):
+# SessionStart 15 s, PreToolUse/PostToolUse 10 s. A round trip over its
+# budget is the slow-client production-failure class - the rig fails it.
+HOOK_EVENT_BUDGET_S = {"session_start": 15.0, "pre_tool": 10.0, "post_tool": 10.0}
 SESSION_TX_BOUND_S = 10.0    # INV-10: whole hello+event under one monotonic bound
 HOST_BOOT_BOUND_S = 20.0
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_DUMP_SEQ = iter(range(1, 1_000_000))
 
 
 class GateFailure(Exception):
@@ -197,15 +203,34 @@ def sha256_file(path: Path) -> str:
 def run_hook(hook_exe: Path, event: str, root: Path, payload: bytes,
              tool: str | None = None, session_handle: str | None = None,
              timeout_s: float = HOOK_TIMEOUT_S) -> tuple[int, str, float]:
+    """Invoke the hook exactly as the shipped harness config does: the
+    argument form carries --dump-stdin on session_start/pre_tool (never
+    post_tool) per the kit CONFIG_TEMPLATE, and every round trip must
+    close inside its harness budget (catalogue oracle harness_argv_form)."""
     argv = [str(hook_exe), "--event", event, "--root", str(root)]
     if tool:
         argv += ["--tool", tool]
     if session_handle:
         argv += ["--session-handle", session_handle]
+    dump_path = None
+    if event in ("session_start", "pre_tool"):
+        dump_dir = root.parent / "hook-dumps"
+        dump_dir.mkdir(parents=True, exist_ok=True)
+        dump_path = dump_dir / f"{event}-{next(_DUMP_SEQ)}.log"
+        argv += ["--dump-stdin", str(dump_path)]
     started = time.monotonic()
     proc = subprocess.run(argv, input=payload, capture_output=True,
                           timeout=timeout_s, creationflags=CREATE_NO_WINDOW)
     elapsed = time.monotonic() - started
+    budget = HOOK_EVENT_BUDGET_S.get(event, 10.0)
+    if elapsed > budget:
+        raise GateFailure(
+            f"{event} round trip took {elapsed:.2f}s - over the harness "
+            f"budget {budget}s (the slow-client production-failure class)")
+    if dump_path is not None and not (dump_path.is_file()
+                                      and dump_path.stat().st_size > 0):
+        raise GateFailure(f"hook wrote no --dump-stdin probe payload to "
+                          f"{dump_path} (the diagnostics path is defective)")
     return proc.returncode, proc.stderr.decode("utf-8", errors="replace").strip(), elapsed
 
 
@@ -838,7 +863,7 @@ class Rig:
             self.expect_deny(R_PAYLOAD, err, code, fragment="no command",
                              source="(host verdict)")
 
-        @self.case("B21.degraded-session-denies-113", ["INV-4"],
+        @self.case("B21.degraded-session-denies-113", ["INV-19"],
                    "capability-handshake mismatch law (fault profile: undeclared tool)")
         def _b21():
             fault_root, fault_outside = self.fresh_root("gB21")
@@ -862,7 +887,7 @@ class Rig:
             finally:
                 stop_host(fault_root, proc, fh)
 
-        @self.case("B22.expired-cognition-denies-117", ["INV-4"],
+        @self.case("B22.expired-cognition-denies-117", ["INV-19"],
                    "cognition freshness window law (fault: stale refresh meta)")
         def _b22():
             fault_root, fault_outside = self.fresh_root("gB22")
@@ -1037,24 +1062,38 @@ class Rig:
             self.clear_outstanding(a_root, "h-a2", "Write")
 
         @self.case("A13.bash-outside-allow-then-post", ["INV-4", "INV-7"],
-                   "outside Bash allow + correlated outcome")
+                   "outside Bash allow + correlated outcome row")
         def _a13():
+            def outcome_rows():
+                return sum(1 for kind, _ in audit_events(a_root)
+                           if kind == "hook_outcome")
+            before = outcome_rows()
             payload = self.payload_with_target(a_root, a_outside, "sess-a", "Bash",
                                                command=f"echo x > {a_out}/a13.txt")
             code, err, _ = run_hook(hook, "pre_tool", a_root, payload,
                                     tool="Bash", session_handle="h-a")
             self.expect(code == 0 and err == "", f"outside bash must allow: {err}")
             self.clear_outstanding(a_root, "h-a", "Bash")
+            self.expect(outcome_rows() == before + 1,
+                        "outside Bash allow must close with a correlated "
+                        "outcome row")
 
         @self.case("A14.edit-outside-allow-then-post", ["INV-4", "INV-7"],
-                   "outside Edit allow + correlated outcome")
+                   "outside Edit allow + correlated outcome row")
         def _a14():
+            def outcome_rows():
+                return sum(1 for kind, _ in audit_events(a_root)
+                           if kind == "hook_outcome")
+            before = outcome_rows()
             payload = self.payload_with_target(a_root, a_outside, "sess-a2", "Edit",
                                                file_path=f"{a_out}/a14.md")
             code, err, _ = run_hook(hook, "pre_tool", a_root, payload,
                                     tool="Edit", session_handle="h-a2")
             self.expect(code == 0 and err == "", f"outside edit must allow: {err}")
             self.clear_outstanding(a_root, "h-a2", "Edit")
+            self.expect(outcome_rows() == before + 1,
+                        "outside Edit allow must close with a correlated "
+                        "outcome row")
 
         # I2: the digest binds EXACT bytes (trial-2 class) with re-encoding-
         # sensitive payloads; oracle = the transaction row's request_digest.
@@ -1325,7 +1364,7 @@ class Rig:
                         self.detector_limits.append(cid)
                     self.clear_outstanding(p_root, "h-p", tool_name)
 
-        @self.case("P15.junction-reparse-lexical-gap", ["INV-3", "INV-4"],
+        @self.case("P15.junction-reparse-lexical-gap", ["INV-4"],
                    "reparse indirection outside lexical scope - DETECTOR LIMIT recorded "
                    "(production architecture demands OS-backed checks; not claimed here)")
         def _p15():
@@ -1692,9 +1731,7 @@ class Rig:
                                     "oracle": entry["oracle"],
                                     "seconds": round(time.monotonic() - t0, 3)})
                     print(f"[ OK ] {case_id}", flush=True)
-                except (AssertionError, GateFailure, OSError, ConnectionError,
-                        subprocess.SubprocessError, sqlite3.Error,
-                        json.JSONDecodeError, struct.error) as failure:
+                except Exception as failure:  # noqa: BLE001 - per-case typed FAIL
                     detail = f"{type(failure).__name__}: {failure}"
                     results.append({"id": case_id, "result": "FAIL", "detail": detail,
                                     "invariants": entry["invariants"],
@@ -1702,9 +1739,7 @@ class Rig:
                                     "seconds": round(time.monotonic() - t0, 3)})
                     failed += 1
                     print(f"[FAIL] {case_id}: {detail}", flush=True)
-        except (AssertionError, GateFailure, OSError, ConnectionError,
-                subprocess.SubprocessError, sqlite3.Error, json.JSONDecodeError,
-                struct.error) as failure:
+        except Exception as failure:  # noqa: BLE001 - typed setup failure row
             setup_error = f"{type(failure).__name__}: {failure}"
             print(f"[FAIL] h1-sim SETUP: {setup_error}", flush=True)
             started = time.monotonic()
@@ -1752,12 +1787,13 @@ class Rig:
             "profile_digest": sha256_file(
                 REPO_ROOT / "config" / "profiles" / PROFILE_NAME),
             "fixture_catalogue_digest": sha256_file(FIXTURES),
+            "policy_fixture_digest": sha256_file(FIXTURES.parent / "invocation-policy.yaml"),
             "dependencies_manifest_digest": sha256_file(
                 REPO_ROOT / ".qiven" / "dependencies.json"),
             "rig_self_digest": sha256_file(Path(__file__).resolve()),
             "toolchain": toolchain,
             "python": sys.version.split()[0],
-            "platform": sys.platform,
+            "platform": _platform.platform(),
         }
 
     def write_receipt(self, outcome: dict, argv: list[str], dev: bool) -> Path:
@@ -1833,11 +1869,17 @@ class Rig:
             problems.append(f"receipt records {receipt['failed']} failed cases")
         if receipt.get("case_count") != len(receipt.get("case_results", [])):
             problems.append("receipt case_count does not match its case_results")
+        for row in receipt.get("case_results", []):
+            if row.get("result") != "pass":
+                problems.append(f"non-pass row {row.get('id')!r} "
+                                f"({row.get('result')!r}) in a green receipt "
+                                f"- counters and rows disagree")
         if len(receipt.get("case_results", [])) < 90:
             problems.append("receipt carries fewer than 90 scenarios - the "
                             "breadth floor (ADR-0055 decision 4 target: ~100)")
         for key in ("exe_digests", "profile_digest", "fixture_catalogue_digest",
-                    "dependencies_manifest_digest", "rig_self_digest"):
+                    "policy_fixture_digest", "dependencies_manifest_digest",
+                    "rig_self_digest"):
             if receipt.get("source_graph", {}).get(key) != graph.get(key):
                 problems.append(f"STALE receipt: {key} differs from the live tree")
         if receipt.get("head") != graph["runtime_head"]:

@@ -130,7 +130,7 @@ no-listener leg landed):
 | S — SessionStart registration | S1-S9 | hello+`session_start` on one real connection (S9 counts the host's `[open]` per-accepted-connection lines: exactly ONE per registration); whole-transaction monotonic bound asserted at EVERY registration site (INV-10, SESSION_TX_BOUND_S); one journal session row; stable id; typed verdict; idempotent repeat (once per fixture form: pinned + capture); all four contract sources; captured dual-key payload. |
 | B — PreToolUse classification | B1-B25 | governed Write/Edit deny 110 without effect (each named case targets ITS OWN governed path; template legs effect-asserted); capture P1/P2 legs honestly assert allow + detector-scope observation (their probe targets sit outside the governed-path list); Bash conservative detector deny 111; repo-root reference; outside-scope `not_governed` under real preconditions; correlation (one outstanding per tool); unregistered session deny 114 BEFORE classification; unknown tool; traversal form; empty extraction fail-closed; oversize/unreadable payload deny 118; payload/template tool contradiction deny 118. |
 | C — PostToolUse & closure | C1-C4 | correlated post_tool clears outstanding; unregistered post is a typed 114 advisory that never mints a correlated outcome row (journal-asserted, A7) and shows degraded on the host console (A12); authenticated shutdown acks and the process EXITS; restart isolation (journal survives, sessions re-register); duplicate handle idempotent; cross-session identity isolation. |
-| D — Packaging & path forms | D1-D3, I5 | shipped-kit entrypoint form (assemble_kit → boot from kit cwd with kit-internal profile); kit-without-profile fails closed naming the ROOT-derived path (CWD cannot substitute — the preflight incident); backslash/trailing-slash/case/relative/Unicode/short-name fixtures asserting the documented lexical policy, with detector-scope limits recorded in the coverage map (never claimed as authorization equivalence). |
+| D — Packaging & path forms | D1, I5a, I5b | shipped-kit entrypoint form (assemble_kit → boot from kit cwd with kit-internal profile); kit-without-profile fails closed naming the ROOT-derived path (CWD cannot substitute — the preflight incident); backslash/trailing-slash/case/relative/Unicode/short-name fixtures asserting the documented lexical policy, with detector-scope limits recorded in the coverage map (never claimed as authorization equivalence). |
 | I — the five incidents as distinct old-fail/new-pass cases | I1-I5 | see §6. |
 | W — writable-child bypass negative control | W1-W2 | a child process with no hook mediation writes inside the governed root and SUCCEEDS unmediated; the rig asserts this observable fact and marks complete-mediation blocked for delegation paths AND for caller-side non-invocation (mid-turn hook-configuration changes, OS/antivirus/third-party interception of the hook launch, any harness omission — all leave no journal trace; the same W1/W2 observable). |
 
@@ -164,6 +164,8 @@ generated from these bindings):
 - INV-17 restart preserves the journal and re-establishes isolation
 - INV-18 delegation paths are NOT mediated (recorded negative; blocks
   complete-mediation claims)
+- INV-19 degraded-capability (deny 113) and expired-cognition (deny 117)
+  sessions fail in their SPECIFIED class under their fault profiles
 
 ## 6. The five incidents (distinct old-fail/new-pass, wrong fixes rejected)
 
@@ -342,3 +344,37 @@ amendments, folded the same day (factual record):
     typed `[FAIL]` lines, never tracebacks).
 14. **S8's exactly-one-row audit covers every registered handle** of the
     S group.
+
+A third bounded review pass produced further amendments, folded the same
+day (factual record; the case count stays 101):
+
+15. **The invocation-policy fixture digest binds to the receipt**
+    (`policy_fixture_digest` recorded and compared by verify-receipt;
+    previously only the catalogue digest was, so a swapped policy fixture
+    was undetectable — the design's "a policy change forces a visible
+    fixture diff" claim is now mechanically true for the file that
+    drives host admission/freshness behavior).
+16. **verify-receipt validates internal consistency**: any non-pass
+    `case_results` row rejects the receipt even when the counters claim
+    zero failures (the designated forgery/truncation check no longer
+    trusts aggregate fields alone).
+17. **The rig invokes the hook in the REAL harness argument form**
+    (catalogue oracle `harness_argv_form`): `--dump-stdin <log>` is
+    passed on session_start/pre_tool exactly as the shipped kit config
+    does, the dump's existence is asserted, and every round trip must
+    close inside its harness budget (15 s session_start / 10 s pre_tool
+    and post_tool) — the slow-client production-failure class is now
+    bounded for the tool events too, not only hello+event (INV-10).
+18. **Binding/name honesty residues**: P15 binds the allow invariant;
+    B21/B22 bind the new INV-19 (degraded-capability / expired-cognition
+    typed denies); A13/A14 assert their correlated outcome row instead
+    of naming it.
+19. **Receipt platform field carries the OS version string**
+    (platform.platform()); the h1 gate tasks use the `{python}`
+    operator placeholder like their siblings.
+20. **Per-case and setup handlers catch any exception** (typed FAIL rows
+    with the receipt preserved, instead of a receipt-less gate death).
+21. **h1_kit preflight labels its degraded evidence paths**: the
+    pre-existing-host registration evidence is text-level (NOTE), and
+    the inapplicable no-listener leg prints a typed SKIP label instead
+    of passing silently.

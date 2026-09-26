@@ -50,13 +50,13 @@
       "argv": ["python", "tools/third_party_verify.py"]
     },
     "h1-kit": {
-      "argv": ["python", "tools/h1_kit.py"]
+      "argv": ["{python}", "tools/h1_kit.py"]
     },
     "h1-kit-test": {
-      "argv": ["python", "tools/h1_kit_test.py"]
+      "argv": ["{python}", "tools/h1_kit_test.py"]
     },
     "h1-sim": {
-      "argv": ["python", "tools/h1_sim_gate.py", "run"]
+      "argv": ["{python}", "tools/h1_sim_gate.py", "run"]
     }
   },
   "gates": {
