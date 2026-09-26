@@ -11,6 +11,14 @@ window) and H-4 (`shutdown` request kind) recorded in
 
 Batch: MVP-4 of OBL-20260922T155800Z-9A7B41. Exit gate (ARCH §15):
 
+> **Amendment 2026-09-26 (ADR-0055):** row 1's "real ZCode H1 test"
+> carrier is superseded by the **simulated ZCode hook lifecycle gate**
+> (`MVP4_SIMULATION_ACCEPTED` + standing
+> `INSTALLED_DESKTOP_EXECUTION_UNVERIFIED` residual; skip →
+> NOT_VALIDATED). The owner-live trial instrument is retired after four
+> evidenced trials (2026-09-23..26); the kit's preflight gains
+> session_start coverage in the gate-build wave. Rows 2-3 are unchanged.
+
 1. a real ZCode H1 test proves deny has no fallthrough (owner-H1
    acceptance point; the session prepares the kit);
 2. Bash, Write, Edit, and every discovered write path cannot bypass

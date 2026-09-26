@@ -10,6 +10,17 @@
 > Architecture: `qiven-runtime docs/architecture/task-cognition-activation.md`
 > Acceptance: `qiven-context collaboration/cognitive-effectiveness-acceptance.md`
 > Deliberation record: `qiven-docs accepted/2026-09-23/` (PR #1, seven passes, corrections R1-R15)
+>
+> **Amendment 2026-09-26 (ADR-0055, canonical amendments transaction):**
+> every "real H1" reading of the MVP-4 corrective lane and the MVP-5/CA-1
+> unfreeze condition in this document is superseded the same way as
+> ADR-0050 decision 8: the corrective lane closes through the **simulated
+> ZCode hook lifecycle gate** (`MVP4_SIMULATION_ACCEPTED`, standing
+> `INSTALLED_DESKTOP_EXECUTION_UNVERIFIED` residual; skip →
+> NOT_VALIDATED); the owner-live trial instrument is retired after four
+> evidenced trials (2026-09-23..26 incident audits); real-harness
+> execution on the owner machine is banned. The trials remain
+> program-level incident evidence and discriminating test cases.
 
 ## 0. Amendment Decision
 

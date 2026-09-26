@@ -2,10 +2,11 @@
 
 ## From a Real ZCode Hook to a Usable, Enforceable Runtime
 
-> Status: Proposed implementation baseline for the MVP
-> Date: 2026-09-22
+> Status: **ACCEPTED implementation baseline for the MVP** (ADR-0047, owner-accepted 2026-09-22; the former "Proposed implementation baseline" label corrected 2026-09-26 per the accepted qiven-docs PR4 audit)
+> Date: 2026-09-22 (accepted 2026-09-22; doc-repair labels 2026-09-26)
 > Repositories in scope: `qiven-runtime`, `qiven-context`, and `qiven-context-draft`
 > Primary decision: Do not begin by building a generalized local record database. First complete one production-grade vertical slice that is usable in daily work, can deny unsafe actions, is fully auditable, and can recover deterministically from crashes.
+> MVP-4 exit amendment (2026-09-26, ADR-0055): the interim MVP-4 exit gate is the **simulated ZCode hook lifecycle gate** — real hook executable + RuntimeHost over the real pipe with an independently sourced simulated caller; a pass is reported `MVP4_SIMULATION_ACCEPTED` with the standing `INSTALLED_DESKTOP_EXECUTION_UNVERIFIED` residual. The real owner-live H1 trial is retired as the interim acceptance instrument; real-harness build/execution on the owner machine is banned. Real-H1 wording elsewhere in this document reads under that amendment.
 
 ### Normative language
 
@@ -157,6 +158,11 @@ Within this tuple:
 - an operation outside the governed tuple MUST return `NotGoverned`; it MUST NOT be represented as safety guaranteed by Runtime.
 
 Intercepting Bash alone is not complete mediation. Before release, the MVP MUST enumerate every current ZCode tool entry point capable of writing files and prove through real H1 tests that each entry point is either mediated or disabled.
+
+> **Amendment 2026-09-26 (ADR-0055):** the enumeration duty is unchanged;
+> the interim proof carrier is the simulated ZCode hook lifecycle gate at
+> the exact candidate head (see the status banner), with the
+> writable-child/subagent bypass as a required negative coverage case.
 
 ---
 
@@ -817,7 +823,7 @@ schemas/
 | Generation/transaction counters | Replace restart-local counters with durable installation/boot epoch plus 128-bit IDs |
 | `DraftSnapshotReader` | Separate source revision from content digest; read only a verified bundle |
 | ExecutionAuthority | Replace Null/test implementations with lease, fence, and Git-CAS authority |
-| `docs/architecture/runtime.md` | Mark the older process-execution architecture as historical and point to the current cognition/runtime architecture so the repository does not describe two conflicting missions |
+| `docs/architecture/runtime.md` | Mark the older process-execution architecture as historical and point to the current cognition/runtime architecture so the repository does not describe two conflicting missions (done: bannered at MVP-0; museumed to `docs/architecture/legacy/runtime-process-execution.md` 2026-09-26) |
 
 ### 14.3 Compatibility strategy
 
