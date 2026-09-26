@@ -513,8 +513,14 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
         # 1b. session_start REGISTRATION coverage (2026-09-26 trial-4 fix):
         # the preflight must drive the registration path it will rely on,
         # and the booted host's console must show the session registered.
+        # Silent allow is the CONTRACT for a current-cognition registration
+        # (the hook prints the note only on a non-current refresh), so the
+        # positive evidence is the HOST LOG row; the text checks reject
+        # every known failure shape the hook can emit while exiting 0.
         code, _out, err = run_session_start_probe()
-        registered = code == 0 and "NOT registered" not in err
+        registered = (code == 0
+                      and "NOT registered" not in err
+                      and "unexpected reply shape" not in err)
         if host_proc is not None and log_path.exists():
             log_text = log_path.read_text(encoding="utf-8", errors="replace")
             registered = registered and "[conn] session_start -> allow" in log_text

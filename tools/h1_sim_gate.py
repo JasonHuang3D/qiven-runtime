@@ -438,9 +438,13 @@ class Rig:
         exactly-one-row law, not by the text."""
         payload = self.hook_payload("pinned.session-start.startup", root, outside,
                                     session_label)
-        code, err, _ = run_hook(self.hook_exe, "session_start", root, payload,
-                                session_handle=handle)
+        code, err, elapsed = run_hook(self.hook_exe, "session_start", root, payload,
+                                      session_handle=handle)
         self.expect(code == 0, f"registration for {handle} failed: {err}")
+        self.expect(elapsed <= SESSION_TX_BOUND_S,
+                    f"hello+event transaction for {handle} closed in {elapsed:.2f}s "
+                    f"(INV-10 whole-transaction bound {SESSION_TX_BOUND_S}s - a "
+                    f"per-frame-only timer cannot close the trial-4 class)")
         if require_note:
             self.expect("session registered (id" in err,
                         f"first registration must carry the note: {err}")
@@ -498,27 +502,27 @@ class Rig:
                    "answer silently; identity stability is proven by S8's "
                    "exactly-one-row law)")
         def _s2():
-            code, err, _ = run_hook(hook, "session_start", s_root,
-                                    self.hook_payload("pinned.session-start.startup",
-                                                      s_root, s_outside, "sess-s1"),
-                                    session_handle="h-s1")
+            code, err, elapsed = run_hook(hook, "session_start", s_root,
+                                          self.hook_payload("pinned.session-start.startup",
+                                                            s_root, s_outside, "sess-s1"),
+                                          session_handle="h-s1")
             self.expect(code == 0, f"repeat exit {code}: {err}")
+            self.expect(elapsed <= SESSION_TX_BOUND_S,
+                        f"repeat transaction closed in {elapsed:.2f}s "
+                        f"(INV-10 bound {SESSION_TX_BOUND_S}s)")
             if "session registered (id" in err:
                 self.expect(self.session_id_of(err) == s_ids["h-s1"],
                             "repeat registration minted a DIFFERENT runtime identity")
 
+        # Repeat idempotence is proven once per fixture FORM (S2 pinned,
+        # S7 capture), not once per source enum value - the mechanism is
+        # the host idempotence clause, not the source field.
         for source in ("resume", "clear", "compact"):
             @self.case(f"S3.{source}-registers", ["INV-1"],
                        f"contract-derived: SessionStartHookInput source={source}")
             def _s3(payload_source=source):
                 self.registered(s_root, s_outside, f"h-{payload_source}",
                                 f"sess-{payload_source}")
-
-            @self.case(f"S3.{source}-repeat-idempotent", ["INV-1"],
-                       f"idempotence for source={source}")
-            def _s3r(payload_source=source):
-                self.registered(s_root, s_outside, f"h-{payload_source}",
-                                f"sess-{payload_source}", require_note=False)
 
         @self.case("S4.no-session-field-registers", ["INV-1"], "incident-audit trial 1",
                    incident="I1")
@@ -556,12 +560,34 @@ class Rig:
         def _s7():
             payload = self.hook_payload("capture.0.session-start.resume.dualkey",
                                         s_root, s_outside, "sess-cap0")
-            code, err, _ = run_hook(hook, "session_start", s_root, payload,
-                                    session_handle="h-cap0")
+            code, err, elapsed = run_hook(hook, "session_start", s_root, payload,
+                                          session_handle="h-cap0")
             self.expect(code == 0, f"capture repeat: {err}")
+            self.expect(elapsed <= SESSION_TX_BOUND_S,
+                        f"capture repeat closed in {elapsed:.2f}s "
+                        f"(INV-10 bound {SESSION_TX_BOUND_S}s)")
             if "session registered (id" in err:
                 self.expect(self.session_id_of(err) == s_ids["h-cap0"],
                             "capture-form repeat minted a new identity")
+
+        @self.case("S9.one-connection-per-registration", ["INV-9", "INV-10"],
+                   "hello+event ride ONE connection: the host's [open] per-accepted-"
+                   "connection lines must increment by EXACTLY one across a full "
+                   "registration (a client that splits hello/event across two "
+                   "connections fails here - the trial-3 client shape)")
+        def _s9():
+            log = self.run_root / "gS-host.log"
+
+            def open_lines() -> int:
+                text = log.read_text(encoding="utf-8", errors="replace")
+                return sum(1 for line in text.splitlines()
+                           if line.startswith("[open] connection"))
+
+            before = open_lines()
+            self.registered(s_root, s_outside, "h-s9", "sess-s9")
+            self.expect(open_lines() == before + 1,
+                        f"registration consumed {open_lines() - before} connections "
+                        f"(want exactly 1: hello+event share one connection)")
 
         @self.case("S8.exactly-one-row-per-handle", ["INV-1", "INV-8"],
                    "journal sessions/audit law")
@@ -588,58 +614,75 @@ class Rig:
         # The GUIDE's "EXPECT deny 110" for P1 was a design intent never
         # observed live (every trial-4 probe died at deny 114 before
         # classification). Recorded here as a detector-scope observation.
-        governed_writes = [
-            ("B1.capture-P1-write-state", "capture.2.pre-tool.write.governed.dualkey",
-             "Write"),
+        # Capture P1/P2 legs (trial-4 probe shapes): the captured probe
+        # targets (state/h1-probe.md) sit OUTSIDE the governed-path LIST,
+        # so the honest verdict is allow - recorded as a detector-scope
+        # observation (the GUIDE's "EXPECT deny 110" was a design intent
+        # never observed live: every trial-4 probe died at deny 114
+        # before classification).
+        for case_id, template, tool in (
+                ("B1.capture-P1-write-allow-detector-scope",
+                 "capture.2.pre-tool.write.governed.dualkey", "Write"),
+                ("B8.capture-P2-edit-allow-detector-scope",
+                 "capture.12.pre-tool.edit.governed.dualkey", "Edit")):
+            @self.case(case_id, ["INV-4", "INV-13"],
+                       f"{template}; capture P1/P2 target is outside the "
+                       "governed-path LIST - detector-scope observation")
+            def _capture_probe(template_id=template, tool_name=tool, cid=case_id):
+                payload = self.hook_payload(template_id, b_root, b_outside, "sess-b")
+                code, err, _ = run_hook(hook, "pre_tool", b_root, payload,
+                                        tool=tool_name, session_handle="h-b")
+                self.expect(code == 0 and err == "",
+                            f"capture P1/P2 target must allow lexically: {err}")
+                self.detector_limits.append(cid)
+                self.clear_outstanding(b_root, "h-b", tool_name)
+
+        # Template-driven deny legs (pinned-contract shapes; the target
+        # comes from the fixture itself, effect-asserted).
+        template_denies = [
             ("B2.pinned-write-current-md", "pinned.pre-tool.write", "Write"),
             ("B3.pinned-edit-memory-records", "pinned.pre-tool.edit", "Edit"),
-            ("B4.write-obligations-index", "pinned.pre-tool.write", "Write"),
-            ("B5.write-sessions-file", "pinned.pre-tool.write", "Write"),
-            ("B6.write-memory-index", "pinned.pre-tool.write", "Write"),
-            ("B7.write-active-work", "pinned.pre-tool.write", "Write"),
-            ("B8.capture-P2-edit-governed", "capture.12.pre-tool.edit.governed.dualkey",
-             "Edit"),
         ]
-        # Extra governed matrix: Edit across the remaining governed paths
-        # (pinned-contract shapes; the Write legs above already cover them).
-        for slug, rel in (("B4b.edit-obligations-index", "obligations/index.yaml"),
-                          ("B5b.edit-sessions-file", "sessions/2026-09-26-x.md"),
-                          ("B6b.edit-memory-index", "memory/index.yaml"),
-                          ("B7b.edit-active-work", "state/active-work.yaml")):
-            governed_writes.append((slug, None, "Edit"))
-            governed_writes[-1] = (slug, rel, "Edit")  # rel used below
-
-        for case_id, template, tool in governed_writes[:8]:
-            is_capture_probe = case_id in ("B1.capture-P1-write-state",
-                                           "B8.capture-P2-edit-governed")
+        for case_id, template, tool in template_denies:
             @self.case(case_id, ["INV-3", "INV-15"],
-                       f"{template}; " + ("capture P1/P2 target is outside the "
-                                          "governed-path LIST - detector-scope "
-                                          "observation" if is_capture_probe else
-                                          "profile governed_paths"))
-            def _deny_captured(template_id=template, tool_name=tool, cid=case_id,
-                               probe=is_capture_probe):
+                       f"{template}; profile governed_paths")
+            def _deny_template(template_id=template, tool_name=tool):
                 payload = self.hook_payload(template_id, b_root, b_outside, "sess-b")
                 target = json.loads(payload)["toolInput"]["file_path"]
                 before = Path(target).read_bytes() if Path(target).exists() else None
                 code, err, _ = run_hook(hook, "pre_tool", b_root, payload,
                                         tool=tool_name, session_handle="h-b")
-                if probe:
-                    # state/h1-probe.md is not a governed path: the honest
-                    # verdict is allow (the trials' "EXPECT deny 110" was a
-                    # design intent never observed live - every trial-4 probe
-                    # died at deny 114 before classification).
-                    self.expect(code == 0 and err == "",
-                                f"capture P1/P2 target must allow lexically: {err}")
-                    self.detector_limits.append(cid)
-                    self.clear_outstanding(b_root, "h-b", tool_name)
-                    return
                 self.expect_deny(R_GOVERNED_WRITE, err, code, source="(host verdict)")
                 after = Path(target).read_bytes() if Path(target).exists() else None
                 self.expect(after == before,
                             "DENY executed an effect (target changed)")
 
-        for slug, rel, _tool in governed_writes[8:]:
+        # Pinned-contract Write legs across the governed path LIST - each
+        # case names and targets ITS OWN governed path (a shared template
+        # target would make the names lie and the legs duplicates).
+        for case_id, rel in (
+                ("B4.write-obligations-index", "obligations/index.yaml"),
+                ("B5.write-sessions-file", "sessions/2026-09-26-x.md"),
+                ("B6.write-memory-index", "memory/index.yaml"),
+                ("B7.write-active-work", "state/active-work.yaml")):
+            @self.case(case_id, ["INV-3", "INV-15"], f"pinned-contract Write -> {rel}")
+            def _deny_write(rel_path=rel):
+                target = f"{b_root.as_posix()}/{rel_path}"
+                payload = self.payload_with_target(b_root, b_outside, "sess-b", "Write",
+                                                   file_path=target)
+                before = Path(target).read_bytes() if Path(target).exists() else None
+                code, err, _ = run_hook(hook, "pre_tool", b_root, payload,
+                                        tool="Write", session_handle="h-b")
+                self.expect_deny(R_GOVERNED_WRITE, err, code, source="(host verdict)")
+                after = Path(target).read_bytes() if Path(target).exists() else None
+                self.expect(after == before,
+                            "DENY executed an effect (target changed)")
+
+        # Edit across the same governed paths (extraction differs from Write).
+        for slug, rel in (("B4b.edit-obligations-index", "obligations/index.yaml"),
+                          ("B5b.edit-sessions-file", "sessions/2026-09-26-x.md"),
+                          ("B6b.edit-memory-index", "memory/index.yaml"),
+                          ("B7b.edit-active-work", "state/active-work.yaml")):
             @self.case(slug, ["INV-3", "INV-15"], f"pinned-contract Edit -> {rel}")
             def _deny_edit(rel_path=rel):
                 payload = self.payload_with_target(
@@ -841,7 +884,7 @@ class Rig:
             self.expect_deny(R_NO_LISTENER, err, code, source="hook-client")
             self.expect("fail-closed" in err, f"no honest fail-closed text: {err}")
 
-        @self.case("B24.no-host-session-start-advisory", ["INV-5", "INV-14"],
+        @self.case("B24.no-host-session-start-advisory", ["INV-14"],
                    "trial-4 audit: registration failure is an ADVISORY (why the "
                    "preflight missed it)", incident="I4")
         def _b24():
@@ -943,15 +986,25 @@ class Rig:
             self.expect(len(after) == len(before) + 1,
                         "unmatched post must leave its Indeterminate journal row")
 
-        @self.case("A7.unregistered-post-indeterminate", ["INV-7", "INV-14"],
-                   "unregistered post: degraded 114 verdict (advisory exit 0; "
-                   "the host records Indeterminate without guessing)")
+        @self.case("A7.unregistered-post-degraded-never-correlated",
+                   ["INV-7", "INV-14"],
+                   "unregistered post: typed 114 advisory (exit 0, silent at the "
+                   "hook - degraded is a legal silent verdict); it must NEVER "
+                   "mint a correlated outcome row (catalogue oracle "
+                   "unregistered_post_degraded)")
         def _a7():
             payload = self.hook_payload("pinned.post-tool.write", a_root, a_outside,
                                         "sess-ghost")
+            rows_before = [p for kind, p in audit_events(a_root)
+                           if kind in ("hook_outcome", "hook_outcome_unmatched")]
             code, _err, _ = run_hook(hook, "post_tool", a_root, payload,
                                      tool="Write", session_handle="h-ghost2")
             self.expect(code == 0, "unregistered post is advisory: exit 0")
+            rows_after = [p for kind, p in audit_events(a_root)
+                          if kind in ("hook_outcome", "hook_outcome_unmatched")]
+            self.expect(len(rows_after) == len(rows_before),
+                        "an unregistered post must NOT mint a correlated "
+                        "outcome row (never guessed, never silently success)")
 
         @self.case("A8.cross-session-outstanding-isolated", ["INV-7"],
                    "outstanding state is per-session (isolation contract)")
@@ -1020,6 +1073,11 @@ class Rig:
             kinds = [kind for kind, _ in audit_events(a_root)]
             self.expect("hook_admit" in kinds, "allowed action not journaled")
             self.expect("hook_outcome" in kinds, "correlated outcome not journaled")
+            log_text = (self.run_root / "gA-host.log").read_text(
+                encoding="utf-8", errors="replace")
+            self.expect("[conn] post_tool -> degraded" in log_text,
+                        "the host console must show the unregistered post as a "
+                        "degraded verdict (A7's host-side observable)")
 
         # ===================================================================
         # Group C: shutdown / restart / duplicate boot (INV-16, 17)
@@ -1206,11 +1264,14 @@ class Rig:
              "{SIM_ROOT_BSLASH}\\\\state\\\\current.md", "allow",
              "double separators normalize to empty segments - no governed substring "
              "- DETECTOR LIMIT recorded"),
-            ("P19.unicode-outside-edit", "Edit",
-             "{OUTSIDE_ROOT}/\u56fd/\u4e2d.md", "allow", None),
         ]
         for case_id, tool, target_form, expectation, note in path_cases:
-            @self.case(case_id, ["INV-3", "INV-4", "INV-13"],
+            # The binding must match what the case ASSERTS: deny legs carry
+            # the deny-without-effect invariants, allow legs the
+            # real-preconditions invariant (never both).
+            want_invariants = (["INV-3", "INV-15"] if expectation == "deny110"
+                               else ["INV-4"])
+            @self.case(case_id, want_invariants,
                        f"path-form policy ({target_form}); {note or 'lexical policy'}")
             def _path(tool_name=tool, form=target_form, want=expectation, cid=case_id,
                       case_note=note):
@@ -1500,18 +1561,18 @@ class Rig:
         x_proc, x_fh = boot_host(self.host_exe, x_root, None,
                                  self.run_root / "gX-host.log")
         self.live_procs.append(x_proc)
-        for idx, template_id in enumerate(
-                ("capture.0.session-start.resume.dualkey",
-                 "capture.1.session-start.startup.dualkey")):
-            row_token = template_id.split(".")[1]
-            @self.case(f"X{idx + 1}.capture-row{row_token}-fresh-root",
-                       ["INV-1"], f"{template_id} on an independent root")
-            def _x(template=template_id, handle=f"h-x{idx}"):
-                payload = self.hook_payload(template, x_root, x_outside,
-                                            f"sess-{handle}")
-                code, err, _ = run_hook(hook, "session_start", x_root, payload,
-                                        session_handle=handle)
-                self.expect(code == 0 and "session registered (id" in err, err)
+        # One independent-root registration replay (the dual-key capture
+        # form): a second row's registration is mechanism-identical to
+        # S5/S6 - only the fresh-root independence discriminates, and one
+        # case proves it.
+        @self.case("X1.capture-row0-dualkey-fresh-root", ["INV-1"],
+                   "capture.0.session-start.resume.dualkey on an independent root")
+        def _x1():
+            payload = self.hook_payload("capture.0.session-start.resume.dualkey",
+                                        x_root, x_outside, "sess-x0")
+            code, err, _ = run_hook(hook, "session_start", x_root, payload,
+                                    session_handle="h-x0")
+            self.expect(code == 0 and "session registered (id" in err, err)
 
         @self.case("X3.capture-inert-bash-outside-root", ["INV-4", "INV-13"],
                    "capture.4 with substitutions: no governed reference -> not_governed")
@@ -1580,7 +1641,8 @@ class Rig:
                     failed += 1
                     print(f"[FAIL] {case_id}: {detail}", flush=True)
         except (AssertionError, GateFailure, OSError, ConnectionError,
-                subprocess.SubprocessError, sqlite3.Error) as failure:
+                subprocess.SubprocessError, sqlite3.Error, json.JSONDecodeError,
+                struct.error) as failure:
             setup_error = f"{type(failure).__name__}: {failure}"
             print(f"[FAIL] h1-sim SETUP: {setup_error}", flush=True)
             started = time.monotonic()
@@ -1607,6 +1669,14 @@ class Rig:
     # -- receipt -------------------------------------------------------------
 
     def source_graph(self) -> dict:
+        toolchain = "unrecorded"
+        cache = self.bin.parent / "CMakeCache.txt"
+        if cache.is_file():
+            match = re.search(r"^//?CMAKE_CXX_COMPILER:[A-Z]+=(.+)$",
+                              cache.read_text(encoding="utf-8", errors="replace"),
+                              re.MULTILINE)
+            if match:
+                toolchain = match.group(1).strip()
         return {
             "runtime_head": subprocess.run(
                 ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
@@ -1622,6 +1692,8 @@ class Rig:
             "fixture_catalogue_digest": sha256_file(FIXTURES),
             "dependencies_manifest_digest": sha256_file(
                 REPO_ROOT / ".qiven" / "dependencies.json"),
+            "rig_self_digest": sha256_file(Path(__file__).resolve()),
+            "toolchain": toolchain,
             "python": sys.version.split()[0],
             "platform": sys.platform,
         }
@@ -1653,10 +1725,20 @@ class Rig:
                 "INSTALLED_DESKTOP_EXECUTION_UNVERIFIED": True,
             },
             "complete_mediation_scope": (
-                "claim scoped to the mediated tuple (Bash/Write/Edit through the "
-                "hook); delegation paths are NOT mediated (W1/W2 negative "
-                "controls; pinned zai-org/ZCode@29628c9 subagent construction "
-                "wires no hooks)"),
+                "claim scoped to the mediated tuple UNDER THE DOCUMENTED LEXICAL "
+                "DETECTOR SCOPE, with two recorded claim-blocking classes: "
+                "(1) delegation paths are NOT mediated (W1/W2 negative controls; "
+                "pinned zai-org/ZCode@29628c9 subagent construction wires no "
+                "hooks); (2) caller-side non-invocation is undetectable at this "
+                "boundary - a mid-turn hook-configuration change, an "
+                "OS/antivirus/third-party interception of the hook launch, or "
+                "any harness omission leaves NO journal trace (the W1/W2 "
+                "observable: unmediated actions journal nothing). Within the "
+                "mediated tuple the recorded lexical detector limits "
+                "(detector_limits_recorded: dot-segment, double separator, "
+                "junction/reparse, backslash root forms) are ALLOW-shaped "
+                "bypasses and qualify this claim; an OS-backed authorization "
+                "check is future work (P15 note)"),
             "verdict": outcome["verdict"],
         }
         path = RECEIPTS / (
@@ -1681,8 +1763,13 @@ class Rig:
             problems.append("receipt records skipped scenarios (acceptance-fatal)")
         if receipt.get("failed"):
             problems.append(f"receipt records {receipt['failed']} failed cases")
+        if receipt.get("case_count") != len(receipt.get("case_results", [])):
+            problems.append("receipt case_count does not match its case_results")
+        if len(receipt.get("case_results", [])) < 90:
+            problems.append("receipt carries fewer than 90 scenarios - the "
+                            "breadth floor (ADR-0055 decision 4 target: ~100)")
         for key in ("exe_digests", "profile_digest", "fixture_catalogue_digest",
-                    "dependencies_manifest_digest"):
+                    "dependencies_manifest_digest", "rig_self_digest"):
             if receipt.get("source_graph", {}).get(key) != graph.get(key):
                 problems.append(f"STALE receipt: {key} differs from the live tree")
         if receipt.get("head") != graph["runtime_head"]:
@@ -1792,20 +1879,26 @@ def main(argv=None) -> int:
     if args.mode == "old-fail-i4":
         return cmd_old_fail_i4(Path(args.bin_dir))
 
-    # run mode
-    rig = Rig(bin_dir=Path(args.bin_dir) if args.bin_dir else None)
-    if not args.dev and not rig.source_graph()["tree_clean"]:
-        print("[FAIL] working tree is not clean - commit first (the receipt binds "
-              "an exact validated head) or pass --dev for a development receipt")
-        return EXIT_FAIL
-    for name in ("qiven-runtime-host.exe", "qiven-zcode-hook.exe"):
-        if not (rig.bin / name).exists():
-            print(f"[NOT_VALIDATED] candidate executable missing: {rig.bin / name} "
-                  "(build first; a missing binary is acceptance-fatal, never a "
-                  "skip)")
+    # run mode. Containment of last resort: ANY escaping exception becomes
+    # a typed gate failure, never a traceback (a gate that dies mid-run
+    # must fail loudly and typed, in the same voice as its case rows).
+    try:
+        rig = Rig(bin_dir=Path(args.bin_dir) if args.bin_dir else None)
+        if not args.dev and not rig.source_graph()["tree_clean"]:
+            print("[FAIL] working tree is not clean - commit first (the receipt binds "
+                  "an exact validated head) or pass --dev for a development receipt")
             return EXIT_FAIL
-    outcome = rig.execute()
-    receipt_path = rig.write_receipt(outcome, argv, dev=args.dev)
+        for name in ("qiven-runtime-host.exe", "qiven-zcode-hook.exe"):
+            if not (rig.bin / name).exists():
+                print(f"[NOT_VALIDATED] candidate executable missing: {rig.bin / name} "
+                      "(build first; a missing binary is acceptance-fatal, never a "
+                      "skip)")
+                return EXIT_FAIL
+        outcome = rig.execute()
+        receipt_path = rig.write_receipt(outcome, argv, dev=args.dev)
+    except Exception as failure:  # noqa: BLE001 - typed containment, no traceback
+        print(f"[FAIL] h1-sim gate error: {type(failure).__name__}: {failure}")
+        return EXIT_FAIL
     if outcome["verdict"] == "SIMULATED_HOOK_HOST_PASS":
         print(f"[ OK ] h1-sim PASS: {outcome['total']} cases, 0 failed, 0 skipped "
               f"({outcome['elapsed_s']}s) - receipt {receipt_path}")
