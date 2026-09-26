@@ -85,12 +85,15 @@ Three corollaries, each killing one historical failure mechanism:
   (`git fetch` + bundle publish + generation activation) is
   HOST-AUTONOMOUS: it runs at boot (local publish), on a host-internal
   cadence (`refresh_interval_ms`), and on the operator verb
-  `runtimectl host refresh`. No client event triggers it, and no
-  network, git, or bundle-write operation is reachable from the
-  request path. Requests are answered from already-published state in
-  bounded, trivial time. (Recorded ARCH delta: ARCH §7.4's "refresh at
-  SessionStart" trigger is superseded by this design — the freshness
-  LAW of §7.4 stands unchanged; see §6.)
+  `runtimectl host refresh` — a convenience TRIGGER only: an
+  authenticated operator request that signals the worker; it never
+  executes work on any request path and the host is complete without
+  it. NO HOOK EVENT triggers refresh, no network, git, or bundle-write
+  operation is reachable from the request path, and requests are
+  answered from already-published state in bounded, trivial time.
+  (Recorded ARCH delta: ARCH §7.4's "refresh at SessionStart" trigger
+  is superseded by this design — the freshness LAW of §7.4 stands
+  unchanged; see §6.)
 - **LL-2c Host state never encodes client arrival.** Admission,
   freshness, generation, and scope state derive from host-owned inputs
   (install record merged at boot, profile, journal, clock) — never
@@ -118,11 +121,16 @@ Three corollaries, each killing one historical failure mechanism:
   client, and closing on them cannot affect any OTHER connection's
   service. The one client-visible bound is the connection cap: an
   over-cap connection receives a typed error frame carrying NEW
-  reason code **125 (server-busy)** and closes. The hook client is
-  one-shot and does NOT retry: `pre_tool` maps 125 to a fail-closed
-  deny with honest text; advisory events exit 0 with a note. The cap
-  (default 8) is sized far above real hook concurrency so a correct
-  deployment never sees 125.
+  reason code **125 (server-busy)** and closes — using the SAME
+  bounded-linger mechanism every typed error close uses (the linger
+  helper is shared from `pipe_service` to the listen pool's busy
+  path), so the frame is never discarded by the close that follows
+  it. The hook client is one-shot and does NOT retry: `pre_tool`
+  maps 125 to a fail-closed deny with honest text; advisory events
+  exit 0 with a note. The cap (default 8) is sized far above real
+  hook concurrency so a correct deployment never sees 125; the 125
+  audit row records the occupancy breakdown (active serve threads
+  vs waiting arms) so the S-5 discriminator is observable.
 - **Caller-side budgets remain the caller's right.** The hook keeps
   client-side read bounds — session_start 9750 ms, pre/post 4750 ms —
   chosen conservatively INSIDE the harness hook budgets (15 s / 10 s
@@ -214,7 +222,14 @@ src/host/runtime_host.cpp/.hpp                 ensure_session() first-contact
                                               Indeterminate
 src/host/deployment_profile.cpp                revision 3: cognition.
                                               refresh_interval_ms (default
-                                              900000), validated > 0
+                                              900000), validated > 0 AND
+                                              cross-validated
+                                              refresh_interval_ms + fetch
+                                              bound (5000) <
+                                              freshness_window_ms (a
+                                              healthy worker must never
+                                              straddle a window edge into
+                                              recurring 117)
 apps/runtime_host_main.cpp                     serve loop WIRES the library
                                               listen pool (cap + 125 live
                                               in the library) with a
@@ -286,13 +301,15 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
   closes.
 - **The accept loop never ends because of a client.** Accept errors
   are NEVER fatal to a long-lived server: vanish-class errors keep
-  the existing bounded replace-and-retry; any other accept failure
-  recreates the listen instance and retries with internal backoff;
-  a persistently failing listener enters a loud DEGRADED state
-  (heartbeat lines + `status.state` report it; journal audit row) and
-  keeps retrying — the process exits only on operator stop (Ctrl+C,
-  console close, logoff/shutdown, authenticated Shutdown) or
-  boot-class failure before serving begins.
+  the existing bounded replace-and-retry; EXHAUSTION of that bound
+  (a vanish storm) and any other accept failure both degrade to the
+  never-fatal path — recreate the listen instance and retry with
+  internal backoff; a persistently failing listener enters a loud
+  DEGRADED state (heartbeat lines + `status.state` report it;
+  journal audit row) and keeps retrying. No accept-path outcome
+  reaches process exit; the process exits only on operator stop
+  (Ctrl+C, console close, logoff/shutdown, authenticated Shutdown)
+  or boot-class failure before serving begins.
 - **Per-connection fault containment.** Every serve thread wraps its
   whole connection body in a catch-all: an escaping exception or
   unclassifiable fault closes THAT connection and journals an audit
@@ -320,22 +337,26 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
   the single-use decision law binds at admit time. This supersedes
   ARCH §7.4's "pin the session to that generation" wording (the
   pinning that remains is the audit-row identity; §10).
-- **Stop semantics (complete contract).** `g_stop` may be set by the
-  Ctrl+C / console-close / logoff / shutdown handler or by an
-  authenticated Shutdown request on any serve thread. Accept slots
-  re-check `g_stop` AFTER creating an instance and BEFORE blocking in
-  `ConnectNamedPipe` (closing the lost-wakeup window); the stop path
-  issues `CancelSynchronousIo` against each accept slot and re-issues
-  it on every grace tick until that slot joins. Live connections are
-  tracked in a registry guarded by its own small lock; at stop,
-  ownership of each live connection TRANSFERS to the stop path, which
-  closes the handles so blocked reads/writes abort promptly — serve
-  threads exit on the resulting error without touching the handle
-  again (no double-close). Threads join within a bounded grace
-  (default 5 s); after the grace, the journal checkpoints and process
-  teardown terminates any straggler (documented: the grace plus
-  teardown, not the idle bound, is the exit worst case). In-flight
-  requests complete or deny 119 before drain starts (unchanged).
+- **Stop semantics (complete contract, phased).** `g_stop` may be set
+  by the Ctrl+C / console-close / logoff / shutdown handler or by an
+  authenticated Shutdown request on any serve thread. Phase 1 — stop
+  accepting: accept slots re-check `g_stop` AFTER creating an
+  instance and BEFORE blocking in `ConnectNamedPipe` (closing the
+  lost-wakeup window); the stop path issues `CancelSynchronousIo`
+  against each slot and re-issues it on every grace tick until the
+  slot joins. Phase 2 — bounded drain grace (default 5 s): live
+  connections are NOT closed; serve threads check `g_stop` BETWEEN
+  requests only, so a request already in flight completes (or denies
+  119 at its own boundary) while no NEW request is read. Phase 3 —
+  close and join: after the grace, ownership of each remaining
+  connection TRANSFERS to the stop path, which closes the handles so
+  blocked reads/writes abort promptly (idle or hostile connections);
+  serve threads exit on the resulting error without touching the
+  handle again (no double-close) and join. If a thread still lives
+  after join-wait, the journal checkpoints and process teardown
+  terminates the straggler (documented: grace plus teardown is the
+  exit worst case). Outstanding pre transactions are marked
+  Indeterminate, WAL checkpoint, exit 0.
 - **Restart semantics (long-lived makes this routine, so it is
   designed, not inherited).** A host restart between a `pre_tool`
   allow and its `post_tool` leaves that correlation honestly
@@ -369,8 +390,13 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
   threads).
 - **Boot order: the singleton is acquired BEFORE any journal open or
   recovery.** The mutex key changes from install-id to a stable hash
-  of the resolved governed ROOT (known before any durable touch),
-  restoring the mutex-first order `mvp3-host-ipc.md` §3.4 specified
+  of the root's CANONICAL IDENTITY: a read-only directory handle on
+  the resolved root resolved through `GetFinalPathFromHandle` (the
+  OS-truth spelling — resolves case variance, 8.3 short names, subst
+  drives, and symlinks), then case-folded and hashed. This closes the
+  path-aliasing hole a verbatim `--root` hash would open (a second
+  start through an alias spelling must NOT reach the journal), and
+  restores the mutex-first order `mvp3-host-ipc.md` §3.4 specified
   and the current code drifted from: an idempotent `start-host.cmd`
   racing a healthy server must fail fast at the mutex and exit
   WITHOUT opening the live journal or running recovery against it.
@@ -412,6 +438,7 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
 | request-path cost bound | `hook_conformance` | LL-2b: verdicts return within **250 ms** while git is a nonexistent executable / the remote is unreachable (no network in the path; expected single-digit ms, bound pinned with margin) |
 | hook client 125 mapping | `hook_conformance` | LL-3: a typed 125 busy error frame maps client-side to a fail-closed deny with honest text for `pre_tool` and an exit-0 note for advisory events (the classifier is taught the code) |
 | refresh worker faults | `hook_conformance` | §5: an injected fault in the worker's attempt body journals `refresh_fault`, degrades refresh state, and the host KEEPS SERVING verdicts; the next cadence tick runs a normal attempt |
+| registry eviction | `hook_conformance` | §5: with a test-injected small `session_idle_evict_ms`, an idle session evicts and a re-contact mints FRESH (same honest semantics as restart); the sim-gate oracle's one-`session_registered`-row-per-handle expectation is amended in batch (c) accordingly |
 | verdict latency under concurrent publish | `hook_conformance` | §5 two-level locking: a verdict served WHILE a refresh publish runs returns within the bound (default assert < 1000 ms) — the claim is measured, not assumed |
 | manifest advisory | `hook_conformance` | 113 ONLY for the mismatched tools (per-tool degradation); a matching manifest never degrades; manifest absence never degrades availability |
 | refresh worker | `hook_conformance` | boot publish; cadence attempt observable via journal `cognition_*` rows and status; expiry → 117 with automatic recovery after a successful attempt; operator `refresh` kind triggers an attempt (authenticated, journaled) |
@@ -469,7 +496,7 @@ Every kit launcher states the exact image it runs.
 | S-2 | refresh retry/backoff policy beyond fixed cadence | measured flapping (repeated local_fallback/expired oscillation) in dogfood |
 | S-3 | publish-under-mutex latency optimization (delta-publish) | a measured verdict latency spike overlapping a publish in dogfood |
 | S-4 | log rotation for the background `--log` file | unbounded log growth observed in dogfood |
-| S-5 | connection-cap raise / queueing | typed busy observed in real sessions (would indicate >8 concurrent hook clients) |
+| S-5 | connection-cap raise / queueing | typed 125 observed in real sessions — DISCRIMINATED by the 125 audit row's occupancy breakdown: >8 genuinely concurrent hook clients → raise the cap; ≤8 stalled/hostile occupants → tighten idle/write bounds or linger policy (same observable, opposite fixes) |
 
 ## 10. Supersession map (dated amendments land with batch b)
 
