@@ -246,6 +246,12 @@ void append_event(journal::RuntimeJournal& journal, std::string_view kind,
 
 RuntimeHost::~RuntimeHost()
 {
+    if (m_singleton_mutex != nullptr)
+    {
+        ReleaseMutex(static_cast<HANDLE>(m_singleton_mutex));
+        CloseHandle(static_cast<HANDLE>(m_singleton_mutex));
+        m_singleton_mutex = nullptr;
+    }
     {
         std::lock_guard<std::mutex> guard(m_refresh_mutex);
         m_worker_running = false;
@@ -349,7 +355,8 @@ qiven::Result<std::unique_ptr<RuntimeHost>> RuntimeHost::boot(const HostBoot& bo
         return HostResult(std::move(host));
     }
 
-    host->m_profile_cache = profile.value(); // cached; request paths read this copy
+    host->m_profile_cache  = profile.value(); // cached; request paths read this copy
+    host->m_profile_digest = profile_digest;  // the generation's identity, cached too
 
     // 5. Publish + pin the ACTIVE bundle from the authorized LOCAL ref
     //    (remote fetch + freshness window land with MVP-4 SessionStart).
@@ -907,6 +914,9 @@ ipc::Reply RuntimeHost::handle_session_start(const ipc::Request& request, u64 no
                     }
                 }
             }
+            // Recomputed from scratch: a corrected later manifest un-degrades.
+            session->degraded_tools.clear();
+            session->degraded_detail.clear();
             for (const auto& entry : profile.value().tool_inventory)
             {
                 if (declared_tokens.count(entry.tool) == 0)
@@ -968,6 +978,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
         ack.verdict       = "deny";
         ack.reason_code   = static_cast<i64>(hook_reason_scope_mismatch);
         ack.reason_detail = session.degraded_detail;
+        append_event(*m_journal, "hook_deny_scope_mismatch", request.tool_name, now_ms);
         return ack;
     }
 
@@ -1322,14 +1333,8 @@ bool RuntimeHost::refresh_cognition(u64 now_ms, std::string& refresh_state,
         // Only a CONTENT change advances the generation.
         if (published_outcome->bundle_digest != m_active_bundle_digest)
         {
-            const ContentDigest profile_digest = cognition::digest_of(
-                [&]() {
-                    std::ifstream in(m_profile_file, std::ios::binary);
-                    return std::string((std::istreambuf_iterator<char>(in)),
-                                       std::istreambuf_iterator<char> {});
-                }());
             auto generation = activate_generation(*m_journal, published_outcome->bundle_digest,
-                                                  profile_digest, m_build_id, now_ms);
+                                                  m_profile_digest, m_build_id, now_ms);
             if (generation.is_ok())
             {
                 m_generation           = generation.value().value;

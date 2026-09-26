@@ -6,6 +6,7 @@
 #include <qiven/runtime/ipc/named_pipe_server.hpp>
 #include <qiven/runtime/ipc/protocol.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <iterator>
 #include <utility>
@@ -87,6 +88,17 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     }
 
     u64 seq = 1;
+    // ONE invocation-wide budget: hello read + event read + writes all draw
+    // from it (per-read full budgets compose to ~2x the harness budget on a
+    // half-answering host — a review finding).
+    const auto invocation_deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(run.deadline_ms);
+    const auto remaining_budget_ms = [&]() {
+        return static_cast<u64>(std::max<std::int64_t>(
+            0, std::chrono::duration_cast<std::chrono::milliseconds>(
+                   invocation_deadline - std::chrono::steady_clock::now())
+                   .count()));
+    };
     // hello first: the host answers or rejects the version BEFORE the
     // event is processed; a rejected handshake is a deny for pre_tool.
     // The wire carries NO deadline (host-server redesign LL-3 — the
@@ -107,7 +119,7 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
                                                     hook_reason_host_unavailable,
                                                     "hello write failed"));
     }
-    auto hello_frame = client.value().read_frame(run.deadline_ms);
+    auto hello_frame = client.value().read_frame(remaining_budget_ms());
     if (!hello_frame.has_value())
     {
         if (client.value().last_read_timed_out())
@@ -165,8 +177,10 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     ipc::Request request;
     request.kind  = ipc::Request::Kind::HookEvent;
     request.event = run.event;
-    request.session_handle =
-        run.session_handle.empty() ? fields.session_handle : run.session_handle;
+    // Registration-template authority (deny-118 correction): the session
+    // identity comes from the COMMAND LINE, never from payload fields — a
+    // missing --session-handle is a fail-closed misregistration.
+    request.session_handle = run.session_handle;
     request.tool_name      = run.tool.empty() ? fields.tool_name : run.tool;
     request.payload_sha256 = cognition::hex_lower(
         std::span<const std::byte>(fields.payload_digest.sha256.data(),
@@ -187,7 +201,7 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
                                                     hook_reason_host_unavailable,
                                                     "request write failed"));
     }
-    auto frame = client.value().read_frame(run.deadline_ms);
+    auto frame = client.value().read_frame(remaining_budget_ms());
     if (!frame.has_value())
     {
         if (client.value().last_read_timed_out())
@@ -298,6 +312,20 @@ HookOutcome run_zcode_hook(const HookRun& run)
                                run.tool + "' (misregistration)");
     }
 
+    if (run.session_handle.empty() && !fields.session_handle.empty())
+    {
+        if (pre_tool)
+        {
+            return deny_client(hook_reason_payload,
+                               "no --session-handle on the registration command line "
+                               "(payload fields are corroborating evidence only)");
+        }
+        if (is_advisory)
+        {
+            return advisory_note(run.event + ": no --session-handle on the registration "
+                                             "command line; event unregistered");
+        }
+    }
     auto reply = transact(run, fields);
     if (!reply.is_ok())
     {

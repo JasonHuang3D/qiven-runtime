@@ -199,6 +199,7 @@ private:
     void* m_singleton_mutex = nullptr; // named-mutex HANDLE, held for life
     // MVP-4 members
     std::optional<ProfileFile> m_profile_cache;
+    ContentDigest m_profile_digest {}; // the generation's profile identity (cached)
     std::filesystem::path m_repo_root;
     std::filesystem::path m_profile_file;
     std::filesystem::path m_git_executable;

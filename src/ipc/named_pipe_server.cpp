@@ -803,15 +803,18 @@ void ServeLoop::arm_thread_body(usize arm_index)
                 }
                 return;
             case ConnectOutcome::Vanished:
-                // A client connected and died inside the accept window: replace
-                // the dead instance and keep accepting (bounded internal retry
-                // is subsumed by the never-fatal loop).
+                // A client connected and died inside the accept window:
+                // replace the dead instance and keep accepting, WITH a
+                // small backoff so an attacker's connect-die churn cannot
+                // spin the arm (§5 "recreate and retry with internal
+                // backoff" — the unbacked loop was a review finding).
                 if (instance != nullptr)
                 {
                     CloseHandle(instance);
                     instance = nullptr;
                 }
                 m_stats.accept_recreates.fetch_add(1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 continue;
             case ConnectOutcome::Failed:
                 if (instance != nullptr)
@@ -820,6 +823,7 @@ void ServeLoop::arm_thread_body(usize arm_index)
                     instance = nullptr;
                 }
                 m_stats.accept_recreates.fetch_add(1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 continue; // never-fatal: recreate and retry
             }
         }
@@ -839,8 +843,17 @@ void ServeLoop::arm_thread_body(usize arm_index)
             m_hooks.log("[fault] arm thread contained an exception; re-arming");
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        std::thread rearm([this, arm_index] { arm_thread_body(arm_index); });
-        rearm.detach();
+        try
+        {
+            std::thread rearm([this, arm_index] { arm_thread_body(arm_index); });
+            rearm.detach();
+        }
+        catch (...)
+        {
+            // Even thread-construction failure stays contained: stop the
+            // loop cleanly (the exe drains) instead of terminating.
+            request_stop();
+        }
     }
 }
 

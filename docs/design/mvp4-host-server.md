@@ -616,6 +616,17 @@ laws:
    batch. None of these weaken the laws; they name not-yet-mechanized
    proofs.
 
+7. **Round-4 residuals (honestly recorded).** (a) 's audit-chain
+   walk runs under the one state mutex (the journal is a single shared
+   connection — concurrent access must serialize); it is operator-invoked
+   and its cost is the chain walk; an incremental/bounded verify is a
+   hardening item. (b) The structural request-path row (marker-writing
+   stub git, no  row) and the end-to-end 125 frame row (real
+   over-cap frame through the real hook) are deferred with the rig batch;
+   the timing legs and the synthetic classifier row are the current
+   assertion sites. (c) The heartbeat thread's catch-all containment is
+   exe-level polish on the same hardening list.
+
 ## 13. Review record
 
 Design authored 2026-09-27 (v37 session, designation

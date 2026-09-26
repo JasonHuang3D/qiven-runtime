@@ -149,8 +149,9 @@ int main()
     // --- client-side fail-closed mapping (exit gate rows 3/5) --------------
     {
         qiven::runtime::adapter::HookRun run;
-        run.runtime_root = std::filesystem::temp_directory_path() / "qiven-hook-nohost";
-        run.event        = "pre_tool";
+        run.runtime_root   = std::filesystem::temp_directory_path() / "qiven-hook-nohost";
+        run.event          = "pre_tool";
+        run.session_handle = "s-1"; // template authority (deny-118 correction)
         const std::string payload =
             "{\"session_id\":\"s-1\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\","
             "\"tool_input\":{\"command\":\"echo hi\"}}";
