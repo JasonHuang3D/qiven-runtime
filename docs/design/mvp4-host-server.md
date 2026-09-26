@@ -100,8 +100,10 @@ Three corollaries, each killing one historical failure mechanism:
 
 - **The wire carries no deadline.** `deadline_ms` is removed from the
   request envelope (protocol shape revision; unknown-field rejection
-  keeps old shapes failing closed with a typed code the new client
-  maps to version skew). The hello-deadline ceiling — the trial-4
+  keeps old shapes failing closed with a typed error — the old-client
+  transition is the honest 116-class fail-closed deny per the
+  mixed-fleet clause below; the NEW client never sends the field and
+  needs no mapping). The hello-deadline ceiling — the trial-4
   mechanism — is dead by construction: there is no deadline to
   validate, reject, or split.
 - **The host never waits on a client as a correctness step.** The
@@ -153,7 +155,7 @@ observed; nothing is inferred from what was not.
 
 **Kept (proven machinery, untouched semantics):** HMAC + DPAPI
 installation-secret framing (`framing`), per-connection strictly-
-increcreasing `connection_seq`, client-image admission with the typed
+increasing `connection_seq`, client-image admission with the typed
 reply surface, owner-only DACL, the journal (MVP-1), the cognition
 bundle + generation machinery (MVP-2), profile/deployment validation,
 SortableId128 minting, pre/post correlation law (one outstanding pre
@@ -188,7 +190,10 @@ include/qiven/runtime/ipc/pipe_service.hpp    serve_connection unchanged in
                                               documented per-thread use
 src/ipc/named_pipe_server.cpp                  LISTEN POOL: M concurrently-
                                               armed instances (default 4),
-                                              replenished per accept;
+                                              replenished per accept; the
+                                              CONNECTION CAP + typed 125
+                                              busy emission live HERE
+                                              (library layer, testable);
                                               accept errors NEVER fatal;
                                               stop-wake via g_stop recheck
                                               + CancelSynchronousIo per
@@ -210,9 +215,9 @@ src/host/runtime_host.cpp/.hpp                 ensure_session() first-contact
 src/host/deployment_profile.cpp                revision 3: cognition.
                                               refresh_interval_ms (default
                                               900000), validated > 0
-apps/runtime_host_main.cpp                     thread-per-connection serve
-                                              loop with connection cap
-                                              (typed 125 busy frame) and
+apps/runtime_host_main.cpp                     serve loop WIRES the library
+                                              listen pool (cap + 125 live
+                                              in the library) with a
                                               live-connection registry
                                               (ownership transfer at stop);
                                               per-connection catch-all fault
@@ -228,14 +233,15 @@ apps/runtimectl_main.cpp                       + `host refresh [--wait-ms]`;
                                               status prints refresh state /
                                               last-ok / next-due; ALL client
                                               reads bounded (default 5000)
-apps/zcode_hook.cpp / apps/
-  zcode_hook_main.cpp                          no deadline on the wire;
+src/adapter/zcode_hook.cpp +
+apps/zcode_hook_main.cpp                  no deadline on the wire;
                                               client-side read bounds stay
                                               (provenance per LL-3); 125
-                                              busy mapping (pre_tool ->
+                                              busy mapping TAUGHT to the
+                                              classifier (pre_tool ->
                                               fail-closed deny; advisory ->
                                               note); WaitNamedPipe connect
-                                              etiquette
+                                              etiquette consumed
 config/profiles/zcode-jason-context-record-
   mvp.yaml                                     revision 3 (refresh cadence)
 tests/hook_conformance.cpp                     handle()-level rows ONLY
@@ -339,8 +345,9 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
   recovery walk (unconsumed decisions from older boot epochs are
   stale-marked at recovery — verified in the journal code). A
   harness handle re-contacting after restart mints a FRESH runtime
-  session (a second `open_session` row — the journal's boot-epoch
-  column separates the lifetimes; the honest boundary, not an
+  session (a second `open_session` row — the minting host's boot
+  epoch, recorded in the journal, distinguishes the lifetimes, and
+  the restart test row asserts this; the honest boundary, not an
   idempotence failure within one lifetime — LL-2a's "idempotent
   re-contact keeps one session id" holds within one host lifetime).
   LL-4's "no session to repair" is scoped exactly: AVAILABILITY
@@ -350,7 +357,24 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
   grow forever: a session with NO outstanding pre and idle beyond
   `session_idle_evict_ms` (default 24 h) is evicted (journal rows are
   permanent); a re-contact after eviction mints fresh — the same
-  honest semantics as a restart.
+  honest semantics as a restart (so LL-2a's idempotence holds within
+  one host lifetime AND before eviction).
+- **The refresh worker is fault-contained like every other unit.**
+  The worker's whole attempt body runs under a catch-all: an
+  escaping exception or unclassifiable fault journals an audit row
+  (`refresh_fault`), marks refresh state degraded (visible in
+  `status`), and the worker CONTINUES at its next cadence tick — a
+  host-internal fault never terminates the long-lived process
+  (LL-1 applies to every thread the host owns, not only serve
+  threads).
+- **Boot order: the singleton is acquired BEFORE any journal open or
+  recovery.** The mutex key changes from install-id to a stable hash
+  of the resolved governed ROOT (known before any durable touch),
+  restoring the mutex-first order `mvp3-host-ipc.md` §3.4 specified
+  and the current code drifted from: an idempotent `start-host.cmd`
+  racing a healthy server must fail fast at the mutex and exit
+  WITHOUT opening the live journal or running recovery against it.
+  The install record and pipe naming stay install-id-based.
 - Freshness evaluation is at request time from the durable
   `last_refresh_ok_ms` journal meta + wall clock (unchanged LAW);
   the refresh cadence is a worker sleep between ATTEMPTS, not a
@@ -385,7 +409,9 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
 | first contact | `hook_conformance` | LL-2a: `pre_tool` on a never-registered handle mints the session and returns a real verdict (never a 114-class deny); `post_tool` first contact degrades honestly (unmatched) without poisoning; idempotent re-contact keeps one session id within a host lifetime |
 | registration independence | `hook_conformance` | LL-2a: full pre/post flow with NO `session_start` at all behaves identically to the registered flow |
 | no-deadline wire | `hook_conformance` | LL-3: requests carry no `deadline_ms`; a request containing it fails closed typed (unknown field); the transition behavior of an old client is the honest 116-class fail-closed deny |
-| request-path cost bound | `hook_conformance` | LL-2b: verdicts return within a small bound while git is a nonexistent executable / the remote is unreachable (no network in the path; measured assertion) |
+| request-path cost bound | `hook_conformance` | LL-2b: verdicts return within **250 ms** while git is a nonexistent executable / the remote is unreachable (no network in the path; expected single-digit ms, bound pinned with margin) |
+| hook client 125 mapping | `hook_conformance` | LL-3: a typed 125 busy error frame maps client-side to a fail-closed deny with honest text for `pre_tool` and an exit-0 note for advisory events (the classifier is taught the code) |
+| refresh worker faults | `hook_conformance` | §5: an injected fault in the worker's attempt body journals `refresh_fault`, degrades refresh state, and the host KEEPS SERVING verdicts; the next cadence tick runs a normal attempt |
 | verdict latency under concurrent publish | `hook_conformance` | §5 two-level locking: a verdict served WHILE a refresh publish runs returns within the bound (default assert < 1000 ms) — the claim is measured, not assumed |
 | manifest advisory | `hook_conformance` | 113 ONLY for the mismatched tools (per-tool degradation); a matching manifest never degrades; manifest absence never degrades availability |
 | refresh worker | `hook_conformance` | boot publish; cadence attempt observable via journal `cognition_*` rows and status; expiry → 117 with automatic recovery after a successful attempt; operator `refresh` kind triggers an attempt (authenticated, journaled) |
@@ -399,6 +425,15 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
 
 The kit ships: `bin/`, the kit-internal profile (ADR-0049), the
 workspace `config.json` template (unchanged registration shape), and:
+
+**Image-consistency invariant (trial-3 class, pinned):** the ONE
+installation unit is the REPO BUILD DIRECTORY. The config template
+registers the build-dir `qiven-zcode-hook.exe`; `start-host.cmd`,
+`install-autostart.cmd`, and the autostart shortcut all launch the
+build-dir `qiven-runtime-host.exe` (whose boot merges the sibling
+client images into the install record); the kit's `bin/` copies are
+pinned reference artifacts ONLY — never launched, never registered.
+Every kit launcher states the exact image it runs.
 
 - `install-autostart.cmd` — creates the user-scope Startup shortcut
   (starts the server minimized with `--log`), starts the server now,
@@ -446,6 +481,7 @@ workspace `config.json` template (unchanged registration shape), and:
 | `mvp4-hook-adapter.md` §3.4 whole-session manifest degradation | this doc LL-2a | per-tool 113 |
 | `mvp4-hook-adapter.md` §5 failure row "pre_tool before session_start → deny 114" | this doc LL-2a | row retires |
 | `mvp3-host-ipc.md` §3.2 request deadline law (`deadline_ms` ≤ 5000, answer-or-65 within it) | this doc LL-3 | wire revision |
+| `mvp3-host-ipc.md` §3.4 singleton mutex keyed by install-id, acquired after journal recovery in the shipped code | this doc §5 boot order | root-hash mutex, acquired first |
 | `mvp3-host-ipc.md` single-threaded serve loop shape | this doc LL-3/§5 | thread-per-connection |
 | ARCH §7.4 SessionStart refresh TRIGGER (the freshness LAW stands) | this doc §6 | host-autonomous trigger |
 | ARCH §7.4 "pin the session to that generation" | this doc §5 generation law | audit-row pinning + current-generation verdicts |
