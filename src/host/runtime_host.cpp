@@ -756,7 +756,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
                 // documented over-approximation). Evidence: the rig's
                 // B2/B6/B7 old-fail receipts vs the post-fix runs.
                 const std::string root_norm = normalize_hook_path(m_repo_root.string());
-                const bool in_root = starts_with_ci(target, root_norm + "/");
+                const bool in_root          = starts_with_ci(target, root_norm + "/");
                 for (const auto& path : profile.value().governed_paths)
                 {
                     if (target == path || target.rfind(path + "/", 0) == 0 ||
