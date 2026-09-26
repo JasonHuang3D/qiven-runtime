@@ -193,9 +193,14 @@ include/qiven/runtime/ipc/protocol.hpp/.cpp   envelope: deadline_ms removed;
                                               (closed vocabularies updated
                                               both directions);
                                               hook_ack.refresh = host state
-include/qiven/runtime/ipc/pipe_service.hpp    serve_connection unchanged in
-                                              shape (idle close = hygiene);
-                                              documented per-thread use
+include/qiven/runtime/ipc/pipe_service.hpp    serve_connection loop body
+                                              EXTENDED via ServeOptions
+                                              (g_stop check between
+                                              requests; bounded writes
+                                              per the §5 I/O model);
+                                              framing/seq/error surface
+                                              unchanged; per-thread use
+                                              documented
 src/ipc/named_pipe_server.cpp                  LISTEN POOL: M concurrently-
                                               armed instances (default 4),
                                               replenished per accept; the
@@ -212,11 +217,13 @@ src/ipc/named_pipe_server.cpp                  LISTEN POOL: M concurrently-
 src/host/runtime_host.cpp/.hpp                 ensure_session() first-contact
                                               minting for ALL events; PER-TOOL
                                               manifest degradation (113 scoped
-                                              to mismatched tools); session
-                                              registry lock; refresh WORKER
-                                              (boot + cadence + operator
-                                              refresh kind) off the request
-                                              path; state mutex; status
+                                              to mismatched tools); ONE state
+                                              mutex covering the session
+                                              registry + journal + host state
+                                              (no second lock); refresh WORKER
+                                              (boot + cadence + coalesced
+                                              operator refresh kind) off the
+                                              request path; status
                                               refresh fields; drain marks
                                               outstanding pre transactions
                                               Indeterminate
@@ -315,21 +322,34 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
   unclassifiable fault closes THAT connection and journals an audit
   row (`serve_thread_fault`); the host and every other connection
   continue. No client input can terminate the server process.
-- **Locking is two-level.** A state mutex serializes ALL journal and
-  host-state mutations (request handling, status, and the FINAL
-  generation/bundle-id swap of a refresh) and is held only for
-  millisecond-scale work. The refresh worker's LONG work (network
-  fetch AND bundle publish file operations) runs under a separate
-  refresh-path serialization that only refresh workers take — a
-  verdict NEVER waits behind publish I/O; the refresh completes by
-  taking the state mutex briefly to publish ids + journal rows.
-  The gate MEASURES verdict latency during a concurrent publish and
-  enforces a bound (§7) — the claim is tested, not assumed.
-- **Connection writes are bounded.** `write_all` on a full pipe
-  out-buffer against a non-reading client must not block forever:
-  writes complete under a deadline; a write that cannot complete
-  fails the reply, the connection closes (hygiene class), and the
-  client's honest classification applies.
+- **Locking is one state mutex.** A SINGLE state mutex serializes ALL
+  journal and host-state mutations: request handling (including the
+  session registry — there is no separate registry lock), status,
+  eviction sweeps, and the FINAL generation/bundle-id swap of a
+  refresh. One lock means no lock-ordering contract to get wrong; the
+  registry map, the outstanding-pre state, and the journal all live
+  under it. Its hold times are millisecond-scale by construction
+  (§ request-path cost bound).
+- The refresh worker's LONG work (network fetch AND bundle publish
+  file operations) runs OUTSIDE the state mutex under a refresh-path
+  serialization that only refresh workers take — a verdict NEVER
+  waits behind publish I/O; the refresh completes by taking the state
+  mutex briefly to publish ids + journal rows. The gate MEASURES
+  verdict latency during a concurrent publish and enforces a bound
+  (§7) — the claim is tested, not assumed.
+- **Connection I/O model.** Connection instances are created
+  `FILE_FLAG_OVERLAPPED`; reads keep the existing peek-poll deadline
+  loop (semantics unchanged); writes submit overlapped with a
+  deadline wait, and `CancelIoEx` on that connection's handle cancels
+  an expired write (the documented cancellation for overlapped I/O)
+  — a write that cannot complete fails the reply, the connection
+  closes (hygiene class), and the client's honest classification
+  applies. No unbounded blocking write exists.
+- **Refresh trigger coalescing.** Operator `refresh` triggers are
+  coalesced with a minimum attempt interval (default 30 s): a
+  trigger during cooldown sets a pending flag and the worker runs
+  ONE attempt when the cooldown elapses — repeated triggers cannot
+  drive back-to-back network fetches.
 - **Generation law.** Minting a session pins its journal identity
   (the `open_session` row carries the then-active generation); every
   verdict runs at, and reports, the CURRENT active generation — a
@@ -348,15 +368,19 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
   connections are NOT closed; serve threads check `g_stop` BETWEEN
   requests only, so a request already in flight completes (or denies
   119 at its own boundary) while no NEW request is read. Phase 3 —
-  close and join: after the grace, ownership of each remaining
-  connection TRANSFERS to the stop path, which closes the handles so
-  blocked reads/writes abort promptly (idle or hostile connections);
-  serve threads exit on the resulting error without touching the
-  handle again (no double-close) and join. If a thread still lives
-  after join-wait, the journal checkpoints and process teardown
-  terminates the straggler (documented: grace plus teardown is the
-  exit worst case). Outstanding pre transactions are marked
-  Indeterminate, WAL checkpoint, exit 0.
+  cancel and join: after the grace, the stop path aborts every
+  remaining (idle, blocked, or hostile) serve thread with the
+  DOCUMENTED mechanism — `CancelSynchronousIo` targeting that
+  thread, re-issued on every grace tick until it joins. Closing a
+  handle another thread is blocked on is NOT a contractual abort on
+  Windows (handle-value reuse) and is never used as the abort
+  mechanism: connection handles are closed by the stop path only
+  AFTER the owning thread joins (ownership transfer happens at join,
+  never mid-I/O). If a thread still lives after join-wait, the
+  journal checkpoints and process teardown terminates the straggler
+  (documented: grace plus teardown is the exit worst case).
+  Outstanding pre transactions are marked Indeterminate, WAL
+  checkpoint, exit 0.
 - **Restart semantics (long-lived makes this routine, so it is
   designed, not inherited).** A host restart between a `pre_tool`
   allow and its `post_tool` leaves that correlation honestly
@@ -396,8 +420,12 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
   drives, and symlinks), then case-folded and hashed. This closes the
   path-aliasing hole a verbatim `--root` hash would open (a second
   start through an alias spelling must NOT reach the journal), and
-  restores the mutex-first order `mvp3-host-ipc.md` §3.4 specified
-  and the current code drifted from: an idempotent `start-host.cmd`
+  makes the mutex-first order IMPLEMENTABLE for the first time:
+  `mvp3-host-ipc.md` §3.4 specified mutex-before-journal but keyed
+  the mutex by install-id — an id the journal itself mints, so the
+  shipped code's journal-first order was forced by that keying, not
+  an implementation slip (the §10 row records this precisely). With
+  the root-identity key, an idempotent `start-host.cmd`
   racing a healthy server must fail fast at the mutex and exit
   WITHOUT opening the live journal or running recovery against it.
   The install record and pipe naming stay install-id-based.
@@ -435,7 +463,9 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
 | first contact | `hook_conformance` | LL-2a: `pre_tool` on a never-registered handle mints the session and returns a real verdict (never a 114-class deny); `post_tool` first contact degrades honestly (unmatched) without poisoning; idempotent re-contact keeps one session id within a host lifetime |
 | registration independence | `hook_conformance` | LL-2a: full pre/post flow with NO `session_start` at all behaves identically to the registered flow |
 | no-deadline wire | `hook_conformance` | LL-3: requests carry no `deadline_ms`; a request containing it fails closed typed (unknown field); the transition behavior of an old client is the honest 116-class fail-closed deny |
-| request-path cost bound | `hook_conformance` | LL-2b: verdicts return within **250 ms** while git is a nonexistent executable / the remote is unreachable (no network in the path; expected single-digit ms, bound pinned with margin) |
+| request-path cost bound | `hook_conformance` | LL-2b, structural + timed: during verdicts with git a marker-writing stub / nonexistent executable, NO `cognition_*` audit row appears and the marker file stays absent (no child spawned, no fetch attempted — the timing bound below cannot be fooled by a fast-failing environment), AND verdicts return within **250 ms** (expected single-digit ms) |
+| degraded listener observability | `host_server_lifecycle` (real exe) | §5: with the pipe instance forced uncreatable, the host enters DEGRADED — heartbeat lines report it, `status.state` carries it, an audit row records it, and the process keeps retrying without exiting |
+| stop lost-wakeup window | `host_server_lifecycle` (real exe) | §5: a stop issued exactly while an accept slot is between instance creation and `ConnectNamedPipe` still exits the process within the grace (the recheck law is exercised by a stop timed against a slot cycle) |
 | hook client 125 mapping | `hook_conformance` | LL-3: a typed 125 busy error frame maps client-side to a fail-closed deny with honest text for `pre_tool` and an exit-0 note for advisory events (the classifier is taught the code) |
 | refresh worker faults | `hook_conformance` | §5: an injected fault in the worker's attempt body journals `refresh_fault`, degrades refresh state, and the host KEEPS SERVING verdicts; the next cadence tick runs a normal attempt |
 | registry eviction | `hook_conformance` | §5: with a test-injected small `session_idle_evict_ms`, an idle session evicts and a re-contact mints FRESH (same honest semantics as restart); the sim-gate oracle's one-`session_registered`-row-per-handle expectation is amended in batch (c) accordingly |
@@ -483,7 +513,12 @@ Every kit launcher states the exact image it runs.
   far below the old 9750 ms class); (5) status reports refresh state;
   (6) authenticated shutdown exits the process; (7) `start-host.cmd`
   brings it back and the next verdict succeeds — the no-residue proof
-  (LL-4). The preflight LEAVES THE SERVER RUNNING (the long-lived
+  (LL-4). When the preflight did NOT start the server (it was
+  already running — the normal case under LL-1), legs (6)-(7) are
+  SKIPPED with an honest label: a verification tool does not bounce
+  the autostart-owned server mid-flight (stop-host.cmd +
+  start-host.cmd remain the owner's manual exercise of that path).
+  The preflight LEAVES THE SERVER RUNNING (the long-lived
   model) and says so;
 - `collect-evidence.cmd`, `rollback.cmd` (now also removes autostart),
   `GUIDE.md`, `manifest.json` — unchanged laws.
@@ -508,7 +543,7 @@ Every kit launcher states the exact image it runs.
 | `mvp4-hook-adapter.md` §3.4 whole-session manifest degradation | this doc LL-2a | per-tool 113 |
 | `mvp4-hook-adapter.md` §5 failure row "pre_tool before session_start → deny 114" | this doc LL-2a | row retires |
 | `mvp3-host-ipc.md` §3.2 request deadline law (`deadline_ms` ≤ 5000, answer-or-65 within it) | this doc LL-3 | wire revision |
-| `mvp3-host-ipc.md` §3.4 singleton mutex keyed by install-id, acquired after journal recovery in the shipped code | this doc §5 boot order | root-hash mutex, acquired first |
+| `mvp3-host-ipc.md` §3.4 singleton mutex keyed by install-id (mutex-first order unimplementable with a journal-minted key; shipped code opens the journal first as a forced consequence) | this doc §5 boot order | root-identity-hash mutex, acquired first |
 | `mvp3-host-ipc.md` single-threaded serve loop shape | this doc LL-3/§5 | thread-per-connection |
 | ARCH §7.4 SessionStart refresh TRIGGER (the freshness LAW stands) | this doc §6 | host-autonomous trigger |
 | ARCH §7.4 "pin the session to that generation" | this doc §5 generation law | audit-row pinning + current-generation verdicts |
