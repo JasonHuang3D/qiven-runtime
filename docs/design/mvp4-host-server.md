@@ -52,7 +52,11 @@ any client. Concretely:
   that is installing availability, not a trial boot — and LEAVES IT
   RUNNING);
 - the operator keeps explicit control: `runtimectl host shutdown`,
-  Ctrl+C when interactive, `remove-autostart.cmd`.
+  Ctrl+C when interactive, `remove-autostart.cmd`; the console
+  handler also covers logoff and system shutdown (a Startup-launched
+  server's DOMINANT termination source is logoff/reboot — the
+  graceful drain must be the routine path, not the rare one; the
+  unclean-kill backstop is the boot recovery walk, §5).
 
 ### LL-2 — Client independence (the owner's precise directive)
 
@@ -118,11 +122,18 @@ Three corollaries, each killing one historical failure mechanism:
   (default 8) is sized far above real hook concurrency so a correct
   deployment never sees 125.
 - **Caller-side budgets remain the caller's right.** The hook keeps
-  client-side read bounds (session_start 9750 ms, pre/post 4750 ms —
-  the harness's own budget minus margin) and reports a typed 124
-  timeout honestly. Under this design a healthy server answers in
-  single-digit milliseconds, so a caller-side timeout now signals
-  GENUINE unavailability, not a designed race between two clocks.
+  client-side read bounds — session_start 9750 ms, pre/post 4750 ms —
+  chosen conservatively INSIDE the harness hook budgets (15 s / 10 s
+  in the registration template) to also cover process spawn and
+  verdict mapping; the numbers coincide with the retired protocol
+  ceilings only because both derive from the same round-number
+  budgets, and they are now purely caller-side choices. Every client
+  read is bounded, runtimectl included (default 5000 ms, per-verb
+  overridable) — no operator tool may hang against the server. A
+  typed 124 timeout is reported honestly. Under this design a
+  healthy server answers in single-digit milliseconds, so a
+  caller-side timeout now signals GENUINE unavailability, not a
+  designed race between two clocks.
 - **Mixed-fleet honesty.** An OLD client (still sending
   `deadline_ms`) against the NEW host fails closed at decode (typed
   unknown-field error) and its existing classifier reports the
@@ -175,13 +186,16 @@ include/qiven/runtime/ipc/protocol.hpp/.cpp   envelope: deadline_ms removed;
 include/qiven/runtime/ipc/pipe_service.hpp    serve_connection unchanged in
                                               shape (idle close = hygiene);
                                               documented per-thread use
-src/ipc/named_pipe_server.cpp                  multi-instance accept (one
-                                              listen instance per in-flight
-                                              connection); accept errors
-                                              NEVER fatal (LL never-exit
-                                              policy); stop-wake via
-                                              CancelSynchronousIo on the
-                                              accept thread
+src/ipc/named_pipe_server.cpp                  LISTEN POOL: M concurrently-
+                                              armed instances (default 4),
+                                              replenished per accept;
+                                              accept errors NEVER fatal;
+                                              stop-wake via g_stop recheck
+                                              + CancelSynchronousIo per
+                                              slot; PipeClient::connect
+                                              gains WaitNamedPipe etiquette
+                                              on ERROR_PIPE_BUSY; writes
+                                              bounded by a deadline
 src/host/runtime_host.cpp/.hpp                 ensure_session() first-contact
                                               minting for ALL events; PER-TOOL
                                               manifest degradation (113 scoped
@@ -198,29 +212,44 @@ src/host/deployment_profile.cpp                revision 3: cognition.
                                               900000), validated > 0
 apps/runtime_host_main.cpp                     thread-per-connection serve
                                               loop with connection cap
-                                              (typed 125 busy frame);
+                                              (typed 125 busy frame) and
+                                              live-connection registry
+                                              (ownership transfer at stop);
                                               per-connection catch-all fault
                                               containment (audit row, close,
-                                              host survives); --log <file>
-                                              background mode (append; staged
-                                              markers + heartbeat to the
-                                              log); stop: CancelSynchronousIo
-                                              wake, close connections, bounded
-                                              join, checkpoint
+                                              host survives); console
+                                              handler covers Ctrl+C/close/
+                                              logoff/shutdown; --log <file>
+                                              background mode (append;
+                                              staged markers + heartbeat to
+                                              the log); stop: bounded-grace
+                                              join, checkpoint, teardown
 apps/runtimectl_main.cpp                       + `host refresh [--wait-ms]`;
                                               status prints refresh state /
-                                              last-ok / next-due
-src/adapter/zcode_hook.cpp                     no deadline on the wire;
-                                              client-side read bounds stay;
-                                              125 busy mapping (pre_tool ->
+                                              last-ok / next-due; ALL client
+                                              reads bounded (default 5000)
+apps/zcode_hook.cpp / apps/
+  zcode_hook_main.cpp                          no deadline on the wire;
+                                              client-side read bounds stay
+                                              (provenance per LL-3); 125
+                                              busy mapping (pre_tool ->
                                               fail-closed deny; advisory ->
-                                              note)
-apps/zcode_hook_main.cpp                       budgets unchanged (client-
-                                              side only; comment law)
+                                              note); WaitNamedPipe connect
+                                              etiquette
 config/profiles/zcode-jason-context-record-
   mvp.yaml                                     revision 3 (refresh cadence)
-tests/hook_conformance.cpp                     updated + new rows (§7)
-tests/ipc_multiframe_contract.cpp              updated rows (§7)
+tests/hook_conformance.cpp                     handle()-level rows ONLY
+                                              (§7) — no process-level
+                                              assertions here
+tests/host_server_lifecycle.cpp                NEW real-exe test: spawns
+                                              qiven-runtime-host.exe as a
+                                              child and asserts the
+                                              PROCESS-level laws (§7) —
+                                              stop/exit, vanish storms,
+                                              stalled-peer isolation,
+                                              concurrent connects, restart
+tests/ipc_multiframe_contract.cpp              updated library-level rows
+                                              (§7)
 docs/architecture/*.md, docs/design/*.md        dated amendment notes at
                                               every superseded clause
                                               (§10 supersession map)
@@ -233,10 +262,22 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
 
 ## 5. Concurrency and lifecycle contract (stated before synchronization)
 
-- One accept thread. Each accepted connection is served by one
-  dedicated worker thread; at most `max_connections` (default 8)
-  concurrent serve threads; a further connection receives the typed
-  125 busy frame (LL-3) and closes.
+- **Accept topology — a listen pool, never a single listener.** The
+  server keeps M (default 4) concurrently-ARMED pipe instances, each
+  blocked in `ConnectNamedPipe` on its own accept slot; every accept
+  immediately replenishes its slot. This is required for correctness,
+  not scale: with one armed instance, a second simultaneous client's
+  `CreateFileW` fails `ERROR_PIPE_BUSY` and the hook would deny 120
+  "no listener" against a healthy server — availability coupled to
+  client-arrival timing, the named defect class. Client-side connect
+  etiquette (both hook and runtimectl, transport layer — NOT a
+  verdict retry): on `ERROR_PIPE_BUSY`, `WaitNamedPipe` bounded by
+  the caller's own budget, then reconnect; 120 is classified only
+  when no instance arms within that budget.
+- Each accepted connection is served by one dedicated worker thread;
+  at most `max_connections` (default 8) concurrent serve threads; an
+  over-cap connection receives the typed 125 busy frame (LL-3) and
+  closes.
 - **The accept loop never ends because of a client.** Accept errors
   are NEVER fatal to a long-lived server: vanish-class errors keep
   the existing bounded replace-and-retry; any other accept failure
@@ -244,22 +285,28 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
   a persistently failing listener enters a loud DEGRADED state
   (heartbeat lines + `status.state` report it; journal audit row) and
   keeps retrying — the process exits only on operator stop (Ctrl+C,
-  console close, authenticated Shutdown) or boot-class failure before
-  serving begins.
+  console close, logoff/shutdown, authenticated Shutdown) or
+  boot-class failure before serving begins.
 - **Per-connection fault containment.** Every serve thread wraps its
   whole connection body in a catch-all: an escaping exception or
   unclassifiable fault closes THAT connection and journals an audit
   row (`serve_thread_fault`); the host and every other connection
   continue. No client input can terminate the server process.
-- One host state mutex serializes ALL journal and host-state mutations
-  (request handling, refresh publish/activation, status). Connection
-  threads never hold the mutex across pipe I/O.
-- The refresh worker: `git fetch` runs OUTSIDE the mutex (it touches
-  no host state and may take seconds); bundle publish + generation
-  activation + journal meta run under the mutex (bounded local file
-  work). Worst-case request-visible effect of a concurrent publish is
-  a short mutex wait (measured bound recorded in the gate; revisit
-  trigger if it ever matters — §9).
+- **Locking is two-level.** A state mutex serializes ALL journal and
+  host-state mutations (request handling, status, and the FINAL
+  generation/bundle-id swap of a refresh) and is held only for
+  millisecond-scale work. The refresh worker's LONG work (network
+  fetch AND bundle publish file operations) runs under a separate
+  refresh-path serialization that only refresh workers take — a
+  verdict NEVER waits behind publish I/O; the refresh completes by
+  taking the state mutex briefly to publish ids + journal rows.
+  The gate MEASURES verdict latency during a concurrent publish and
+  enforces a bound (§7) — the claim is tested, not assumed.
+- **Connection writes are bounded.** `write_all` on a full pipe
+  out-buffer against a non-reading client must not block forever:
+  writes complete under a deadline; a write that cannot complete
+  fails the reply, the connection closes (hygiene class), and the
+  client's honest classification applies.
 - **Generation law.** Minting a session pins its journal identity
   (the `open_session` row carries the then-active generation); every
   verdict runs at, and reports, the CURRENT active generation — a
@@ -267,30 +314,43 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
   the single-use decision law binds at admit time. This supersedes
   ARCH §7.4's "pin the session to that generation" wording (the
   pinning that remains is the audit-row identity; §10).
-- Stop semantics: `g_stop` set by Ctrl+C handler, console close, or an
-  authenticated Shutdown request observed on any serve thread; the
-  accept thread's pending synchronous `ConnectNamedPipe` is cancelled
-  by `CancelSynchronousIo` targeting the accept thread (the listen
-  handle stays synchronous — `CancelIoEx` applies to overlapped I/O
-  and would not wake this call); the stop path then CLOSES open
-  connection handles so blocked reads abort promptly, serve threads
-  join within a bounded grace (worst case: the per-connection idle
-  bound), open pre-transactions are marked **Indeterminate** in the
-  journal at drain (closing the H-4 claim honestly — see restart
-  semantics below), WAL checkpoint, exit 0. In-flight requests
-  complete or deny 119 before drain starts (unchanged).
+- **Stop semantics (complete contract).** `g_stop` may be set by the
+  Ctrl+C / console-close / logoff / shutdown handler or by an
+  authenticated Shutdown request on any serve thread. Accept slots
+  re-check `g_stop` AFTER creating an instance and BEFORE blocking in
+  `ConnectNamedPipe` (closing the lost-wakeup window); the stop path
+  issues `CancelSynchronousIo` against each accept slot and re-issues
+  it on every grace tick until that slot joins. Live connections are
+  tracked in a registry guarded by its own small lock; at stop,
+  ownership of each live connection TRANSFERS to the stop path, which
+  closes the handles so blocked reads/writes abort promptly — serve
+  threads exit on the resulting error without touching the handle
+  again (no double-close). Threads join within a bounded grace
+  (default 5 s); after the grace, the journal checkpoints and process
+  teardown terminates any straggler (documented: the grace plus
+  teardown, not the idle bound, is the exit worst case). In-flight
+  requests complete or deny 119 before drain starts (unchanged).
 - **Restart semantics (long-lived makes this routine, so it is
   designed, not inherited).** A host restart between a `pre_tool`
   allow and its `post_tool` leaves that correlation honestly
   Indeterminate: the drain marks outstanding pre transactions
-  Indeterminate; a harness handle re-contacting after restart mints a
-  FRESH runtime session (a second `open_session` row — the journal's
-  boot-epoch column separates the lifetimes; this is the honest
-  boundary, not an idempotence failure within one lifetime — LL-2a's
-  "idempotent re-contact keeps one session id" holds within one host
-  lifetime). LL-4's "no session to repair" is scoped exactly:
-  AVAILABILITY resumes immediately after restart (the next call is
-  served with no ritual); cross-restart correlation is never guessed.
+  Indeterminate; if the process died uncleanly instead, boot
+  recovery reconciles interrupted transactions per the MVP-1
+  recovery walk (unconsumed decisions from older boot epochs are
+  stale-marked at recovery — verified in the journal code). A
+  harness handle re-contacting after restart mints a FRESH runtime
+  session (a second `open_session` row — the journal's boot-epoch
+  column separates the lifetimes; the honest boundary, not an
+  idempotence failure within one lifetime — LL-2a's "idempotent
+  re-contact keeps one session id" holds within one host lifetime).
+  LL-4's "no session to repair" is scoped exactly: AVAILABILITY
+  resumes immediately after restart (the next call is served with no
+  ritual); cross-restart correlation is never guessed.
+- **Registry eviction.** The in-memory session registry does not
+  grow forever: a session with NO outstanding pre and idle beyond
+  `session_idle_evict_ms` (default 24 h) is evicted (journal rows are
+  permanent); a re-contact after eviction mints fresh — the same
+  honest semantics as a restart.
 - Freshness evaluation is at request time from the durable
   `last_refresh_ok_ms` journal meta + wall clock (unchanged LAW);
   the refresh cadence is a worker sleep between ATTEMPTS, not a
@@ -320,18 +380,20 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
 
 ## 7. Test spine (batch b; each row names its law)
 
-| Test | Proves |
-| --- | --- |
-| `hook_conformance` — first contact | LL-2a: `pre_tool` on a never-registered handle mints the session and returns a real verdict (never a 114-class deny); `post_tool` first contact degrades honestly (unmatched) without poisoning; idempotent re-contact keeps one session id within a host lifetime |
-| `hook_conformance` — registration independence | LL-2a: full pre/post flow with NO `session_start` at all behaves identically to the registered flow |
-| `hook_conformance` — no-deadline wire | LL-3: requests carry no `deadline_ms`; a request containing it fails closed typed (unknown field); the transition behavior of an old client is the honest 116-class fail-closed deny |
-| `hook_conformance` — request-path cost bound | LL-2b: verdicts return within a small bound while git is a nonexistent executable / the remote is unreachable (no network in the path; measured assertion) |
-| `hook_conformance` — manifest advisory | 113 ONLY for the mismatched tools (per-tool degradation); a matching manifest never degrades; manifest absence never degrades availability |
-| `hook_conformance` — refresh worker | boot publish; cadence attempt observable via journal `cognition_*` rows and status; expiry → 117 with automatic recovery after a successful attempt; operator `refresh` kind triggers an attempt (authenticated, journaled) |
-| `hook_conformance` — concurrency | a connection that stalls mid-frame does NOT delay another client's verdict (thread isolation); the connection cap replies typed 125; a fault injected on one connection (malformed frame class) never ends the host; accept-vanish storms never end the host |
-| `hook_conformance` — shutdown/drain/restart | ack-before-drain; CancelSynchronousIo stop-wake; process exits within the bounded grace; outstanding pre transactions marked Indeterminate at drain; after restart, first contact mints fresh and verdicts resume with no ritual (LL-4 scoped) |
-| `hook_conformance` — mediation/correlation matrixes | unchanged rows re-pinned (110/111/112/115/117/118 classes) |
-| `ipc_multiframe_contract` | updated: idle close/frame budget as hygiene on a per-thread connection; seq law; error-frame linger; stalled-peer isolation regression (old-fail: the serial loop); 125 busy frame shape |
+| Test | Carrier | Proves |
+| --- | --- | --- |
+| first contact | `hook_conformance` | LL-2a: `pre_tool` on a never-registered handle mints the session and returns a real verdict (never a 114-class deny); `post_tool` first contact degrades honestly (unmatched) without poisoning; idempotent re-contact keeps one session id within a host lifetime |
+| registration independence | `hook_conformance` | LL-2a: full pre/post flow with NO `session_start` at all behaves identically to the registered flow |
+| no-deadline wire | `hook_conformance` | LL-3: requests carry no `deadline_ms`; a request containing it fails closed typed (unknown field); the transition behavior of an old client is the honest 116-class fail-closed deny |
+| request-path cost bound | `hook_conformance` | LL-2b: verdicts return within a small bound while git is a nonexistent executable / the remote is unreachable (no network in the path; measured assertion) |
+| verdict latency under concurrent publish | `hook_conformance` | §5 two-level locking: a verdict served WHILE a refresh publish runs returns within the bound (default assert < 1000 ms) — the claim is measured, not assumed |
+| manifest advisory | `hook_conformance` | 113 ONLY for the mismatched tools (per-tool degradation); a matching manifest never degrades; manifest absence never degrades availability |
+| refresh worker | `hook_conformance` | boot publish; cadence attempt observable via journal `cognition_*` rows and status; expiry → 117 with automatic recovery after a successful attempt; operator `refresh` kind triggers an attempt (authenticated, journaled) |
+| mediation/correlation matrixes | `hook_conformance` | unchanged rows re-pinned (110/111/112/115/117/118 classes) |
+| library serve semantics | `ipc_multiframe_contract` | idle close/frame budget as hygiene on a per-thread connection; seq law; error-frame linger; bounded writes; 125 busy frame shape |
+| stop/exit + restart | `host_server_lifecycle` (real exe) | ack-before-drain; stop exits the real process within the bounded grace; outstanding pre transactions marked Indeterminate at drain; after restart, first contact mints fresh and verdicts resume with no ritual (LL-4 scoped) |
+| client-independence of survival | `host_server_lifecycle` (real exe) | a vanished-client accept storm never ends the host; a stalled mid-frame connection never delays another client's verdict (thread isolation — the serial-loop old-fail); a malformed-frame fault on one connection never ends the host; the connection cap replies typed 125 |
+| concurrent connects | `host_server_lifecycle` (real exe) | simultaneous clients all connect and receive verdicts (listen-pool admission; no ERROR_PIPE_BUSY → 120 against a healthy server); WaitNamedPipe etiquette verified from the client side under a brief artificial slot pressure |
 
 ## 8. H1 kit (batch d) — server-shaped
 
