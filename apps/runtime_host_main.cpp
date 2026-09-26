@@ -243,6 +243,13 @@ int main(int argc, char** argv)
             break;
         }
         connections_served += 1;
+        // One line per ACCEPTED connection (flushed): the per-request
+        // [conn] lines cannot distinguish a hello+event pair split across
+        // two connections -- the h1-sim gate counts [open] lines to pin
+        // the one-connection registration contract (INV-9 client side).
+        std::printf("[open] connection %llu accepted\n",
+                    static_cast<unsigned long long>(connections_served));
+        std::fflush(stdout);
 
         // Client identity from the connection, never the payload. A
         // rejected image now receives a TYPED 62 error frame before the

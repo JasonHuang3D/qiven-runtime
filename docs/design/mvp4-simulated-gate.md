@@ -113,16 +113,19 @@ reading; `INSTALLED_DESKTOP_EXECUTION_UNVERIFIED` stays standing).
 
 ## 5. Case taxonomy and invariants
 
-Groups (one host boot each, ordered steps inside), ~104 named cases:
+Groups (one host boot each, ordered steps inside), 100 named cases
+(2026-09-27 review amendments folded: per-source repeat legs, the second
+independent-root capture replay and the P19 combination were merged away as
+mechanism-duplicates; S9 and the per-connection observability landed):
 
 | Series | Groups | Covers |
 | --- | --- | --- |
-| S — SessionStart registration | S1-S4 | hello+`session_start` on one real connection; one journal session row; stable id; typed verdict; idempotent repeat; all four contract sources; captured dual-key payload. |
-| B — PreToolUse classification | B1-B6 | governed Write/Edit deny 110 without effect; Bash conservative detector deny 111; repo-root reference; outside-scope `not_governed` under real preconditions; correlation (one outstanding per tool); unregistered session deny 114 BEFORE classification; unknown tool; traversal form; empty extraction fail-closed; oversize/unreadable payload deny 118; payload/template tool contradiction deny 118. |
-| C — PostToolUse & closure | C1-C3 | correlated post_tool clears outstanding; unregistered post_tool degrades to Indeterminate (never silent success); authenticated shutdown acks and the process EXITS; restart isolation (journal survives, sessions re-register); duplicate handle idempotent; cross-session identity isolation. |
-| D — Packaging & path forms | D1-D3 | shipped-kit entrypoint form (assemble_kit → boot from kit cwd with kit-internal profile); kit-without-profile fails closed naming the ROOT-derived path (CWD cannot substitute — the preflight incident); backslash/trailing-slash/case/relative/Unicode/short-name fixtures asserting the documented lexical policy, with detector-scope limits recorded in the coverage map (never claimed as authorization equivalence). |
+| S — SessionStart registration | S1-S9 | hello+`session_start` on one real connection (S9 counts the host's `[open]` per-accepted-connection lines: exactly ONE per registration); whole-transaction monotonic bound asserted at EVERY registration site (INV-10, SESSION_TX_BOUND_S); one journal session row; stable id; typed verdict; idempotent repeat (once per fixture form: pinned + capture); all four contract sources; captured dual-key payload. |
+| B — PreToolUse classification | B1-B25 | governed Write/Edit deny 110 without effect (each named case targets ITS OWN governed path; template legs effect-asserted); capture P1/P2 legs honestly assert allow + detector-scope observation (their probe targets sit outside the governed-path list); Bash conservative detector deny 111; repo-root reference; outside-scope `not_governed` under real preconditions; correlation (one outstanding per tool); unregistered session deny 114 BEFORE classification; unknown tool; traversal form; empty extraction fail-closed; oversize/unreadable payload deny 118; payload/template tool contradiction deny 118. |
+| C — PostToolUse & closure | C1-C4 | correlated post_tool clears outstanding; unregistered post is a typed 114 advisory that never mints a correlated outcome row (journal-asserted, A7) and shows degraded on the host console (A12); authenticated shutdown acks and the process EXITS; restart isolation (journal survives, sessions re-register); duplicate handle idempotent; cross-session identity isolation. |
+| D — Packaging & path forms | D1-D3, I5 | shipped-kit entrypoint form (assemble_kit → boot from kit cwd with kit-internal profile); kit-without-profile fails closed naming the ROOT-derived path (CWD cannot substitute — the preflight incident); backslash/trailing-slash/case/relative/Unicode/short-name fixtures asserting the documented lexical policy, with detector-scope limits recorded in the coverage map (never claimed as authorization equivalence). |
 | I — the five incidents as distinct old-fail/new-pass cases | I1-I5 | see §6. |
-| W — writable-child bypass negative control | W1 | a child process with no hook mediation writes inside the governed root and SUCCEEDS unmediated; the rig asserts this observable fact and marks complete-mediation blocked for delegation paths (pinned source: subagents carry no hook runner). |
+| W — writable-child bypass negative control | W1-W2 | a child process with no hook mediation writes inside the governed root and SUCCEEDS unmediated; the rig asserts this observable fact and marks complete-mediation blocked for delegation paths AND for caller-side non-invocation (mid-turn hook-configuration changes, OS/antivirus/third-party interception of the hook launch, any harness omission — all leave no journal trace; the same W1/W2 observable). |
 
 Invariant map (every case cites one or more; the receipt's coverage map is
 generated from these bindings):
@@ -135,9 +138,15 @@ generated from these bindings):
 - INV-6 the payload digest binds the exact bytes sent (no re-encoding)
 - INV-7 correlation completeness (outstanding per tool; post_tool clears)
 - INV-8 every lifecycle verdict leaves its journal row
-- INV-9 hello+event ride ONE connection, multi-frame (the wire contract)
+- INV-9 hello+event ride ONE connection, multi-frame (the wire contract);
+  the host logs `[open] connection N accepted` per accepted connection and
+  S9 asserts exactly one `[open]` increment per registration (the
+  client-side discriminator; the server side is pinned by the
+  connection-sequence fault legs)
 - INV-10 the whole hello+event transaction closes inside one monotonic
-  bound (a per-frame-only timer cannot close trial 4)
+  bound (a per-frame-only timer cannot close trial 4); asserted at EVERY
+  registration call site (SESSION_TX_BOUND_S = 10 s against the 15 s
+  harness budget)
 - INV-11 kit/profile self-containment (root-derived default; kit-internal
   explicit profile; CWD cannot substitute)
 - INV-12 admission is typed (121) and governed by the install record
@@ -226,10 +235,12 @@ its new-pass leg on the candidate:
 `tools/h1_sim_gate.py run` (the `h1-sim` gate task):
 
 - asserts a clean tree, resolves the exact HEAD, and records: fixture
-  catalogue digest, per-fixture digests, scenario table digest, candidate
+  catalogue digest, per-fixture digests, scenario table digest (the rig's
+  own source digest — the scenario table lives in the rig), candidate
   exe digests (host/hook/ctl), profile digest, git HEADs (runtime +
-  `.qiven/dependencies.json` content digest), platform (OS version),
-  toolchain (compiler line), Python version, and the exact command line;
+  `.qiven/dependencies.json` content digest), toolchain (the
+  CMakeCache compiler line), platform (OS version), Python version, and
+  the exact command line;
 - writes `.generated-temp/h1-sim/receipts/sim-<head>.json` containing the
   per-group/per-case results, the invariant coverage map, zero-skip
   attestation, and the typed states `SIMULATED_HOOK_HOST_PASS` /
@@ -257,3 +268,47 @@ format-check, configure, build-debug/release, test-debug/test-release,
 - C++-level regressions already covered by `ipc_multiframe_contract`,
   `hook_conformance`, `host_lifecycle` are not duplicated; the rig adds the
   external-process, real-pipe, whole-exe dimension those tests cannot.
+
+## 10. Review amendments (2026-09-27, factual record)
+
+A bounded fresh-review pass over the delivered gate produced amendments
+folded into this design (no process narration; the changes stand on their
+own mechanics):
+
+1. **INV-10 is now asserted, not merely claimed**: every registration call
+   site enforces the whole-transaction monotonic bound
+   (`SESSION_TX_BOUND_S`); previously the constant existed but no case
+   read it.
+2. **INV-9's client side is observable**: the host prints one
+   `[open] connection N accepted` line per accepted connection
+   (`apps/runtime_host_main.cpp`), and S9 counts them — a hook that
+   splits hello/event across two connections fails S9 (the trial-3 client
+   shape could previously pass unnoticed because the server accepts an
+   event frame on a fresh connection).
+3. **Case names and invariant bindings now match assertions**: the
+   governed-Write matrix targets each named governed path itself (the
+   four legs previously replayed one shared template target under four
+   different names); allow-asserting legs carry the allow invariant
+   (INV-4) rather than the deny invariant (INV-3); B24 binds the advisory
+   exit contract (INV-14).
+4. **A7 (unregistered post_tool) asserts its oracle**: no correlated
+   outcome row may be minted (journal-asserted) and the host console must
+   show the degraded verdict; previously only exit 0 was checked.
+5. **Duplicate legs merged** (owner direction): per-source repeat legs,
+   the second independent-root capture replay, and the P19 combination
+   were removed — 104 → 100 cases; verify-receipt carries a 90-case
+   tripwire against silent scenario-loss regressions.
+6. **Complete-mediation scope statement is explicit about both
+   claim-blocking classes**: delegation paths (W1/W2) AND caller-side
+   non-invocation (mid-turn hook-configuration change; OS/antivirus/
+   third-party interception of the hook launch; any harness omission) —
+   all leave no journal trace; within the mediated tuple the recorded
+   lexical detector limits are allow-shaped bypasses that qualify the
+   claim.
+7. **Receipt binds the rig's own source digest and the toolchain
+   (CMakeCache compiler line)**; escaping exceptions in run mode are
+   contained as typed gate failures (containment of last resort; the
+   setup handler gained the two missing exception classes).
+8. **Oracle provenance entries added** for the request-digest composite,
+   the astral/unreadable 118 class, and the unregistered-post degraded
+   law (`catalogue.json` oracle_bindings).

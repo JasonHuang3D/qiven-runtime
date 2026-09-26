@@ -145,6 +145,9 @@
     "admission_121": "deny-116 audit addendum: install-record admission, typed 121 with the rejected image path",
     "hello_deadline": "trial-4 audit: hello ceiling 5000 vs session_start event ceiling 10000 (protocol.cpp); the hello is a handshake, not the event",
     "idempotent_registration": "host handle_session_start idempotence clause (one runtime identity per harness handle)",
-    "restart_isolation": "in-memory hook sessions die with the host; the journal survives (RuntimeHost::boot recovery law)"
+    "restart_isolation": "in-memory hook sessions die with the host; the journal survives (RuntimeHost::boot recovery law)",
+    "request_digest_composite": "trial-2 audit ownership law (the hook owns the exact stdin bytes end-to-end; design section 6 I2) + the journal transaction contract surface (runtime_host: request_digest = sha256(payload_sha256|tool_name|command|file_path)). The ORACLE property is exact-bytes binding: a re-serialized digest must mismatch the sent bytes; the composite form is cited from the candidate's published journal contract, not copied from observed output",
+    "astral_unreadable_118": "deny-118 audit class (fail-closed extraction): payloads the bounded first-party extractor cannot read - surrogate-pair halves among them - deny 118 client-side rather than guess a target",
+    "unregistered_post_degraded": "post_tool for an unregistered session is a typed 114 advisory: exit 0, silent at the hook (degraded verdicts carry no text), degraded on the host console ([conn] post_tool -> degraded), and NEVER a correlated outcome row (no hook_outcome/hook_outcome_unmatched row may be minted for it)"
   }
 }
