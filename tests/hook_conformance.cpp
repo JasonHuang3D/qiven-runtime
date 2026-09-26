@@ -500,6 +500,33 @@ int main()
         std::printf("[ OK ] hook client: 125 maps to the fail-closed busy class\n");
     }
 
+    // --- hook client 118 mapping (§7 mediation re-pin): an oversize payload
+    // fails CLOSED on pre_tool (deny, exit 2) and only NOTES the advisory
+    // events (a completed action cannot be denied) — the trial-1 class,
+    // asserted at the client entry with no host involved (extraction
+    // precedes the connect).
+    {
+        using qiven::runtime::adapter::HookRun;
+        using qiven::runtime::adapter::max_hook_payload_bytes;
+        using qiven::runtime::adapter::run_zcode_hook;
+        HookRun oversize;
+        oversize.event   = "pre_tool";
+        oversize.payload = std::vector<std::byte>(
+            static_cast<std::size_t>(max_hook_payload_bytes) + 1, std::byte { 'x' });
+        const auto denied = run_zcode_hook(oversize);
+        QIVEN_VERIFY(denied.exit_code == 2);
+        QIVEN_VERIFY(denied.stderr_text.find("deny 118") != std::string::npos);
+        QIVEN_VERIFY(denied.stderr_text.find("hook-client") != std::string::npos);
+        HookRun advisory;
+        advisory.event   = "session_start";
+        advisory.payload = std::vector<std::byte>(
+            static_cast<std::size_t>(max_hook_payload_bytes) + 1, std::byte { 'x' });
+        const auto noted = run_zcode_hook(advisory);
+        QIVEN_VERIFY(noted.exit_code == 0);
+        QIVEN_VERIFY(noted.stderr_text.find("payload not readable") != std::string::npos);
+        std::printf("[ OK ] hook client: 118 oversize payload denies pre_tool, notes advisory\n");
+    }
+
     // --- freshness expiry gates GOVERNED mutations (117, scoped) -----------
     {
         const qiven::u64 far_future =

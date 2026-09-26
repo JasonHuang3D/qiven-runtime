@@ -77,7 +77,12 @@ public:
     // Serves until request_stop() (or an authenticated Shutdown request
     // observed through the handle hook), then drains phased and returns.
     // The caller's thread coordinates the stop; arms and serve threads are
-    // owned internally.
+    // owned internally. DESTRUCTION LAW: the destructor sets the stop flag,
+    // joins the arms, and waits one stop-grace for the serve-thread
+    // countdown; a handle-hook callback stuck in user code past that bound
+    // is the documented teardown worst case (the production exe exits
+    // without destructors precisely to avoid it — library embedders must
+    // not keep the loop alive inside a callback past a stop).
     void run();
 
     // Thread-safe stop request (console handler, Shutdown hook, tests).

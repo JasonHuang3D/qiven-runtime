@@ -168,12 +168,15 @@ bool read_exact_ov(HANDLE handle, char* buffer, usize size, u64 deadline_ms,
     return true;
 }
 
-// Deadline-bounded write of ALL bytes.
-bool write_all_ov(HANDLE handle, const char* buffer, usize size, u64 deadline_ms)
+// Deadline-bounded write of ALL bytes. An optional stop flag lets the
+// SERVE side abort a write-blocked connection at stop time (§5 phase 3:
+// the abort covers writes, not only reads — a non-reading peer must not
+// hold a serve thread past the grace).
+bool write_all_ov(HANDLE handle, const char* buffer, usize size, u64 deadline_ms,
+                  const std::atomic<bool>* stop = nullptr)
 {
-    constexpr u64 slice_ms           = 100;
-    const std::atomic<bool>* no_stop = nullptr;
-    usize done                       = 0;
+    constexpr u64 slice_ms = 100;
+    usize done             = 0;
     while (done < size)
     {
         OverlappedOp op;
@@ -187,8 +190,9 @@ bool write_all_ov(HANDLE handle, const char* buffer, usize size, u64 deadline_ms
                 return false;
             }
         }
-        // A write has no stop flag: its own deadline is the bound (hygiene).
-        const WaitResult waited = wait_deadline(handle, op.ov, deadline_ms, no_stop, slice_ms);
+        // The write's own deadline stays the bound (hygiene); the stop flag
+        // is the ABORT bound for a stopping server (it fires far earlier).
+        const WaitResult waited = wait_deadline(handle, op.ov, deadline_ms, stop, slice_ms);
         if (waited != WaitResult::Completed)
         {
             return false;
@@ -598,13 +602,15 @@ std::optional<std::string> PipeConnection::read_frame(u64 timeout_ms,
     return frame;
 }
 
-bool PipeConnection::write_bytes(std::string_view bytes, u64 deadline_ms)
+bool PipeConnection::write_bytes(std::string_view bytes, u64 deadline_ms,
+                                 const std::atomic<bool>* stop)
 {
     if (m_handle == nullptr)
     {
         return false;
     }
-    return write_all_ov(static_cast<HANDLE>(m_handle), bytes.data(), bytes.size(), deadline_ms);
+    return write_all_ov(static_cast<HANDLE>(m_handle), bytes.data(), bytes.size(), deadline_ms,
+                        stop);
 }
 
 bool PipeConnection::peer_connected() const noexcept
@@ -674,6 +680,19 @@ ServeLoop::~ServeLoop()
         {
             arm.join();
         }
+    }
+    // Serve threads are detached; the stop flag aborts their reads AND
+    // writes at slice granularity, so the countdown reaches zero promptly.
+    // Wait bounded for it before freeing the members a straggler could
+    // still touch (the registry notify, the stats): a straggler past this
+    // bound can only be a handle-hook callback stuck in user code — the
+    // documented teardown worst case (the production exe exits without
+    // destructors; §5 stop semantics).
+    {
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(m_options.stop_grace_ms);
+        std::unique_lock<std::mutex> lock(m_serve_mutex);
+        (void)m_serve_cv.wait_until(lock, deadline, [this] { return m_live_serve_threads == 0; });
     }
     if (m_first_instance != nullptr)
     {
@@ -898,7 +917,7 @@ void ServeLoop::dispatch_connection(PipeConnection connection)
                                           ") reached; occupancy " + std::to_string(occupancy));
         FrameHeader header;
         (void)connection.write_bytes(m_codec.encode(header, encode_reply(busy)),
-                                     m_options.write_deadline_ms);
+                                     m_options.write_deadline_ms, &m_stop);
         linger_for_client_read(connection);
         return;
     }
@@ -930,7 +949,7 @@ void ServeLoop::dispatch_connection(PipeConnection connection)
                                       "server busy: serve thread unavailable");
         FrameHeader header;
         (void)connection.write_bytes(m_codec.encode(header, encode_reply(busy)),
-                                     m_options.write_deadline_ms);
+                                     m_options.write_deadline_ms, &m_stop);
         linger_for_client_read(connection);
     }
 }

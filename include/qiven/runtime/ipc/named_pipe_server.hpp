@@ -97,8 +97,10 @@ public:
     [[nodiscard]] std::optional<std::string> read_frame(u64 timeout_ms,
                                                         const std::atomic<bool>* stop = nullptr);
     // Deadline-bounded write (hygiene bound, LL-3: a non-reading peer
-    // cannot hold the serve thread forever).
-    [[nodiscard]] bool write_bytes(std::string_view bytes, u64 deadline_ms);
+    // cannot hold the serve thread forever). The optional stop flag lets a
+    // stopping server abort the write (§5 phase-3 coverage for writes).
+    [[nodiscard]] bool write_bytes(std::string_view bytes, u64 deadline_ms,
+                                   const std::atomic<bool>* stop = nullptr);
 
     // True when the most recent read_frame(timeout_ms) returned empty
     // BECAUSE the deadline expired (vs a disconnect/short read).

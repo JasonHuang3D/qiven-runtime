@@ -75,8 +75,9 @@ struct StatusSnapshot
     u64 boot_epoch = 0;
     u64 generation = 0;
     std::string bundle_revision; // git commit oid of the ACTIVE bundle
-    u64 journal_events = 0;
-    bool quarantined   = false;
+    u64 journal_events          = 0;
+    u64 journal_append_failures = 0; // LL-4: audit-channel gaps, surfaced
+    bool quarantined            = false;
     std::string failure_detail; // non-empty while Starting with a failed step
     std::string refresh_state;  // current | local_fallback | expired | degraded
     u64 last_refresh_ok_ms  = 0;

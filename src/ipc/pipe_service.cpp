@@ -8,13 +8,14 @@ namespace qiven::runtime::ipc
 namespace
 {
 void write_error_frame(PipeConnection& connection, const FrameCodec& codec, u64 request_id,
-                       i32 code, const std::string& detail, u64 write_deadline_ms)
+                       i32 code, const std::string& detail, u64 write_deadline_ms,
+                       const std::atomic<bool>* stop = nullptr)
 {
     const Reply error      = make_error(request_id, code, detail);
     const std::string body = encode_reply(error);
     FrameHeader header;
     header.request_id = request_id;
-    (void)connection.write_bytes(codec.encode(header, body), write_deadline_ms);
+    (void)connection.write_bytes(codec.encode(header, body), write_deadline_ms, stop);
 }
 } // namespace
 
@@ -53,7 +54,7 @@ ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec,
         // rejection is SILENT no longer — the client can tell admission
         // apart from a dead host (the 2024-09-23 silent-drop class).
         write_error_frame(connection, codec, 0, err_auth, "admission rejected: " + rejection,
-                          options.write_deadline_ms);
+                          options.write_deadline_ms, options.stop);
         linger_for_client_read(connection);
         stats.admission_rejected = true;
         return stats;
@@ -94,7 +95,7 @@ ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec,
         if (!verified.is_ok())
         {
             write_error_frame(connection, codec, 0, verified.reason().code,
-                              verified.reason().message, options.write_deadline_ms);
+                              verified.reason().message, options.write_deadline_ms, options.stop);
             linger_for_client_read(connection);
             stats.frame_error = true;
             return stats;
@@ -109,7 +110,7 @@ ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec,
                               "connection sequence regression (expected > " +
                                   std::to_string(last_seq) + ", got " +
                                   std::to_string(verified.value().header.connection_seq) + ")",
-                              options.write_deadline_ms);
+                              options.write_deadline_ms, options.stop);
             linger_for_client_read(connection);
             stats.seq_violation = true;
             return stats;
@@ -121,7 +122,7 @@ ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec,
         {
             write_error_frame(connection, codec, verified.value().header.request_id,
                               request.reason().code, request.reason().detail,
-                              options.write_deadline_ms);
+                              options.write_deadline_ms, options.stop);
             linger_for_client_read(connection);
             stats.frame_error = true;
             return stats;
@@ -130,7 +131,8 @@ ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec,
         if (stats.frames_served + 1 > options.max_frames)
         {
             write_error_frame(connection, codec, verified.value().header.request_id, err_frame,
-                              "connection frame budget exceeded", options.write_deadline_ms);
+                              "connection frame budget exceeded", options.write_deadline_ms,
+                              options.stop);
             linger_for_client_read(connection);
             stats.budget_closed = true;
             return stats;
@@ -141,7 +143,7 @@ ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec,
         reply_header.request_id     = verified.value().header.request_id;
         reply_header.connection_seq = verified.value().header.connection_seq;
         if (!connection.write_bytes(codec.encode(reply_header, encode_reply(reply)),
-                                    options.write_deadline_ms))
+                                    options.write_deadline_ms, options.stop))
         {
             stats.client_closed = true;
             return stats;

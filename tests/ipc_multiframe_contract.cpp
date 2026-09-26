@@ -720,6 +720,72 @@ int main()
                         static_cast<long long>(ms));
         }
 
+        // Write-deadline leg (§5 connection I/O model: "No unbounded
+        // blocking write exists" — tested, not assumed): a reply the peer
+        // never reads fills the kernel buffer and blocks the write; the
+        // deadline must close the connection and the loop stays healthy.
+        {
+            using qiven::runtime::ipc::ServeLoop;
+            ServeLoop::Options wr;
+            wr.listen_arms       = 2;
+            wr.max_connections   = 4;
+            wr.write_deadline_ms = 600;
+            wr.idle_timeout_ms   = 4000;
+            ServeLoop::Hooks wr_hooks;
+            wr_hooks.handle = [](const Request& request) {
+                Reply reply;
+                reply.kind       = Reply::Kind::HelloAck;
+                reply.request_id = request.request_id;
+                // Only the non-reading probe's reply is oversized; the
+                // follow-up gets a small reply (a >buffer frame does not
+                // stream against a whole-count overlapped reader — the
+                // write deadline closes it; honest note in the design's
+                // landing notes — so loop health is asserted with a
+                // normal-sized reply).
+                if (request.request_id == 40)
+                {
+                    reply.host_build = std::string(1024 * 1024, 'b'); // >> any pipe buffer
+                }
+                else
+                {
+                    reply.host_build = "serve-loop-test";
+                }
+                return reply;
+            };
+            auto wr_loop = ServeLoop::create(unique_install_id("serveloop-writedeadline"), codec,
+                                             wr, std::move(wr_hooks));
+            QIVEN_VERIFY(wr_loop.is_ok());
+            std::thread wr_runner([&] { wr_loop.value()->run(); });
+            {
+                auto hog = PipeClient::connect(
+                    qiven::runtime::ipc::pipe_name(unique_install_id("serveloop-writedeadline")));
+                QIVEN_VERIFY(hog.is_ok());
+                QIVEN_VERIFY(write_request(hog.value(), codec, hello_request(40), 1));
+                // Never read the reply: the serve thread's write must hit
+                // its deadline and close the connection (EOF observed
+                // client-side within a bounded wait).
+                const auto begin = std::chrono::steady_clock::now();
+                auto frame       = hog.value().read_frame(3000);
+                const auto ms    = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - begin)
+                                    .count();
+                QIVEN_VERIFY(!frame.has_value());
+                QIVEN_VERIFY(ms < 2500); // deadline (600 ms) + margin
+            }
+            // The loop stays healthy and serves a fresh client.
+            {
+                auto fresh = PipeClient::connect(
+                    qiven::runtime::ipc::pipe_name(unique_install_id("serveloop-writedeadline")));
+                QIVEN_VERIFY(fresh.is_ok());
+                QIVEN_VERIFY(write_request(fresh.value(), codec, hello_request(41), 1));
+                auto frame = fresh.value().read_frame(3000);
+                QIVEN_VERIFY(frame.has_value());
+            }
+            wr_loop.value()->request_stop();
+            wr_runner.join();
+            std::printf("[ OK ] write deadline: non-reading peer closed within the bound\n");
+        }
+
         // Phased stop: request_stop wakes arms and serve threads inside
         // their slices; run() returns within the grace.
         const auto begin = std::chrono::steady_clock::now();

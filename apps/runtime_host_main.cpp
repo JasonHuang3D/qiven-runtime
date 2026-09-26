@@ -370,8 +370,16 @@ int main(int argc, char** argv)
                     loop.value()->stats().busy_rejected.load();
                 const qiven::u64 busy_occupancy =
                     loop.value()->stats().busy_occupancy_last.load();
+                std::string audit_gaps;
+                if (snapshot.journal_append_failures > 0)
+                {
+                    // LL-4: a recording gap is LOUD (status carries the
+                    // count; the heartbeat is the human surface).
+                    audit_gaps = ", AUDIT GAPS " +
+                                 std::to_string(snapshot.journal_append_failures);
+                }
                 std::printf("[beat] serving %llus, connections %llu, refresh %s, "
-                            "listener %s, journal events %llu, busy %llu (last occupancy "
+                            "listener %s, journal events %llu%s, busy %llu (last occupancy "
                             "%llu)\n",
                             static_cast<unsigned long long>(uptime_s),
                             static_cast<unsigned long long>(
@@ -380,6 +388,7 @@ int main(int argc, char** argv)
                             loop.value()->stats().degraded_listener.load() ? "DEGRADED"
                                                                            : "ok",
                             static_cast<unsigned long long>(snapshot.journal_events),
+                            audit_gaps.c_str(),
                             static_cast<unsigned long long>(busy_total),
                             static_cast<unsigned long long>(busy_occupancy));
                 std::fflush(stdout);

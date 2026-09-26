@@ -2220,7 +2220,19 @@ qiven::Result<void> RuntimeJournal::append_audit_at(std::string_view kind,
         }
         return touch_wall_clock(now_ms);
     });
+    if (!txn.is_ok())
+    {
+        // LL-4 honesty: the audit channel never fails a verdict, but its
+        // failures count and surface through status — "the journal records
+        // what was observed" must degrade loudly, never silently.
+        m_audit_append_failures.fetch_add(1, std::memory_order_relaxed);
+    }
     return txn;
+}
+
+u64 RuntimeJournal::audit_append_failures() const noexcept
+{
+    return m_audit_append_failures.load(std::memory_order_relaxed);
 }
 
 qiven::Result<void> RuntimeJournal::checkpoint()

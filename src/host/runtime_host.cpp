@@ -486,6 +486,9 @@ StatusSnapshot RuntimeHost::status_locked(u64 now_ms) const
         {
             snapshot.journal_events = events.value();
         }
+        // LL-4 honesty: failed audit appends never fail a verdict, but the
+        // count surfaces here (and in doctor) so a recording gap is loud.
+        snapshot.journal_append_failures = m_journal->audit_append_failures();
     }
     return snapshot;
 }
