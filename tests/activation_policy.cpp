@@ -237,15 +237,16 @@ rules:
                 real_policy.reason().line, real_policy.reason().detail.c_str(), eol.c_str());
             return 18;
         }
-        // the bootstrap set after the F-05/F-07 scar additions: 15 rules
-        if (real_policy.value().rules.size() != 15)
+        // the bootstrap set after the F-05/F-07 scar additions: 19 rules
+        // (4 TCA docs + 6 scars + 4 laws + 2 supporting + 1 P4 + TCA-GOV scar-lifecycle)
+        if (real_policy.value().rules.size() != 19)
         {
             std::printf("[FAIL] published policy rule count %zu (expected 15)%s",
                         real_policy.value().rules.size(), eol.c_str());
             return 19;
         }
         std::printf("[ OK ] published instances parse field-exact (core corpus 4 repos;"
-                    " policy 15 rules)%s",
+                    " policy 19 rules)%s",
                     eol.c_str());
     }
 
