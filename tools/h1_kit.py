@@ -704,15 +704,13 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
 
         print("[ OK ] PREFLIGHT PASS - safe to approve the hook config in "
               "the ZCode UI")
-        print("[ NOTE ] the preflight LEAVES THE SERVER RUNNING (the "
-              "long-lived model)")
         result = EXIT_OK
         return result
     finally:
-        # LL-1 custody: a STARTED server stays running on every exit path
-        # (starting availability is the design, not a leak); the owner's
-        # stop is stop-host.cmd / rollback.cmd.
-        pass
+        # §8 honesty on EVERY exit path (not only PASS): a started server
+        # stays running on failure exits too, and the owner is told.
+        print("[ NOTE ] the preflight LEAVES THE SERVER RUNNING (the "
+              "long-lived model); stop-host.cmd / rollback.cmd stop it")
 
 
 def main(argv=None) -> int:

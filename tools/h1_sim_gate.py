@@ -228,6 +228,14 @@ def run_hook(hook_exe: Path, event: str, root: Path, payload: bytes,
         raise GateFailure(
             f"{event} round trip took {elapsed:.2f}s - over the harness "
             f"budget {budget}s (the slow-client production-failure class)")
+    # INV-10 enforced AT THE INSTRUMENT (every current and future
+    # registration call site — first calls AND note-wait retries): the
+    # whole hello+event transaction under one monotonic bound.
+    if event == "session_start" and elapsed > SESSION_TX_BOUND_S:
+        raise GateFailure(
+            f"session_start round trip took {elapsed:.2f}s - over the INV-10 "
+            f"whole-transaction bound {SESSION_TX_BOUND_S}s (a per-frame-only "
+            f"timer cannot close the trial-4 class)")
     if dump_path is not None and not (dump_path.is_file()
                                       and dump_path.stat().st_size > 0):
         raise GateFailure(f"hook wrote no --dump-stdin probe payload to "
