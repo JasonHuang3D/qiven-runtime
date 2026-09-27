@@ -351,7 +351,8 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
         "echo [ RUN] qiven host shutdown (authenticated IPC)",
         "cd /d D:\\JasonWork\\qiven-runtime",
         "build\\vs2022-x64\\Release\\qiven-runtimectl.exe host shutdown --root D:\\JasonWork\\qiven-context",
-        "echo [ OK ] shutdown command returned (exit %errorlevel%)",
+        "if errorlevel 1 (echo [FAIL] shutdown command failed - exit %errorlevel%) "
+        "else (echo [ OK ] shutdown command returned)",
         "pause",
     ]) + "\n", encoding="utf-8", newline="\n")
 
@@ -394,7 +395,9 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
         "if not exist \"%LNK%\" echo [ OK ] no autostart shortcut present",
         f"cd /d D:\\JasonWork\\qiven-runtime",
         "build\\vs2022-x64\\Release\\qiven-runtimectl.exe host shutdown --root D:\\JasonWork\\qiven-context",
-        "echo [ OK ] autostart removed and server stopped",
+        "if errorlevel 1 (echo [FAIL] shutdown failed - exit %errorlevel%; the "
+        "autostart shortcut IS removed) else (echo [ OK ] autostart removed "
+        "and server stopped)",
         "pause",
     ]) + "\n", encoding="utf-8", newline="\n")
 
@@ -426,7 +429,9 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
         "echo [ OK ] config restored - REVIEW IT in the ZCode UI (hooks reload at next session start)",
         "cd /d D:\\JasonWork\\qiven-runtime",
         "build\\vs2022-x64\\Release\\qiven-runtimectl.exe host shutdown --root D:\\JasonWork\\qiven-context",
-        "echo [ OK ] rollback complete",
+        "if errorlevel 1 (echo [FAIL] rollback shutdown failed - exit "
+        "%errorlevel%; config restore and autostart removal DID run) else "
+        "(echo [ OK ] rollback complete)",
         "pause",
     ]) + "\n", encoding="utf-8", newline="\n")
 
@@ -546,26 +551,40 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
         "tool_input": {"command": "qiven preflight probe"},
     })
     log_path = kit_dir / "preflight-host.log"
+    # RE-RUNNABILITY (the correlation law): a pre_tool allow leaves an
+    # outstanding per session+tool, so FIXED probe handles would make the
+    # second run (install-autostart's verification re-invokes this
+    # preflight; the owner may re-run preflight.cmd any time) deny 115 on
+    # a healthy deployment. Handles carry a per-invocation suffix, and
+    # every probe's outstanding is CLOSED by its post_tool before the
+    # preflight returns.
+    run_stamp = f"{int(time.time() * 1000):x}"
+    probe_handle = f"{token}-preflight-{run_stamp}"
+    first_contact_handle = f"{token}-firstcontact-{run_stamp}"
+
+    def run_event(event: str, handle: str, tool: str | None = None):
+        argv = [str(hook_exe), "--event", event, "--root", str(GOVERNED_ROOT),
+                "--session-handle", handle]
+        if tool:
+            argv += ["--tool", tool]
+        proc = sp.run(argv, input=probe_payload, capture_output=True, text=True,
+                      timeout=20, creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+    def close_outstanding(handle: str) -> None:
+        # The post_tool correlates and clears the outstanding the pre left
+        # (the sim rig's clear-outstanding pattern).
+        run_event("post_tool", handle, "Bash")
 
     def run_probe() -> tuple[int, str, str]:
-        proc = sp.run(
-            [str(hook_exe), "--event", "pre_tool", "--tool", "Bash",
-             "--root", str(GOVERNED_ROOT), "--session-handle", token + "-preflight"],
-            input=probe_payload, capture_output=True, text=True, timeout=20,
-            creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
-        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+        return run_event("pre_tool", probe_handle, "Bash")
 
     def run_session_start_probe() -> tuple[int, str, str]:
         # Trial-4 preflight blind spot (2026-09-26 incident): the old
         # preflight drove ONLY a pre_tool round trip, so the session_start
         # registration path -- where the hello/event deadline split lived --
         # was never exercised before the owner approved the config.
-        proc = sp.run(
-            [str(hook_exe), "--event", "session_start",
-             "--root", str(GOVERNED_ROOT), "--session-handle", token + "-preflight"],
-            input=probe_payload, capture_output=True, text=True, timeout=20,
-            creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
-        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+        return run_event("session_start", probe_handle)
 
     result = EXIT_FAIL
     started_here = False
@@ -608,12 +627,16 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
             print("[ OK ] server started with the kit-internal profile")
 
         # Leg 2 - verdict round trip (a REAL pipe verdict, not a boot echo).
+        # The probe command is inert (outside the governed scope), so the
+        # honest oracle is exit 0; a host-verdict DENY (e.g. a correlation
+        # 115 from a stale outstanding) must NOT pass as "[ OK ]".
         print("[ RUN] preflight: verdict round trip")
         code, _out, err = run_probe()
-        verdict_ok = code == 0 or "(host verdict)" in err
+        verdict_ok = code == 0
         print(("[ OK ] " if verdict_ok else "[FAIL] ") +
               "verdict round trip complete" +
               ("" if verdict_ok else f" -- exit {code}: {err}"))
+        close_outstanding(probe_handle)
         if not verdict_ok:
             return EXIT_FAIL
 
@@ -621,18 +644,12 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
         # LL-2a live proof: a never-registered handle mints and is judged
         # on its merits - the trial-4 deny-114 ritual is retired).
         print("[ RUN] preflight: first-contact pre_tool (no session_start)")
-        proc = sp.run(
-            [str(hook_exe), "--event", "pre_tool", "--tool", "Bash",
-             "--root", str(GOVERNED_ROOT),
-             "--session-handle", token + "-firstcontact"],
-            input=probe_payload, capture_output=True, text=True, timeout=20,
-            creationflags=getattr(sp, "CREATE_NO_WINDOW", 0))
-        first_contact_ok = (proc.returncode == 0
-                            and "deny 114" not in proc.stderr)
+        code, _out, err = run_event("pre_tool", first_contact_handle, "Bash")
+        first_contact_ok = code == 0
         print(("[ OK ] " if first_contact_ok else "[FAIL] ") +
               "first contact judged on merits (no registration ritual)" +
-              ("" if first_contact_ok else
-               f" -- exit {proc.returncode}: {proc.stderr.strip()}"))
+              ("" if first_contact_ok else f" -- exit {code}: {err}"))
+        close_outstanding(first_contact_handle)
         if not first_contact_ok:
             return EXIT_FAIL
 
@@ -690,7 +707,8 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
                 print(f"[FAIL] restart did not answer within 20 s; log: {log_path}")
                 return EXIT_FAIL
             code, _out, err = run_probe()
-            residue_ok = code == 0 or "(host verdict)" in err
+            residue_ok = code == 0
+            close_outstanding(probe_handle)
             print(("[ OK ] " if residue_ok else "[FAIL] ") +
                   "next verdict succeeds with no re-registration ritual (LL-4)" +
                   ("" if residue_ok else f" -- exit {code}: {err}"))

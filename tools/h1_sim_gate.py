@@ -1861,26 +1861,10 @@ class Rig:
                         f"first trigger result must be an honest phase "
                         f"outcome: all rows {rows}")
 
-        @self.case("N3.drain-marks-outstanding-indeterminate", ["INV-16", "INV-7"],
-                   "§5 stop semantics: an outstanding pre observation at drain "
-                   "leaves its hook_outcome_indeterminate audit row (the durable "
-                   "boundary record)")
-        def _n3():
-            payload = self.payload_with_target(w_root, w_outside, "sess-w", "Write",
-                                               file_path=f"{w_outside.as_posix()}/"
-                                                         "n3-outside.md")
-            code, err, _ = run_hook(hook, "pre_tool", w_root, payload,
-                                    tool="Write", session_handle="h-w")
-            self.expect(code == 0, f"outside allow for the outstanding pre: {err}")
-            # W3 below stops the host; the drain must mark the observation.
-            rows = [p for kind, p in audit_events(w_root)
-                    if kind == "hook_outcome_indeterminate"]
-            self.expect(len(rows) == 0, "no drain row before the stop")
-            stop_host(w_root, w_proc, w_fh)
-            rows = [p for kind, p in audit_events(w_root)
-                    if kind == "hook_outcome_indeterminate"]
-            self.expect(len(rows) >= 1,
-                        "drain must mark the outstanding pre Indeterminate")
+        # N3 (drain marking) is REGISTERED AFTER W1/W2 on purpose: it stops
+        # the w-group host, and the bypass negative controls assert their
+        # no-mediation observable against a LIVE host (a stopped mediator
+        # journals nothing trivially).
 
         @self.case("N4.refresh-recovery-real-git-origin", ["INV-19"],
                    "§6 recovery law (carried from the implementation batch's "
@@ -2048,6 +2032,26 @@ class Rig:
             mentions = [p for kind, p in audit_events(w_root) if "BYPASS-CHILD" in p]
             self.expect(not mentions,
                         "the journal must show NO mediation for the child write")
+
+        @self.case("N3.drain-marks-outstanding-indeterminate", ["INV-16", "INV-7"],
+                   "§5 stop semantics: an outstanding pre observation at drain "
+                   "leaves its hook_outcome_indeterminate audit row (the durable "
+                   "boundary record)")
+        def _n3():
+            payload = self.payload_with_target(w_root, w_outside, "sess-w", "Write",
+                                               file_path=f"{w_outside.as_posix()}/"
+                                                         "n3-outside.md")
+            code, err, _ = run_hook(hook, "pre_tool", w_root, payload,
+                                    tool="Write", session_handle="h-w")
+            self.expect(code == 0, f"outside allow for the outstanding pre: {err}")
+            rows = [p for kind, p in audit_events(w_root)
+                    if kind == "hook_outcome_indeterminate"]
+            self.expect(len(rows) == 0, "no drain row before the stop")
+            stop_host(w_root, w_proc, w_fh)
+            rows = [p for kind, p in audit_events(w_root)
+                    if kind == "hook_outcome_indeterminate"]
+            self.expect(len(rows) >= 1,
+                        "drain must mark the outstanding pre Indeterminate")
 
         @self.case("W3.wire-group-teardown", ["INV-16"], "shutdown after wire faults")
         def _w3():
