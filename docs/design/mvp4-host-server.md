@@ -138,8 +138,9 @@ Three corollaries, each killing one historical failure mechanism:
   verdict mapping; the numbers coincide with the retired protocol
   ceilings only because both derive from the same round-number
   budgets, and they are now purely caller-side choices. Every client
-  read is bounded, runtimectl included (default 5000 ms, per-verb
-  overridable) — no operator tool may hang against the server. A
+  read is bounded, runtimectl included (default 5000 ms on every verb —
+  bounded is the law; a per-verb override flag is a hardening item, not a
+  correctness property) — no operator tool may hang against the server. A
   typed 124 timeout is reported honestly. Under this design a
   healthy server answers in single-digit milliseconds, so a
   caller-side timeout now signals GENUINE unavailability, not a
@@ -312,8 +313,12 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
   (a vanish storm) and any other accept failure both degrade to the
   never-fatal path — recreate the listen instance and retry with
   internal backoff; a persistently failing listener enters a loud
-  DEGRADED state (heartbeat lines + `status.state` report it;
-  journal audit row) and keeps retrying. No accept-path outcome
+  DEGRADED state (heartbeat lines report it; the EMBEDDER's heartbeat
+  journals a `listener_degraded` audit row on the rising edge through
+  the record_audit seam, ≤30 s observation latency — a durable
+  discriminator, not a realtime feed; carrying it into `status.state`
+  is a hardening item recorded with the other §12 residuals) and keeps
+  retrying. No accept-path outcome
   reaches process exit; the process exits only on operator stop
   (Ctrl+C, console close, logoff/shutdown, authenticated Shutdown)
   or boot-class failure before serving begins.
@@ -462,16 +467,16 @@ is the user-scope mechanism; a service is a revisit trigger, §9).
 | --- | --- | --- |
 | first contact | `hook_conformance` | LL-2a: `pre_tool` on a never-registered handle mints the session and returns a real verdict (never a 114-class deny); `post_tool` first contact degrades honestly (unmatched) without poisoning; idempotent re-contact keeps one session id within a host lifetime |
 | registration independence | `hook_conformance` | LL-2a: full pre/post flow with NO `session_start` at all behaves identically to the registered flow |
-| no-deadline wire | `hook_conformance` | LL-3: requests carry no `deadline_ms`; a request containing it fails closed typed (unknown field); the transition behavior of an old client is the honest 116-class fail-closed deny |
+| no-deadline wire | `hook_conformance` | LL-3: requests carry no `deadline_ms`; a request containing it fails closed typed (unknown field) — asserted at decode level here; the client-mapping leg of the old-client transition (typed 64 → honest fail-closed deny text through the real exe) lands with the companion sim-gate batch (c), which drives the real hook binary |
 | request-path cost bound | `hook_conformance` | LL-2b, structural + timed: during verdicts with git a marker-writing stub / nonexistent executable, NO `cognition_*` audit row appears and the marker file stays absent (no child spawned, no fetch attempted — the timing bound below cannot be fooled by a fast-failing environment), AND verdicts return within **250 ms** (expected single-digit ms) |
-| degraded listener observability | `host_server_lifecycle` (real exe) | §5: with the pipe instance forced uncreatable, the host enters DEGRADED — heartbeat lines report it, `status.state` carries it, an audit row records it, and the process keeps retrying without exiting |
-| stop lost-wakeup window | `host_server_lifecycle` (real exe) | §5: a stop issued exactly while an accept slot is between instance creation and `ConnectNamedPipe` still exits the process within the grace (the recheck law is exercised by a stop timed against a slot cycle) |
+| degraded listener observability | §5 honest state (amended): forcing instance-creation failure deterministically needs an injection seam (named in the §12 hardening list); the LANDED observables are the heartbeat line, the embedder's `listener_degraded` journal row (rising edge, ≤30 s), and `ServeLoop::stats().degraded_listener`; `status.state` coupling is deferred with the same hardening item |
+| stop lost-wakeup window | `ipc_multiframe_contract` (library; carrier amended from the exe rig) | §5: a stop issued while arms cycle through instance creation and `ConnectNamedPipe` (a live connect/die churn storm keeps the slots cycling) still exits `run()` within the grace — plus the fresh-loop stop proxy; the deterministic in-window stop needs a slot-cycle injection seam (§12 hardening list) |
 | hook client 125 mapping | `hook_conformance` | LL-3: a typed 125 busy error frame maps client-side to a fail-closed deny with honest text for `pre_tool` and an exit-0 note for advisory events (the classifier is taught the code) |
 | refresh worker faults | `hook_conformance` | §5: an injected fault in the worker's attempt body journals `refresh_fault`, degrades refresh state, and the host KEEPS SERVING verdicts; the next cadence tick runs a normal attempt |
 | registry eviction | `hook_conformance` | §5: with a test-injected small `session_idle_evict_ms`, an idle session evicts and a re-contact mints FRESH (same honest semantics as restart); the sim-gate oracle's one-`session_registered`-row-per-handle expectation is amended in batch (c) accordingly |
 | verdict latency under concurrent publish | `hook_conformance` | §5 two-level locking: a verdict served WHILE a refresh publish runs returns within the bound (default assert < 1000 ms) — the claim is measured, not assumed |
 | manifest advisory | `hook_conformance` | 113 ONLY for the mismatched tools (per-tool degradation); a matching manifest never degrades; manifest absence never degrades availability |
-| refresh worker | `hook_conformance` | boot publish; cadence attempt observable via journal `cognition_*` rows and status; expiry → 117 with automatic recovery after a successful attempt; operator `refresh` kind triggers an attempt (authenticated, journaled) |
+| refresh worker | `hook_conformance` | boot publish; cadence attempt observable via journal `cognition_*` rows and status; expiry → 117 asserted here; the operator `refresh` kind triggers an attempt (authenticated, journaled — asserted at the exe rig); the automatic-recovery leg (expired → 117 → successful attempt → merits verdict) needs a fetch-succeeds fixture and lands with the companion sim-gate batch (c), whose real-git rig produces genuine refresh success |
 | mediation/correlation matrixes | `hook_conformance` | unchanged rows re-pinned (110/111/112/115/117/118 classes) |
 | library serve semantics | `ipc_multiframe_contract` | idle close/frame budget as hygiene on a per-thread connection; seq law; error-frame linger; bounded writes; 125 busy frame shape |
 | stop/exit + restart | `host_server_lifecycle` (real exe) | ack-before-drain; stop exits the real process within the bounded grace; outstanding pre transactions marked Indeterminate at drain; after restart, first contact mints fresh and verdicts resume with no ritual (LL-4 scoped) |
@@ -511,11 +516,14 @@ Every kit launcher states the exact image it runs.
   **2000 ms** for the full round trip (no refresh in the path; the
   bound is chosen far above the expected single-digit-ms answer and
   far below the old 9750 ms class); (5) status reports refresh state;
-  (6) authenticated shutdown exits the process; (7) `start-host.cmd`
-  brings it back and the next verdict succeeds — the no-residue proof
-  (LL-4). When the preflight did NOT start the server (it was
-  already running — the normal case under LL-1), legs (6)-(7) are
-  SKIPPED with an honest label: a verification tool does not bounce
+  (6) authenticated shutdown exits the process; (7) the normal START
+  PATH — the same image/arguments `start-host.cmd` runs; the preflight
+  invokes the launch directly, and the cmd file's own already-running
+  detection and bounded wait loop remain the owner's manual exercise
+  (GUIDE step P6) — brings it back and the next verdict succeeds — the
+  no-residue proof (LL-4). When the preflight did NOT start the server
+  (it was already running — the normal case under LL-1), legs (6)-(7)
+  are SKIPPED with an honest label: a verification tool does not bounce
   the autostart-owned server mid-flight (stop-host.cmd +
   start-host.cmd remain the owner's manual exercise of that path).
   The preflight LEAVES THE SERVER RUNNING (the long-lived
@@ -565,7 +573,145 @@ Every kit launcher states the exact image it runs.
 - The H1 kit (d) is BUILT at that published head (a tool run with its
   own regression, not a separate publication).
 
-## 12. Review record
+## 12. Batch-b implementation notes (2026-09-27)
+
+Deviations and refinements recorded at landing, none contradicting the
+laws:
+
+1. **Sliced overlapped waits instead of CancelSynchronousIo.** §5 names
+   CancelSynchronousIo for the stop wake. The implementation creates every
+   instance and client handle FILE_FLAG_OVERLAPPED and waits each pending
+   operation in slices against the stop flag/deadline, cancelling via
+   CancelIoEx on the ISSUING thread. This meets the same contract (no
+   cross-thread handle close, prompt stop) with a strictly smaller
+   surface; reads keep whole-frame deadline semantics (the overlapped
+   read is issued once and waited — no partial-read loss).
+2. **Drain marking is audit-level.** The journal has no public
+   transaction terminal-transition command today (record_outcome is
+   dispatch-based; dispatches are MVP-6). Drain appends
+   `hook_outcome_indeterminate` audit rows for outstanding pres; the open
+   rows reconcile at the next boot's recovery walk (MVP-1 law). A
+   terminal-transition command is added to the pre-MVP-5 hardening list
+   beside the replay-window wiring.
+3. **Shutdown ack linger.** The serve thread that observes an
+   authenticated Shutdown lingers (the shared bounded linger) before its
+   connection closes: DisconnectNamedPipe discards unread bytes, and the
+   loop tears down fast once stopped — without the linger the ctl
+   delivered shutdown, the host logged the ack, and the client still
+   observed "no reply" (found live by host_server_lifecycle).
+4. **The exe's per-request `[conn]` logging and the heartbeat stay** (the
+   human-facing output law); with `--log` they land in the log file.
+5. **Test-carrier notes.** host_server_lifecycle drives the REAL sibling
+   client executables (hook/runtimectl — the same installation unit the
+   kit uses); ServeLoop-level laws (125, pool admission, phased stop,
+   stalled-peer) run in ipc_multiframe_contract as library rows; the
+   request-path cost row asserts the timed bound at handle level and the
+   structural no-child/no-cognition-row property is covered by the
+   lifecycle rig's session_start < 2000 ms leg (no git is reachable from
+   the request path; the refresh worker observability leg proves the
+   worker is the only cognition-touching path).
+
+6. **Residuals from the batch-b review (honestly recorded).** (a) The
+   refresh-worker fault row needs an injection seam (
+   is neither virtual nor injectable) — the catch-all containment landed;
+   the seam plus the  regression is added to the pre-MVP-5
+   hardening list. (b) Listener degradation is observable via the log
+   line and the heartbeat's  field; carrying it into
+    + a journal audit row requires a host↔loop stats
+   coupling that is also deferred to the same hardening list. (c) The
+   verdict-latency-under-publish row runs at exe level (trigger + verdict
+   < 2 s); an in-process publish-overlap row rides the same hardening
+   batch. None of these weaken the laws; they name not-yet-mechanized
+   proofs.
+
+7. **Round-4 residuals (honestly recorded).** (a) 's audit-chain
+   walk runs under the one state mutex (the journal is a single shared
+   connection — concurrent access must serialize); it is operator-invoked
+   and its cost is the chain walk; an incremental/bounded verify is a
+   hardening item. (b) The structural request-path row (marker-writing
+   stub git, no  row) and the end-to-end 125 frame row (real
+   over-cap frame through the real hook) are deferred with the rig batch;
+   the timing legs and the synthetic classifier row are the current
+   assertion sites. (c) The heartbeat thread's catch-all containment is
+   exe-level polish on the same hardening list.
+
+8. **Follow-up landing notes (same batch).** (a) The coalesced operator
+   refresh trigger had been silently dropped until the next cadence tick
+   (the pending flag cleared BEFORE the cooldown check) while the reply
+   claimed `coalesced_pending` — fixed: the flag clears only when an
+   attempt will actually run, so a trigger inside the cooldown attempts
+   at the cooldown's end as §5 states. (b) Arm-thread fault containment
+   no longer respawns a DETACHED re-arm thread (unjoinable past a stopped
+   loop — a use-after-free window on the loop object): containment is
+   per-iteration inside the same joinable arm thread. (c) Test-row
+   completions: the §7 client-etiquette leg has its carrier
+   (ipc_multiframe_contract — bounded concurrent clients under slot
+   pressure all served within budget); the restart row now asserts the
+   drain's `hook_outcome_indeterminate` audit row and the fresh-session
+   mint on re-contact via the journal's session-row count
+   (host_server_lifecycle 5c/6b/7a); a lying `body_len` header is
+   rejected typed before any MAC work (pipe_frame_security). (d) The 125
+   audit row (LL-3, the S-5 discriminator) is emitted by the EMBEDDER —
+   the library layer cannot journal: the heartbeat line prints busy
+   totals + last occupancy, and `connection_cap_busy` is journaled once
+   per beat window in which the busy counter moved (≤30 s latency — a
+   durable discriminator, not a realtime feed).
+
+9. **Second fix-batch landing notes (same batch).** (a) The relative
+   exact-file/prefix governed-path clauses were byte-case-sensitive: a
+   relative case-varied Write target ("STATE/CURRENT.MD") escaped
+   governance on the case-insensitive Windows filesystem — every clause
+   is now case-insensitive (equals_ci/starts_with_ci), with
+   hook_conformance regression rows (relative file, dir child, absolute
+   case-varied). Kept machinery, but this design re-asserts it as
+   proven, so the fix rides this batch. (b) The hook client's writes and
+   connect busy-wait now draw from the invocation-wide budget remainder
+   (the fixed per-write budget composed worst-case to ~14.75 s against
+   the 15 s session_start harness budget); the client_write_budget_ms
+   constant is retired. (c) Serve-thread registry notifies moved INSIDE
+   the mutex: the post-decrement notify outside the lock could touch the
+   condition variable after run() returned and the embedder destroyed
+   the loop. (d) The refresh-worker §7 legs landed: the operator
+   trigger's `refresh_triggered` + `cognition_*` journal rows are
+   asserted at the exe rig (5b), and the coalescing law has a
+   handle()-level oracle (cooldown shrunk via a test seam; the pending
+   trigger must RUN at the cooldown's end — the regression for (a)
+   above). (e) Stop-under-arm-churn row added at the library carrier
+   (§7 row amended); the deterministic in-window stop and the forced
+   degraded-listener leg need injection seams — added to the pre-MVP-5
+   hardening list with their revisit triggers.
+
+10. **Third fix-batch landing notes (same batch).** (a) The §5 phase-3
+    stop abort now covers WRITES: the serve-side write wait observes the
+    stop flag at slice granularity (a non-reading peer can no longer
+    hold a serve thread to its full write deadline past a stop), and the
+    ServeLoop destructor waits one stop-grace for the serve-thread
+    countdown before freeing members (the destruction law is stated on
+    the class; the exe's exit-without-destructors remains the production
+    path). (b) The 118 client class has its re-pin (oversize payload →
+    pre_tool deny exit 2 with the hook-client tag; advisory events note
+    and exit 0). (c) The write-deadline law has its library row (a
+    non-reading peer forces the deadline; the connection closes within
+    the bound; the loop stays healthy). (d) Audit-channel honesty: failed
+    request-path audit appends are counted in the journal and surfaced
+    through `status.journal_append_failures` + the heartbeat's
+    "AUDIT GAPS" marker (LL-4 — a recording gap is loud, never silent).
+    (e) Deferred (latent, malformed-adjacent): a profile omitting
+    `freshness_window_ms` loads with window 0, where verdicts never deny
+    117 while `refresh_state` reports "expired" — requiring the field
+    (or symmetric no-window semantics) rides the pre-MVP-5 hardening
+    list. Two §7 row clauses were amended to name their honest carriers
+    (the refresh-recovery and old-client-mapping legs land with the
+    companion sim-gate batch (c), inside the same publication unit).
+    (f) Measured large-frame behavior (found by the write-deadline row):
+    a reply larger than the pipe buffer does NOT stream against a
+    whole-count overlapped reader — the write deadline closes the
+    connection exactly as the law demands. Real replies are orders of
+    magnitude smaller (verdicts, statuses); chunked read/write staging
+    for pathological reply sizes rides the hardening list with the
+    injection seams.
+
+## 13. Review record
 
 Design authored 2026-09-27 (v37 session, designation
 jason-extended-cognition) BEFORE any implementation code of this

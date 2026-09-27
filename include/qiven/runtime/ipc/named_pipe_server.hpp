@@ -2,25 +2,28 @@
 
 // ============================================================================
 // ipc/named_pipe_server.hpp — the owner-scoped local transport
-// (MVP-3 batch design section 3.3; ARCH section 12.1/12.3; cpp-design §10)
+// (MVP-3 batch design section 3.3; ARCH section 12.1/12.3; cpp-design §10;
+// host-server redesign LL-1/LL-3 — docs/design/mvp4-host-server.md)
 //
-// One named pipe per installation: \\.\pipe\qiven-runtime\<install-id>\v1
-// with an owner-only DACL (SDDL "D:P(A;;GA;;OW)" — nobody else may connect;
-// exit gate 1's locally-provable part). Client identity is validated from
-// the CONNECTION, never the payload: GetNamedPipeClientProcessId →
-// OpenProcess → QueryFullProcessImageNameW against the install record
+// One flat-named pipe per installation with an owner-only DACL (SDDL
+// "D:P(A;;GA;;;OW)"). Client identity is validated from the CONNECTION,
+// never the payload: GetNamedPipeClientProcessId → OpenProcess →
+// QueryFullProcessImageNameW against the install record
 // (.qiven/runtime/clients.json, written at first boot; every connect is
 // checked). The 256-bit installation secret is minted once and persisted
 // via DPAPI CurrentUser (.qiven/runtime/client.secret.dpapi).
 //
-// Synchronous single-connection service model: the host accepts and serves
-// one client at a time on its control thread (GR-4; H-3 records the
-// concurrency deferral). One connection may carry a BOUNDED SEQUENCE of
-// frames (ipc/pipe_service.hpp, 2026-09-24 corrective decision): the wire
-// contract has always declared connection_seq "strictly increasing per
-// connection". Reads and writes are bounded by the frame caps; each frame
-// (ALL of it, not just its first byte) is bounded by the read deadline, so
-// neither a silent nor a dripping client can wedge the serve loop.
+// Host-server redesign concurrency model (LL-3): instances and client
+// handles are FILE_FLAG_OVERLAPPED; every wait is slice-quantized against
+// an optional stop flag, so no read, write, or accept can block a thread
+// indefinitely and a stop is observed within one slice WITHOUT any
+// cross-thread handle close (the handle-reuse hazard) or CancelSynchronousIo
+// (the design names it; sliced overlapped waits meet the same contract
+// with a strictly smaller surface — recorded in the design's batch-b
+// implementation notes). ServeLoop (ipc/serve_loop.hpp) owns the LISTEN
+// POOL: several concurrently-armed accept instances, one thread per
+// accepted connection, a serve-thread cap with the typed busy frame, a
+// never-fatal accept policy, and the phased stop.
 // ============================================================================
 
 #include <qiven/result.hpp>
@@ -34,6 +37,9 @@
 namespace qiven::runtime::ipc
 {
 inline constexpr i32 err_host_singleton = 101;
+// The connection-cap busy code (host-server redesign LL-3; the hook client
+// is taught this code in classify_transport_failure).
+inline constexpr i32 err_server_busy = 125;
 
 // The DACL shape is part of the contract (pinned by the security test):
 // owner-only generic-all, no other trustees.
@@ -64,7 +70,12 @@ public:
                                             const std::string& image_path);
 };
 
-// One served connection: a connected pipe handle with bounded frame IO.
+// One served connection: a connected OVERLAPPED pipe handle with bounded
+// frame IO. Reads and writes are overlapped operations waited in slices:
+// a read deadline bounds the COMPLETE frame; a write deadline bounds the
+// complete write; an optional stop flag aborts the wait promptly (the
+// pending operation is cancelled — no partial-data ambiguity: a frame
+// that cannot complete inside its bounds closes the connection).
 class PipeConnection
 {
 public:
@@ -79,17 +90,28 @@ public:
     // disconnect returns an empty optional).
     [[nodiscard]] std::optional<std::string> read_frame();
     // Deadline form: the timeout bounds the COMPLETE frame (header + MAC +
-    // body) under one deadline — a client that writes one byte and stalls
-    // cannot hold the reader (adversarial-review M1); expiry returns an
-    // empty optional with last_read_timed_out() true.
-    [[nodiscard]] std::optional<std::string> read_frame(u64 timeout_ms);
-    [[nodiscard]] bool write_bytes(std::string_view bytes);
+    // body) under one deadline. The wait is sliced against `stop`: when the
+    // flag is observed the pending read is cancelled and an empty optional
+    // returns with last_read_aborted() true (distinct from a deadline
+    // expiry so the caller can classify a stop vs an idle close).
+    [[nodiscard]] std::optional<std::string> read_frame(u64 timeout_ms,
+                                                        const std::atomic<bool>* stop = nullptr);
+    // Deadline-bounded write (hygiene bound, LL-3: a non-reading peer
+    // cannot hold the serve thread forever). The optional stop flag lets a
+    // stopping server abort the write (§5 phase-3 coverage for writes).
+    [[nodiscard]] bool write_bytes(std::string_view bytes, u64 deadline_ms,
+                                   const std::atomic<bool>* stop = nullptr);
 
     // True when the most recent read_frame(timeout_ms) returned empty
     // BECAUSE the deadline expired (vs a disconnect/short read).
     [[nodiscard]] bool last_read_timed_out() const noexcept
     {
         return m_last_read_timed_out;
+    }
+    // True when the most recent read was aborted by the stop flag.
+    [[nodiscard]] bool last_read_aborted() const noexcept
+    {
+        return m_last_read_aborted;
     }
 
     // The connected client's image path (QueryFullProcessImageNameW).
@@ -108,8 +130,15 @@ public:
 private:
     void* m_handle             = nullptr;
     bool m_last_read_timed_out = false;
+    bool m_last_read_aborted   = false;
 };
 
+// TEST-SURFACE adapter (the production serve path is ServeLoop,
+// ipc/serve_loop.hpp): a raw single-instance server for the DACL shape
+// check, the FIRST_PIPE_INSTANCE singleton assertion, and single-
+// connection library drivers. Its accept() blocks on ONE armed instance
+// at a time — the retired serial shape, retained as an explicitly-labeled
+// test surface.
 class NamedPipeServer
 {
 public:
@@ -136,11 +165,17 @@ private:
     std::wstring m_name;
 };
 
-// Client side (same Windows user; runtimectl and tests).
+// Client side (same Windows user; runtimectl, the hook, and tests).
 class PipeClient
 {
 public:
-    [[nodiscard]] static qiven::Result<PipeClient> connect(const std::wstring& name);
+    // Overlapped connect with WaitNamedPipe etiquette (LL-3): on
+    // ERROR_PIPE_BUSY (all instances momentarily mid-handshake) the client
+    // waits bounded by `busy_wait_ms` for an instance to re-arm and
+    // retries — transport-level etiquette, never a verdict retry. 120 is
+    // classified only when no instance arms within the budget.
+    [[nodiscard]] static qiven::Result<PipeClient> connect(const std::wstring& name,
+                                                           u64 busy_wait_ms = 1000);
 
     ~PipeClient();
     PipeClient(PipeClient&& other) noexcept;
@@ -148,7 +183,7 @@ public:
     PipeClient(const PipeClient&)            = delete;
     PipeClient& operator=(const PipeClient&) = delete;
 
-    [[nodiscard]] bool write_bytes(std::string_view bytes);
+    [[nodiscard]] bool write_bytes(std::string_view bytes, u64 deadline_ms);
     [[nodiscard]] std::optional<std::string> read_frame();
     // Deadline form (client side): the caller's reply budget. Expiry returns
     // an empty optional with last_read_timed_out() true — the timeout class

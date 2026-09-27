@@ -27,14 +27,22 @@ schema: qiven-deployment-profile-v1
 # detection is exact (the target path is known). The qiven-record
 # launcher grammar surface is recorded below; the executable arrives
 # with MVP-5.
+#
+# Revision 3 (host-server redesign, mvp4-host-server.md): cognition
+# refresh moves to the HOST-AUTONOMOUS worker — boot + the cadence below
+# + the coalesced operator trigger; the SessionStart trigger is
+# superseded (the ARCH §7.4 freshness LAW stands). The loader
+# cross-validates refresh_interval_ms + fetch bound (5000) <
+# freshness_window_ms.
 
 profile_id: zcode-jason-context-record-mvp
-revision: 2
+revision: 3
 control_version: 1
 resolver_registry_revision: 1
 classifier_contract_revision: 1
-conformance_evidence: qiven-runtime docs/design/mvp4-hook-adapter.md (hook_conformance test spine; gate:local at the MVP-4 batch head)
+conformance_evidence: qiven-runtime docs/design/mvp4-host-server.md (host-server redesign; hook_conformance + host_server_lifecycle spines; gate:local at the redesign batch head)
 freshness_window_ms: 604800000
+refresh_interval_ms: 900000
 
 governed_paths:
   - state/active-work.yaml

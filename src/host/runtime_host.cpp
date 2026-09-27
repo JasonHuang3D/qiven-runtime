@@ -10,9 +10,13 @@
 
 #include <cctype>
 #include <chrono>
+#include <cwctype>
 #include <fstream>
 #include <iterator>
 #include <locale>
+#include <optional>
+#include <set>
+#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -51,12 +55,54 @@ private:
     void* m_handle = nullptr;
 };
 
-qiven::Result<MutexHandle> acquire_singleton(const std::string& install_id)
+qiven::Result<MutexHandle> acquire_singleton(const std::filesystem::path& repo_root)
 {
+    // ROOT-IDENTITY keyed singleton (host-server redesign §5 boot order):
+    // acquired BEFORE any journal open or recovery, so an idempotent start
+    // racing a healthy server fails fast WITHOUT touching the live
+    // journal. The key is the root's CANONICAL identity (GetFinalPathFromHandle
+    // — the OS-truth spelling resolving case variance, 8.3 short names,
+    // subst drives, and symlinks), case-folded and hashed: alias spellings
+    // of one checkout share the mutex. (The previous install-id key was
+    // minted by the journal itself, forcing a journal-first order —
+    // mvp3-host-ipc.md §3.4's mutex-first spec was unimplementable with it.)
     using MutexResult = qiven::Result<MutexHandle>;
-    const std::wstring wide(install_id.begin(), install_id.end());
-    const std::wstring name = L"Local\\qiven-runtime-" + wide;
-    HANDLE handle           = CreateMutexW(nullptr, TRUE, name.c_str());
+    HANDLE dir        = CreateFileW(repo_root.c_str(), GENERIC_READ,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                    OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (dir == INVALID_HANDLE_VALUE)
+    {
+        return MutexResult::fail(qiven::Error::make(qiven::error_category::unavailable,
+                                                    err_singleton,
+                                                    "governed root cannot be opened"));
+    }
+    wchar_t final_path[MAX_PATH * 2] {};
+    std::string canonical;
+    const DWORD final_len =
+        GetFinalPathNameByHandleW(dir, final_path, MAX_PATH * 2,
+                                  FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (final_len > 0 && final_len < MAX_PATH * 2) // == size means truncated
+    {
+        std::wstring folded(final_path);
+        for (auto& c : folded)
+        {
+            c = static_cast<wchar_t>(towlower(c));
+        }
+        const ContentDigest digest =
+            cognition::digest_of(std::string(folded.begin(), folded.end()));
+        canonical = cognition::hex_lower(
+            std::span<const std::byte>(digest.sha256.data(), digest.sha256.size()));
+    }
+    CloseHandle(dir);
+    if (canonical.empty())
+    {
+        return MutexResult::fail(qiven::Error::make(qiven::error_category::unavailable,
+                                                    err_singleton,
+                                                    "governed root identity unavailable"));
+    }
+    const std::wstring name = L"Local\\qiven-runtime-root-" +
+                              std::wstring(canonical.begin(), canonical.begin() + 16);
+    HANDLE handle = CreateMutexW(nullptr, TRUE, name.c_str());
     if (handle == nullptr)
     {
         return MutexResult::fail(qiven::Error::make(qiven::error_category::unavailable,
@@ -67,7 +113,7 @@ qiven::Result<MutexHandle> acquire_singleton(const std::string& install_id)
         CloseHandle(handle);
         return MutexResult::fail(qiven::Error::make(qiven::error_category::unavailable,
                                                     err_singleton,
-                                                    "another RuntimeHost owns this installation"));
+                                                    "another RuntimeHost owns this governed root"));
     }
     return MutexResult(MutexHandle(handle));
 }
@@ -179,6 +225,15 @@ void append_event(journal::RuntimeJournal& journal, std::string_view kind,
     return true;
 }
 
+// Case-insensitive equality (the relative exact-file clause: Windows paths
+// are case-insensitive on the filesystem, so a case-varied relative target
+// spelling the governed file must still match — the byte-exact == let
+// "STATE/CURRENT.MD" escape governance).
+[[nodiscard]] bool equals_ci(std::string_view haystack, std::string_view needle)
+{
+    return haystack.size() == needle.size() && contains_ci(haystack, needle);
+}
+
 // Lexical path normalization for the governed-scope test: forward slashes,
 // collapsed separators, trailing-slash trim. Traversal/reparse rejection is
 // the caller's deny (ARCH section 12.3 -- no bypass through traversal).
@@ -200,6 +255,21 @@ void append_event(journal::RuntimeJournal& journal, std::string_view kind,
 
 RuntimeHost::~RuntimeHost()
 {
+    if (m_singleton_mutex != nullptr)
+    {
+        ReleaseMutex(static_cast<HANDLE>(m_singleton_mutex));
+        CloseHandle(static_cast<HANDLE>(m_singleton_mutex));
+        m_singleton_mutex = nullptr;
+    }
+    {
+        std::lock_guard<std::mutex> guard(m_refresh_mutex);
+        m_worker_running = false;
+    }
+    m_refresh_cv.notify_all();
+    if (m_refresh_worker.joinable())
+    {
+        m_refresh_worker.join();
+    }
     if (m_journal != nullptr)
     {
         // Graceful-shutdown checkpoint (WAL truncate); recovery at next
@@ -214,9 +284,18 @@ qiven::Result<std::unique_ptr<RuntimeHost>> RuntimeHost::boot(const HostBoot& bo
 {
     using HostResult = qiven::Result<std::unique_ptr<RuntimeHost>>;
 
-    // Journal first: the install identity names the singleton and the pipe.
-    // First boot creates; later boots open (a corruption never yields a
-    // fresh mutating database -- the MVP-1 fresh-database guard).
+    // 0. ROOT-keyed singleton FIRST (host-server redesign §5): before any
+    // durable touch, so a second start against a live server exits here
+    // without opening or recovering the live journal.
+    auto mutex = acquire_singleton(boot.repo_root);
+    if (!mutex.is_ok())
+    {
+        return HostResult::fail(mutex.reason());
+    }
+
+    // 1. Journal: the install identity names the pipe. First boot creates;
+    // later boots open (a corruption never yields a fresh mutating
+    // database -- the MVP-1 fresh-database guard).
     const std::filesystem::path runtime_root = boot.repo_root / ".qiven" / "runtime";
     std::filesystem::create_directories(runtime_root);
     const std::filesystem::path journal_file = runtime_root / "journal.sqlite3";
@@ -251,14 +330,6 @@ qiven::Result<std::unique_ptr<RuntimeHost>> RuntimeHost::boot(const HostBoot& bo
     {
         host->m_quarantined = quarantined.value();
     }
-
-    // 2. Process singleton (holds for the host lifetime).
-    auto mutex = acquire_singleton(host->m_install_id);
-    if (!mutex.is_ok())
-    {
-        host->m_failure_detail = mutex.reason().message;
-        return HostResult::fail(mutex.reason());
-    }
     host->m_singleton_mutex = mutex.value().release();
 
     // 3. Installation secret + client record (DPAPI; jsonx).
@@ -278,7 +349,9 @@ qiven::Result<std::unique_ptr<RuntimeHost>> RuntimeHost::boot(const HostBoot& bo
     }
 
     // 4. Accepted profile (+ its file digest as the generation's profile
-    //    identity -- the ACCEPTED instance, content-identified).
+    //    identity -- the ACCEPTED instance, content-identified). The loaded
+    //    instance is CACHED: it is static accepted configuration, and the
+    //    request path must not touch the disk under the state mutex.
     std::ifstream profile_bytes_in(boot.profile_file, std::ios::binary);
     std::string profile_bytes((std::istreambuf_iterator<char>(profile_bytes_in)),
                               std::istreambuf_iterator<char> {});
@@ -290,6 +363,9 @@ qiven::Result<std::unique_ptr<RuntimeHost>> RuntimeHost::boot(const HostBoot& bo
         host->m_failure_detail = "profile: " + profile.reason().detail;
         return HostResult(std::move(host));
     }
+
+    host->m_profile_cache  = profile.value(); // cached; request paths read this copy
+    host->m_profile_digest = profile_digest;  // the generation's identity, cached too
 
     // 5. Publish + pin the ACTIVE bundle from the authorized LOCAL ref
     //    (remote fetch + freshness window land with MVP-4 SessionStart).
@@ -347,15 +423,18 @@ qiven::Result<std::unique_ptr<RuntimeHost>> RuntimeHost::boot(const HostBoot& bo
     host->m_bundle_revision = published.value().manifest.source_revision;
     host->m_state           = "running";
 
-    // MVP-4 members: the hook surface needs the boot facts, the active
-    // bundle identity, and the durable freshness clock (last successful
-    // publish -- boot publishes from the authorized LOCAL ref; a remote
-    // refresh confirms currency at SessionStart, ARCH section 7.4).
+    // MVP-4 members: the boot facts, the active bundle identity, and the
+    // durable freshness clock (last successful publish -- boot publishes
+    // from the authorized LOCAL ref; the HOST-AUTONOMOUS worker confirms
+    // currency on its own cadence + the operator trigger — the SessionStart
+    // trigger is superseded by the host-server redesign §6, the freshness
+    // LAW of ARCH §7.4 stands).
     host->m_repo_root            = boot.repo_root;
     host->m_profile_file         = boot.profile_file;
     host->m_git_executable       = boot.git_executable;
     host->m_active_bundle_digest = published.value().bundle_digest;
     host->m_freshness_window_ms  = profile.value().freshness_window_ms;
+    host->m_refresh_interval_ms  = profile.value().refresh_interval_ms;
     if (auto saved = host->m_journal->get_meta("last_refresh_ok_ms"); saved.is_ok() &&
                                                                       saved.value().has_value() && !saved.value()->empty())
     {
@@ -367,6 +446,7 @@ qiven::Result<std::unique_ptr<RuntimeHost>> RuntimeHost::boot(const HostBoot& bo
         host->m_last_refresh_ok_ms = boot.now_ms;
         (void)host->m_journal->set_meta("last_refresh_ok_ms", std::to_string(boot.now_ms));
     }
+    host->m_refresh_state = host->refresh_state_now(boot.now_ms);
 
     // The install identity file names the pipe for same-user clients
     // (runtimectl); the journal remains the authority for the identity.
@@ -379,26 +459,49 @@ qiven::Result<std::unique_ptr<RuntimeHost>> RuntimeHost::boot(const HostBoot& bo
 
 StatusSnapshot RuntimeHost::status() const
 {
+    std::lock_guard<std::mutex> guard(m_state_mutex);
+    return status_locked(wall_now_ms());
+}
+
+StatusSnapshot RuntimeHost::status_locked(u64 now_ms) const
+{
+    // Caller holds m_state (public status() locks; handle() calls this).
     StatusSnapshot snapshot;
-    snapshot.state           = m_state;
-    snapshot.install_id      = m_install_id;
-    snapshot.boot_epoch      = m_boot_epoch;
-    snapshot.generation      = m_generation;
-    snapshot.bundle_revision = m_bundle_revision;
-    snapshot.quarantined     = m_quarantined;
-    snapshot.failure_detail  = m_failure_detail;
+    snapshot.state              = m_state;
+    snapshot.install_id         = m_install_id;
+    snapshot.boot_epoch         = m_boot_epoch;
+    snapshot.generation         = m_generation;
+    snapshot.bundle_revision    = m_bundle_revision;
+    snapshot.quarantined        = m_quarantined;
+    snapshot.failure_detail     = m_failure_detail;
+    snapshot.refresh_state      = refresh_state_now(now_ms);
+    snapshot.last_refresh_ok_ms = m_last_refresh_ok_ms;
+    snapshot.next_refresh_due_ms =
+        m_last_attempt_ms + m_refresh_interval_ms > m_last_attempt_ms
+            ? m_last_attempt_ms + m_refresh_interval_ms
+            : 0;
     if (m_journal != nullptr)
     {
         if (auto events = m_journal->audit_event_count(); events.is_ok())
         {
             snapshot.journal_events = events.value();
         }
+        // LL-4 honesty: failed audit appends never fail a verdict, but the
+        // count surfaces here (and in doctor) so a recording gap is loud.
+        snapshot.journal_append_failures = m_journal->audit_append_failures();
     }
     return snapshot;
 }
 
 ipc::Reply RuntimeHost::doctor() const
 {
+    std::lock_guard<std::mutex> guard(m_state_mutex);
+    return doctor_locked();
+}
+
+ipc::Reply RuntimeHost::doctor_locked() const
+{
+    // Caller holds m_state.
     ipc::Reply reply;
     reply.kind         = ipc::Reply::Kind::DoctorView;
     reply.integrity_ok = true;
@@ -432,6 +535,10 @@ ipc::Reply RuntimeHost::doctor() const
 
 ipc::Reply RuntimeHost::handle(const ipc::Request& request, u64 now_ms)
 {
+    // The ONE state mutex (§5): every request handler serializes here; hold
+    // times are millisecond-scale by construction (no network, no git, no
+    // bundle I/O is reachable from a request path — LL-2b).
+    std::lock_guard<std::mutex> guard(m_state_mutex);
     switch (request.kind)
     {
     case ipc::Request::Kind::Hello:
@@ -446,17 +553,20 @@ ipc::Reply RuntimeHost::handle(const ipc::Request& request, u64 now_ms)
     }
     case ipc::Request::Kind::Status:
     {
-        const StatusSnapshot snapshot = status();
+        StatusSnapshot snapshot = status_locked(now_ms);
         ipc::Reply reply;
-        reply.kind            = ipc::Reply::Kind::StatusView;
-        reply.request_id      = request.request_id;
-        reply.state           = snapshot.state;
-        reply.install_id      = snapshot.install_id;
-        reply.boot_epoch      = snapshot.boot_epoch;
-        reply.generation      = snapshot.generation;
-        reply.bundle_revision = snapshot.bundle_revision;
-        reply.journal_events  = snapshot.journal_events;
-        reply.quarantined     = snapshot.quarantined;
+        reply.kind                = ipc::Reply::Kind::StatusView;
+        reply.request_id          = request.request_id;
+        reply.state               = snapshot.state;
+        reply.install_id          = snapshot.install_id;
+        reply.boot_epoch          = snapshot.boot_epoch;
+        reply.generation          = snapshot.generation;
+        reply.bundle_revision     = snapshot.bundle_revision;
+        reply.journal_events      = snapshot.journal_events;
+        reply.quarantined         = snapshot.quarantined;
+        reply.refresh_state       = snapshot.refresh_state;
+        reply.last_refresh_ok_ms  = snapshot.last_refresh_ok_ms;
+        reply.next_refresh_due_ms = snapshot.next_refresh_due_ms;
         if (!snapshot.failure_detail.empty())
         {
             reply.findings.push_back(snapshot.failure_detail);
@@ -465,7 +575,7 @@ ipc::Reply RuntimeHost::handle(const ipc::Request& request, u64 now_ms)
     }
     case ipc::Request::Kind::Doctor:
     {
-        ipc::Reply reply = doctor();
+        ipc::Reply reply = doctor_locked();
         reply.request_id = request.request_id;
         return reply;
     }
@@ -503,19 +613,265 @@ ipc::Reply RuntimeHost::handle(const ipc::Request& request, u64 now_ms)
         }
         return reply;
     }
+    case ipc::Request::Kind::Refresh:
+    {
+        // Operator convenience TRIGGER (§6): coalesced, never blocking, and
+        // the host is complete without it (LL-2b). The reply is immediate.
+        std::string result = "no_worker"; // honest: nothing will consume it
+        {
+            std::lock_guard<std::mutex> refresh_guard(m_refresh_mutex);
+            if (m_worker_running)
+            {
+                m_refresh_pending = true;
+                result            = now_ms >= m_last_attempt_ms + m_refresh_coalesce_ms
+                                        ? "triggered"
+                                        : "coalesced_pending"; // runs at cooldown end
+            }
+        }
+        m_refresh_cv.notify_all();
+        append_event(*m_journal, "refresh_triggered", result, now_ms);
+        ipc::Reply reply;
+        reply.kind                = ipc::Reply::Kind::RefreshAck;
+        reply.request_id          = request.request_id;
+        reply.refresh_state       = refresh_state_now(now_ms);
+        reply.last_refresh_ok_ms  = m_last_refresh_ok_ms;
+        reply.next_refresh_due_ms = m_last_attempt_ms + m_refresh_interval_ms;
+        reply.refresh_result      = result;
+        return reply;
+    }
     }
     return ipc::make_error(request.request_id, ipc::err_frame, "unhandled request kind");
 }
 
 void RuntimeHost::request_shutdown() noexcept
 {
+    std::lock_guard<std::mutex> guard(m_state_mutex);
     if (m_state == "running")
     {
         m_state = "draining";
     }
+    m_shutting_down = true;
 }
 
-// --- MVP-4 hook surface (batch design section 3.4) ---------------------------
+void RuntimeHost::drain(u64 now_ms)
+{
+    std::lock_guard<std::mutex> guard(m_state_mutex);
+    if (m_state == "running")
+    {
+        m_state = "draining";
+    }
+    m_shutting_down = true;
+    // Outstanding pre observations are audit-marked Indeterminate at drain.
+    // The journal's terminal-transition COMMAND for transactions is a
+    // pre-MVP-5 hardening item; the open rows reconcile at the next boot's
+    // recovery walk (MVP-1 law) — the audit mark is the durable boundary
+    // record (host-server §5 restart semantics, batch-b implementation
+    // note).
+    for (auto& [handle, session] : m_hook_sessions)
+    {
+        for (const auto& [tool, outstanding] : session.outstanding)
+        {
+            append_event(*m_journal, "hook_outcome_indeterminate",
+                         outstanding.action_hex + "|" + tool + "|drain", now_ms);
+        }
+        session.outstanding.clear();
+    }
+    {
+        std::lock_guard<std::mutex> refresh_guard(m_refresh_mutex);
+        m_worker_running = false;
+    }
+    m_refresh_cv.notify_all();
+    // The WAL checkpoint lives HERE (not only in the destructor): the exe
+    // exits without running local destructors after the drain (straggler
+    // serve threads past the grace would otherwise race object teardown).
+    if (m_journal != nullptr)
+    {
+        (void)m_journal->checkpoint();
+    }
+}
+
+void RuntimeHost::record_audit(std::string_view kind, std::string_view detail)
+{
+    // Embedder audit channel (one state mutex, like every journal mutation):
+    // library-layer observations the serve loop cannot journal itself ride
+    // this seam (the typed-125 occupancy breakdown is the first consumer).
+    std::lock_guard<std::mutex> guard(m_state_mutex);
+    append_event(*m_journal, kind, detail, wall_now_ms());
+}
+
+void RuntimeHost::start_refresh_worker()
+{
+    std::lock_guard<std::mutex> guard(m_refresh_mutex);
+    if (m_worker_running)
+    {
+        return;
+    }
+    if (m_refresh_worker.joinable()) // a stopped worker from a prior drain
+    {
+        m_refresh_worker.join(); // assigning to a joinable thread terminates
+    }
+    m_worker_running = true;
+    m_refresh_worker = std::thread([this] { refresh_worker_body(); });
+}
+
+bool RuntimeHost::refresh_expired(u64 now_ms) const
+{
+    return m_freshness_window_ms != 0 && m_last_refresh_ok_ms + m_freshness_window_ms <= now_ms;
+}
+
+std::string RuntimeHost::refresh_state_now(u64 now_ms) const
+{
+    if (m_refresh_state == "degraded")
+    {
+        return "degraded"; // last attempt faulted; next cadence tick retries
+    }
+    if (m_last_refresh_ok_ms != 0 && m_freshness_window_ms != 0 &&
+        now_ms < m_last_refresh_ok_ms + m_freshness_window_ms && m_last_refresh_ok_ms <= now_ms)
+    {
+        return m_refresh_state.empty() ? std::string("current") : m_refresh_state;
+    }
+    return "expired";
+}
+
+void RuntimeHost::evict_idle_sessions(u64 now_ms)
+{
+    // §5 registry eviction: no outstanding pre + idle past the bound → the
+    // in-memory entry goes (journal rows are permanent); a re-contact
+    // mints fresh — the same honest semantics as a restart.
+    for (auto it = m_hook_sessions.begin(); it != m_hook_sessions.end();)
+    {
+        const RuntimeHost::HookSession& session = it->second;
+        const bool idle                         = now_ms > session.last_seen_ms &&
+                          now_ms - session.last_seen_ms > m_session_idle_evict_ms;
+        if (session.outstanding.empty() && idle)
+        {
+            it = m_hook_sessions.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+}
+
+void RuntimeHost::refresh_worker_body()
+{
+    // HOST-AUTONOMOUS refresh (§6): one attempt shortly after boot, then on
+    // the profile cadence, plus coalesced operator triggers (minimum
+    // interval between attempts). NO hook event can reach this path and no
+    // request ever waits on it (LL-2b).
+    constexpr u64 first_attempt_delay_ms = 2'000;
+    auto next_due                        = std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds(first_attempt_delay_ms);
+    while (true)
+    {
+        {
+            std::unique_lock<std::mutex> lock(m_refresh_mutex);
+            m_refresh_cv.wait_until(
+                lock, next_due, [this] { return !m_worker_running || m_refresh_pending; });
+            if (!m_worker_running)
+            {
+                return;
+            }
+            const auto now_steady = std::chrono::steady_clock::now();
+            if (!m_refresh_pending && now_steady < next_due)
+            {
+                continue; // spurious wake: keep waiting for the cadence point
+            }
+            // Coalescing (§5): a trigger inside the cooldown waits for the
+            // cooldown's end. The wait predicate EXCLUDES m_refresh_pending —
+            // with pending in the predicate this loop busy-spins the whole
+            // cooldown (found by review). The flag is cleared ONLY when an
+            // attempt will actually run, so a trigger that arrived during
+            // the cooldown still attempts at the cooldown's end.
+            const u64 now_wall = wall_now_ms();
+            if (now_wall < m_last_attempt_ms + m_refresh_coalesce_ms)
+            {
+                const auto cooldown_end =
+                    now_steady + std::chrono::milliseconds(
+                                     m_last_attempt_ms + m_refresh_coalesce_ms - now_wall);
+                m_refresh_cv.wait_until(lock, cooldown_end,
+                                        [this] { return !m_worker_running; });
+                if (!m_worker_running)
+                {
+                    return;
+                }
+                continue; // pending stays set; the loop re-evaluates
+            }
+            m_refresh_pending = false;
+        }
+        // Attempt body with fault containment (§5): an escaping fault
+        // degrades refresh state, journals an audit row, and the worker
+        // CONTINUES at its next cadence tick — never process death.
+        try
+        {
+            std::string state;
+            std::string detail;
+            const u64 now = wall_now_ms();
+            const bool ok = refresh_cognition(now, state, detail);
+            (void)ok;
+            {
+                std::lock_guard<std::mutex> guard(m_state_mutex);
+                m_refresh_state   = state;
+                m_last_attempt_ms = now;
+                evict_idle_sessions(now);
+            }
+        }
+        catch (...)
+        {
+            const u64 now = wall_now_ms();
+            std::lock_guard<std::mutex> guard(m_state_mutex);
+            m_refresh_state   = "degraded";
+            m_last_attempt_ms = now;
+            append_event(*m_journal, "refresh_fault",
+                         "worker attempt faulted; retrying at next cadence", now);
+        }
+        {
+            std::lock_guard<std::mutex> guard(m_refresh_mutex);
+            next_due = std::chrono::steady_clock::now() +
+                       std::chrono::milliseconds(m_refresh_interval_ms);
+        }
+    }
+}
+
+// --- MVP-4 hook surface (batch design section 3.4; host-server LL-2a) ------
+
+RuntimeHost::HookSession* RuntimeHost::ensure_session(const ipc::Request& request, u64 now_ms)
+{
+    // FIRST-CONTACT MINTING (LL-2a): any event naming an unseen harness
+    // handle mints the runtime session — idempotently within one host
+    // lifetime. A lost session_start has NO governance consequence.
+    auto found = m_hook_sessions.find(request.session_handle);
+    if (found != m_hook_sessions.end())
+    {
+        found->second.last_seen_ms = now_ms;
+        return &found->second;
+    }
+    HookSession session;
+    const SortableId128 id = m_minter.next();
+    session.id_hex         = cognition::hex_lower(std::span<const std::byte>(id.bytes.data(),
+                                                                             id.bytes.size()));
+    journal::SessionOpen open;
+    open.generation = RuntimeGenerationId { m_generation };
+    open.harness    = "zcode";
+    auto row        = m_journal->open_session(open, now_ms);
+    if (!row.is_ok())
+    {
+        // Minting failure must NOT be cached (a cached unjournaled session
+        // would deny that harness handle for the whole host lifetime — the
+        // LL-4 state-poisoning class). Nothing is inserted; the NEXT call
+        // retries the mint.
+        return nullptr;
+    }
+    session.journal_row          = row.value();
+    session.last_seen_ms         = now_ms;
+    auto [inserted, inserted_ok] = m_hook_sessions.emplace(request.session_handle,
+                                                           std::move(session));
+    (void)inserted_ok;
+    append_event(*m_journal, "session_registered",
+                 inserted->second.id_hex + "|" + request.session_handle, now_ms);
+    return &inserted->second;
+}
 
 ipc::Reply RuntimeHost::handle_hook_event(const ipc::Request& request, u64 now_ms)
 {
@@ -539,89 +895,72 @@ ipc::Reply RuntimeHost::handle_session_start(const ipc::Request& request, u64 no
     ack.request_id = request.request_id;
     ack.generation = m_generation;
 
-    // Idempotent registration: ZCode may re-fire SessionStart for one
-    // harness session; the runtime identity is minted exactly once.
-    auto found = m_hook_sessions.find(request.session_handle);
-    if (found != m_hook_sessions.end())
-    {
-        ack.session_id = found->second.id_hex;
-        ack.verdict    = found->second.degraded ? "degraded" : "allow";
-        ack.reason_code =
-            static_cast<i64>(found->second.degraded ? hook_reason_scope_mismatch : 0);
-        ack.reason_detail = found->second.degraded_detail;
-        ack.refresh       = m_last_refresh_ok_ms + m_freshness_window_ms > now_ms &&
-                              !(m_last_refresh_ok_ms > now_ms)
-                                ? "current"
-                                : "expired";
-        return ack;
-    }
-
-    HookSession session;
-    const SortableId128 id = m_minter.next();
-    session.id_hex         = cognition::hex_lower(std::span<const std::byte>(id.bytes.data(),
-                                                                             id.bytes.size()));
-    journal::SessionOpen open;
-    open.generation = RuntimeGenerationId { m_generation };
-    open.harness    = "zcode";
-    auto row        = m_journal->open_session(open, now_ms);
-    if (!row.is_ok())
+    HookSession* session = ensure_session(request, now_ms);
+    if (session == nullptr)
     {
         return ipc::make_error(request.request_id, ipc::err_host_recovering,
-                               "session journaling failed: " + row.reason().message);
+                               "session identity could not be journaled (transient); "
+                               "the next event retries registration");
     }
-    session.journal_row = row.value();
+    ack.session_id = session->id_hex;
 
-    // Capability handshake: the hook's declared mediated-tools surface must
-    // match the profile's tool inventory (fail-closed for affected classes).
+    // Advisory manifest handshake (LL-2a): a DECLARED mediated-tools
+    // surface is checked against the profile inventory and ONLY the
+    // mismatched tools degrade (per-tool 113). No manifest ever arriving
+    // degrades nothing — governance runs at the profile-declared scope.
+    // An EMPTY manifest is absence, not an empty declaration.
+    if (!request.mediated_tools.empty())
     {
-        auto profile = load_profile_file(m_profile_file);
+        auto profile = cached_profile();
         if (!profile.is_ok())
         {
-            session.degraded = true;
-            session.degraded_detail =
-                "profile reload failed: " + profile.reason().detail;
+            session->degraded_tools.clear();
+            session->degraded_detail = "profile reload failed: " + profile.reason().detail;
+            for (const char* tool : { "Bash", "Write", "Edit" })
+            {
+                session->degraded_tools.insert(tool);
+            }
         }
         else
         {
-            std::string declared = request.mediated_tools;
+            // Exact TOKEN match on the comma-separated manifest (a
+            // substring match would let "EditSuite" satisfy "Edit").
+            std::set<std::string> declared_tokens;
+            {
+                std::string token;
+                std::istringstream stream(request.mediated_tools);
+                while (std::getline(stream, token, ','))
+                {
+                    if (!token.empty())
+                    {
+                        declared_tokens.insert(token);
+                    }
+                }
+            }
+            // Recomputed from scratch: a corrected later manifest un-degrades.
+            session->degraded_tools.clear();
+            session->degraded_detail.clear();
             for (const auto& entry : profile.value().tool_inventory)
             {
-                const std::string token = entry.tool + ",";
-                if (declared.find(entry.tool) == std::string::npos)
+                if (declared_tokens.count(entry.tool) == 0)
                 {
-                    session.degraded = true;
-                    session.degraded_detail +=
-                        (session.degraded_detail.empty() ? std::string()
-                                                         : std::string("; ")) +
+                    session->degraded_tools.insert(entry.tool);
+                    session->degraded_detail +=
+                        (session->degraded_detail.empty() ? std::string()
+                                                          : std::string("; ")) +
                         "hook manifest lacks declared tool '" + entry.tool + "'";
                 }
             }
         }
     }
-    // H-2: bounded remote refresh at SessionStart (the only refresh point).
-    std::string refresh_state;
-    std::string refresh_detail;
-    const bool fresh_ok = refresh_cognition(now_ms, refresh_state, refresh_detail);
-    (void)fresh_ok;
-    if (refresh_state == "expired")
-    {
-        // Registration stands (activation is advisory), but the degraded
-        // reason names the expired cognition so every pre_tool denies 117.
-        session.degraded = true;
-        session.degraded_detail +=
-            (session.degraded_detail.empty() ? std::string() : std::string("; ")) +
-            refresh_detail;
-    }
-
-    append_event(*m_journal, "session_registered",
-                 session.id_hex + "|" + request.session_handle, now_ms);
-
-    ack.session_id    = session.id_hex;
-    ack.verdict       = session.degraded ? "degraded" : "allow";
-    ack.reason_code   = static_cast<i64>(session.degraded ? hook_reason_scope_mismatch : 0);
-    ack.reason_detail = session.degraded_detail;
-    ack.refresh       = refresh_state;
-    m_hook_sessions.emplace(request.session_handle, std::move(session));
+    // NO refresh runs here (LL-2b): the reply reports the host's current
+    // autonomous refresh state and returns immediately.
+    ack.verdict       = session->degraded_tools.empty() ? "allow" : "degraded";
+    ack.reason_code   = static_cast<i64>(session->degraded_tools.empty()
+                                             ? 0
+                                             : hook_reason_scope_mismatch);
+    ack.reason_detail = session->degraded_detail;
+    ack.refresh       = refresh_state_now(now_ms);
     return ack;
 }
 
@@ -631,7 +970,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
     using adapter::hook_reason_cognition_expired;
     using adapter::hook_reason_correlation;
     using adapter::hook_reason_governed_write;
-    using adapter::hook_reason_unknown_session;
+    using adapter::hook_reason_scope_mismatch;
     using adapter::hook_reason_unknown_tool;
 
     ipc::Reply ack;
@@ -639,31 +978,34 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
     ack.request_id = request.request_id;
     ack.generation = m_generation;
 
-    auto found = m_hook_sessions.find(request.session_handle);
-    if (found == m_hook_sessions.end())
+    // FIRST CONTACT IS SUFFICIENT (LL-2a): the session mints here if this
+    // harness session never registered — the deny-114 "register first"
+    // class is RETIRED; a lost session_start has no governance consequence.
+    HookSession* session_ptr = ensure_session(request, now_ms);
+    if (session_ptr == nullptr)
     {
+        // Transient mint failure: fail closed for THIS call; nothing is
+        // cached, so the next call retries (no permanent poisoning).
         ack.verdict       = "deny";
-        ack.reason_code   = static_cast<i64>(hook_reason_unknown_session);
-        ack.reason_detail = "no registered runtime session for this harness session "
-                            "(SessionStart must fire first)";
+        ack.reason_code   = static_cast<i64>(ipc::err_host_recovering);
+        ack.reason_detail = "session identity could not be journaled (transient); "
+                            "the next call retries";
         return ack;
     }
-    HookSession& session = found->second;
+    HookSession& session = *session_ptr;
     ack.session_id       = session.id_hex;
-    if (session.degraded)
+    if (session.degraded_tools.count(request.tool_name) != 0)
     {
-        // Degraded sessions deny affected tools; the reason carries the
-        // degradation detail unless the freshness window expired (117).
-        const bool expired =
-            m_last_refresh_ok_ms + m_freshness_window_ms <= now_ms && m_freshness_window_ms != 0;
-        ack.verdict = "deny";
-        ack.reason_code =
-            static_cast<i64>(expired ? hook_reason_cognition_expired
-                                     : adapter::hook_reason_scope_mismatch);
+        // Per-tool manifest degradation (LL-2a): only the mismatched tool
+        // class denies 113; unaffected tools govern normally.
+        ack.verdict       = "deny";
+        ack.reason_code   = static_cast<i64>(hook_reason_scope_mismatch);
         ack.reason_detail = session.degraded_detail;
+        append_event(*m_journal, "hook_deny_scope_mismatch", request.tool_name, now_ms);
         return ack;
     }
 
+    ack.refresh            = refresh_state_now(now_ms); // informational on every hook event
     const std::string tool = request.tool_name;
     const bool freshness_expired =
         m_freshness_window_ms != 0 && m_last_refresh_ok_ms + m_freshness_window_ms <= now_ms;
@@ -673,7 +1015,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
     std::string detector;
     bool known_tool = false;
     {
-        auto profile = load_profile_file(m_profile_file);
+        auto profile = cached_profile();
         if (profile.is_ok())
         {
             for (const auto& row : profile.value().tool_inventory)
@@ -695,15 +1037,6 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
         ack.reason_detail = "tool '" + tool +
                             "' is not in the accepted tool inventory -- fail closed";
         append_event(*m_journal, "hook_deny_unknown_tool", tool, now_ms);
-        return ack;
-    }
-    if (freshness_expired)
-    {
-        ack.verdict       = "deny";
-        ack.reason_code   = static_cast<i64>(hook_reason_cognition_expired);
-        ack.reason_detail = "cognition freshness window exceeded and the last refresh failed "
-                            "(ARCH section 7.4: governed mutations are denied)";
-        append_event(*m_journal, "hook_deny_expired_cognition", tool, now_ms);
         return ack;
     }
     if (session.outstanding.find(tool) != session.outstanding.end())
@@ -734,14 +1067,27 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
             return ack;
         }
         {
-            auto profile             = load_profile_file(m_profile_file);
+            auto profile             = cached_profile(); // boot-cached; no disk under the mutex
             const std::string target = normalize_hook_path(request.file_path);
             if (target.find("..") != std::string::npos)
             {
                 governed = true;
                 detail   = "traversal form rejected: " + request.file_path;
             }
-            else if (profile.is_ok())
+            else if (!profile.is_ok())
+            {
+                // The accepted profile is cached at boot; a cache miss here
+                // is an uncertainty on the mediated path — FAIL CLOSED
+                // (never allow-blind; the unknown-tool/no-target branches
+                // deny for the same reason).
+                ack.verdict     = "deny";
+                ack.reason_code = static_cast<i64>(adapter::hook_reason_payload);
+                ack.reason_detail =
+                    "accepted profile unavailable - target unverifiable, fail closed";
+                append_event(*m_journal, "hook_deny_profile_unavailable", tool, now_ms);
+                return ack;
+            }
+            else
             {
                 // 2026-09-26 simulated-gate finding (first dev run): the
                 // old match required the governed path to be followed by
@@ -755,11 +1101,16 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
                 // pre-existing containment-anywhere clauses stay as the
                 // documented over-approximation). Evidence: the rig's
                 // B2/B6/B7 old-fail receipts vs the post-fix runs.
+                // Every clause is CASE-INSENSITIVE: the filesystem is
+                // (Windows), so a case-varied spelling of a governed
+                // relative target must not escape (found by review: the
+                // byte-exact relative clauses let "STATE/CURRENT.MD"
+                // through as not_governed).
                 const std::string root_norm = normalize_hook_path(m_repo_root.string());
                 const bool in_root          = starts_with_ci(target, root_norm + "/");
                 for (const auto& path : profile.value().governed_paths)
                 {
-                    if (target == path || target.rfind(path + "/", 0) == 0 ||
+                    if (equals_ci(target, path) || starts_with_ci(target, path + "/") ||
                         (in_root && ends_with_ci(target, "/" + path)) ||
                         target.rfind("/" + path + "/", 0) != std::string::npos ||
                         contains_ci(target, path + "/"))
@@ -784,7 +1135,7 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
             return ack;
         }
         {
-            auto profile = load_profile_file(m_profile_file);
+            auto profile = cached_profile();
             if (profile.is_ok())
             {
                 for (const auto& path : profile.value().governed_paths)
@@ -829,6 +1180,17 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
                                "judgment journaling failed: " + transaction.reason().message);
     }
 
+    if (governed && freshness_expired)
+    {
+        // The freshness LAW gates GOVERNED mutations (ARCH section 7.4 /
+        // design section 6): not_governed telemetry stays available.
+        ack.verdict       = "deny";
+        ack.reason_code   = static_cast<i64>(hook_reason_cognition_expired);
+        ack.reason_detail = "cognition freshness window exceeded and the last refresh failed "
+                            "(ARCH section 7.4: governed mutations are denied)";
+        append_event(*m_journal, "hook_deny_expired_cognition", tool, now_ms);
+        return ack;
+    }
     if (governed)
     {
         // Raw-tool governed writes are denied until the mediated typed path
@@ -879,21 +1241,26 @@ ipc::Reply RuntimeHost::handle_pre_tool(const ipc::Request& request, u64 now_ms)
 
 ipc::Reply RuntimeHost::handle_post_tool(const ipc::Request& request, u64 now_ms)
 {
+    using adapter::hook_reason_unknown_session;
+
     ipc::Reply ack;
     ack.kind       = ipc::Reply::Kind::HookAck;
     ack.request_id = request.request_id;
     ack.generation = m_generation;
 
-    auto found = m_hook_sessions.find(request.session_handle);
-    if (found == m_hook_sessions.end())
+    // First contact mints (LL-2a); an outcome for a never-seen harness
+    // session is recorded as an honest unmatched observation.
+    HookSession* session_ptr = ensure_session(request, now_ms);
+    if (session_ptr == nullptr)
     {
         ack.verdict       = "degraded";
-        ack.reason_code   = static_cast<i64>(adapter::hook_reason_unknown_session);
-        ack.reason_detail = "outcome for an unregistered session recorded as Indeterminate";
+        ack.reason_code   = static_cast<i64>(adapter::hook_reason_correlation);
+        ack.reason_detail = "session unavailable; outcome unobserved (transient)";
         return ack;
     }
-    HookSession& session = found->second;
+    HookSession& session = *session_ptr;
     ack.session_id       = session.id_hex;
+    ack.refresh          = refresh_state_now(now_ms); // informational
 
     auto outstanding = session.outstanding.find(request.tool_name);
     if (outstanding == session.outstanding.end())
@@ -924,10 +1291,11 @@ ipc::Reply RuntimeHost::handle_post_tool(const ipc::Request& request, u64 now_ms
 bool RuntimeHost::refresh_cognition(u64 now_ms, std::string& refresh_state,
                                     std::string& detail)
 {
-    // H-2 (ARCH section 7.4): bounded fetch -> resolve -> validate ->
-    // publish -> generation. Fetch failure falls back to the verified
-    // local bundle while inside the freshness window; past it, every
-    // governed mutation denies (117) and never the dirty checkout.
+    // HOST-AUTONOMOUS attempt body (§6; called ONLY by the refresh worker —
+    // no request path reaches this). The network fetch and the bundle
+    // publish file work run OUTSIDE the state mutex; the generation swap
+    // and all journal writes run under it (§5 locking: a verdict never
+    // waits behind publish I/O; the swap is millisecond-scale).
     refresh_state = "current";
     detail.clear();
 
@@ -953,10 +1321,11 @@ bool RuntimeHost::refresh_cognition(u64 now_ms, std::string& refresh_state,
         }
     }
 
+    std::optional<cognition::PublishResult> published_outcome;
     if (fetched)
     {
         // Publish from the remote-tracking ref (the fetched canonical
-        // state); only a CONTENT change advances the generation.
+        // state) — file work outside the state mutex (single worker path).
         processx::ProcessRunner runner;
         cognition::PublishRequest publish_request;
         publish_request.repo_root    = m_repo_root;
@@ -977,36 +1346,49 @@ bool RuntimeHost::refresh_cognition(u64 now_ms, std::string& refresh_state,
         auto published = publisher.publish(publish_request);
         if (published.is_ok())
         {
-            if (published.value().bundle_digest != m_active_bundle_digest)
-            {
-                const ContentDigest profile_digest = cognition::digest_of(
-                    [&]() {
-                        std::ifstream in(m_profile_file, std::ios::binary);
-                        return std::string((std::istreambuf_iterator<char>(in)),
-                                           std::istreambuf_iterator<char> {});
-                    }());
-                auto generation =
-                    activate_generation(*m_journal, published.value().bundle_digest,
-                                        profile_digest, m_build_id, now_ms);
-                if (generation.is_ok())
-                {
-                    m_generation           = generation.value().value;
-                    m_bundle_revision      = published.value().manifest.source_revision;
-                    m_active_bundle_digest = published.value().bundle_digest;
-                }
-                else
-                {
-                    detail = "generation activation failed: " + generation.reason().message;
-                }
-            }
-            m_last_refresh_ok_ms = now_ms;
-            (void)m_journal->set_meta("last_refresh_ok_ms", std::to_string(now_ms));
-            append_event(*m_journal, "cognition_refreshed",
-                         m_bundle_revision, now_ms);
-            refresh_state = "current";
-            return true;
+            published_outcome = published.value();
         }
-        detail = "publish after fetch failed: " + published.reason().detail;
+        else
+        {
+            detail = "publish after fetch failed: " + published.reason().detail;
+        }
+    }
+
+    // Everything below touches journal/host state: one mutex scope.
+    std::lock_guard<std::mutex> guard(m_state_mutex);
+    if (published_outcome.has_value())
+    {
+        // Only a CONTENT change advances the generation.
+        if (published_outcome->bundle_digest != m_active_bundle_digest)
+        {
+            auto generation = activate_generation(*m_journal, published_outcome->bundle_digest,
+                                                  m_profile_digest, m_build_id, now_ms);
+            if (generation.is_ok())
+            {
+                m_generation           = generation.value().value;
+                m_bundle_revision      = published_outcome->manifest.source_revision;
+                m_active_bundle_digest = published_outcome->bundle_digest;
+            }
+            else
+            {
+                detail = "generation activation failed: " + generation.reason().message;
+            }
+        }
+        if (!detail.empty() && detail.rfind("generation activation failed", 0) == 0)
+        {
+            // The publish succeeded but the generation did NOT advance: the
+            // ACTIVE bundle is stale. Report degraded honestly — never mask
+            // it behind a fresh freshness clock; the next cadence retries.
+            refresh_state = "degraded";
+            append_event(*m_journal, "refresh_activation_failed",
+                         m_bundle_revision + "|" + detail, now_ms);
+            return false;
+        }
+        m_last_refresh_ok_ms = now_ms;
+        (void)m_journal->set_meta("last_refresh_ok_ms", std::to_string(now_ms));
+        append_event(*m_journal, "cognition_refreshed", m_bundle_revision, now_ms);
+        refresh_state = "current";
+        return true;
     }
 
     // Fetch/publish failed: local fallback inside the freshness window.

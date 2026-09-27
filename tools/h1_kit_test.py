@@ -6,12 +6,16 @@ and runtime_host_main derived its default profile from the CWD instead of
 the --root it was given).
 
 Regressions:
-  1. Kit self-containment (ADR-0049): a kit assembled by
+  1. Kit self-containment (ADR-0049) + the server-model launcher law
+     (host-server redesign section 8): a kit assembled by
      h1_kit.assemble_kit contains config/profiles/<profile>, its
-     manifest.json lists that file with the matching digest, and
-     run-host.cmd launches the host with an EXPLICIT --profile that
-     resolves inside the kit (no CWD-derived default on the owner-live
-     double-click path).
+     manifest.json lists that file with the matching digest, the
+     idempotent start-host.cmd detects an already-running server before
+     any launch and starts the BUILD-DIR image with an EXPLICIT kit
+     --profile, the autostart install/remove pair ships, rollback
+     removes the shortcut, the manifest states the launch model (bin/
+     = pinned reference only), and the workspace config registers the
+     BUILD-DIR hook image.
   2. runtime_host_main default-profile derivation follows --root, never
      the process CWD: spawned with a --root that HAS no config/profiles
      while the CWD HAS one, the fixed exe must fail closed (exit 2)
@@ -99,9 +103,33 @@ def test_kit_self_containment() -> bool:
         if rel in listed and kit_profile.is_file():
             digest = hashlib.sha256(kit_profile.read_bytes()).hexdigest()
             ok &= check(listed[rel] == digest, "manifest digest matches the kit profile")
-        run_host = (kit_dir / "run-host.cmd").read_text(encoding="utf-8")
-        ok &= check("--profile" in run_host and str(kit_profile) in run_host,
-                    "run-host.cmd passes the kit-internal --profile explicitly")
+
+        # Server-model launchers (host-server redesign section 8): the
+        # idempotent start (already-running detection BEFORE any launch),
+        # the autostart pair, and the build-dir image-consistency note.
+        start_host = (kit_dir / "start-host.cmd").read_text(encoding="utf-8")
+        ok &= check("status show" in start_host and "already running" in start_host,
+                    "start-host.cmd detects an already-running server before launch")
+        ok &= check("--profile" in start_host and str(kit_profile) in start_host,
+                    "start-host.cmd passes the kit-internal --profile explicitly")
+        ok &= check(str(fake_repo / "build" / "vs2022-x64" / "Release"
+                        / "qiven-runtime-host.exe") in start_host,
+                    "start-host.cmd launches the BUILD-DIR host image")
+        ok &= check((kit_dir / "install-autostart.cmd").is_file()
+                    and (kit_dir / "remove-autostart.cmd").is_file(),
+                    "the autostart install/remove pair ships")
+        rollback_text = (kit_dir / "rollback.cmd").read_text(encoding="utf-8")
+        ok &= check("Startup" in rollback_text,
+                    "rollback.cmd removes the autostart shortcut")
+        manifest_note = manifest.get("launch_model", "")
+        ok &= check("PINNED REFERENCE" in manifest_note
+                    and "BUILD DIRECTORY" in manifest_note,
+                    "manifest states the launch model (bin/ = reference only)")
+        config_text = (kit_dir / "config.json").read_text(encoding="utf-8")
+        hook_image = (fake_repo / "build" / "vs2022-x64" / "Release"
+                      / "qiven-zcode-hook.exe").as_posix()
+        ok &= check(hook_image in config_text,
+                    "the workspace config registers the BUILD-DIR hook image")
         ok &= check(h1_kit.kit_profile(kit_dir) == kit_profile,
                     "cmd_preflight profile resolution points inside the kit")
         return ok

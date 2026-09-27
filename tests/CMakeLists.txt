@@ -343,6 +343,15 @@ qiven_runtime_add_journal_test(ipc-multiframe-contract ipc_multiframe_contract.c
 # review m4): the drip/budget tests regress by hanging without this bound.
 set_tests_properties(qiven-runtime.ipc-multiframe-contract PROPERTIES TIMEOUT 120)
 
+# --- Host-server redesign (mvp4-host-server.md §7): REAL-EXE lifecycle laws -
+
+qiven_runtime_add_journal_test(host-server-lifecycle host_server_lifecycle.cpp)
+target_compile_definitions(host-server-lifecycle PRIVATE
+    QIVEN_RUNTIME_BIN_DIR="${CMAKE_BINARY_DIR}/$<CONFIG>")
+# Boots a real host, exercises the refresh worker and restarts it: bounded
+# well above the fixture timings, still fails (not hangs) on a regression.
+set_tests_properties(qiven-runtime.host-server-lifecycle PROPERTIES TIMEOUT 180)
+
 # The crash test needs the crash hooks live INSIDE the process that dies:
 # it compiles the journal sources directly with the test-guard macro
 # (production qiven-runtime never defines it; batch design §3.6). No PCH

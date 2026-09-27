@@ -51,7 +51,7 @@ int main()
     FrameHeader header;
     header.request_id      = 42;
     header.connection_seq  = 7;
-    const std::string body = R"({"kind":"status","request_id":42,"deadline_ms":3000})";
+    const std::string body = R"({"kind":"status","request_id":42})";
     const std::string wire = codec.encode(header, body);
     {
         auto verified = codec.decode(wire);
@@ -78,13 +78,18 @@ int main()
     // Frame bounds: truncated, oversize body, bad magic, unknown protocol.
     {
         QIVEN_VERIFY(!codec.decode(wire.substr(0, wire.size() - 5)).is_ok());
-        FrameHeader oversized;
-        oversized.body_len       = qiven::runtime::ipc::max_body_bytes + 1;
-        oversized.request_id     = 1;
-        oversized.connection_seq = 1;
-        std::string huge(40, 'x'); // small wire form, but a lying body_len
-        auto broken = codec.decode(codec.encode(oversized, huge).substr(0, 40));
-        QIVEN_VERIFY(!broken.is_ok() || true); // encode/decode agree only via header
+        // A LYING body_len (encode always writes the actual size, so the
+        // header field is patched by hand): the length disagreement and the
+        // 1 MiB cap must each reject the frame typed, before any MAC work.
+        std::string lying                 = wire;
+        const unsigned long long huge_len = qiven::runtime::ipc::max_body_bytes + 1;
+        for (unsigned i = 0; i < 8; ++i) // wire offset 8 = body_len (u64 LE)
+        {
+            lying[8 + i] = static_cast<char>((huge_len >> (8 * i)) & 0xFFu);
+        }
+        auto broken = codec.decode(lying);
+        QIVEN_VERIFY(!broken.is_ok());
+        QIVEN_VERIFY(broken.reason().code == qiven::runtime::ipc::err_frame);
         std::string bad_magic = wire;
         bad_magic[0]          = 'X';
         auto magic_denied     = codec.decode(bad_magic);

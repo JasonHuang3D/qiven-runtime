@@ -6,6 +6,7 @@
 #include <qiven/runtime/ipc/named_pipe_server.hpp>
 #include <qiven/runtime/ipc/protocol.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <iterator>
 #include <utility>
@@ -77,7 +78,10 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
         }
     }
 
-    auto client = ipc::PipeClient::connect(ipc::pipe_name(install_id));
+    // Connect etiquette draws from the SAME invocation budget (a full
+    // busy-wait on top of full reads/writes composes past the harness
+    // budget — found by review).
+    auto client = ipc::PipeClient::connect(ipc::pipe_name(install_id), run.deadline_ms);
     if (!client.is_ok())
     {
         return ReplyResult::fail(qiven::Error::make(
@@ -87,30 +91,38 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     }
 
     u64 seq = 1;
+    // ONE invocation-wide budget: hello read + event read + writes all draw
+    // from it (per-read full budgets compose to ~2x the harness budget on a
+    // half-answering host — a review finding).
+    const auto invocation_deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(run.deadline_ms);
+    const auto remaining_budget_ms = [&]() {
+        return static_cast<u64>(std::max<std::int64_t>(
+            0, std::chrono::duration_cast<std::chrono::milliseconds>(
+                   invocation_deadline - std::chrono::steady_clock::now())
+                   .count()));
+    };
     // hello first: the host answers or rejects the version BEFORE the
     // event is processed; a rejected handshake is a deny for pre_tool.
-    // The hello frame is a HANDSHAKE, not the event: its budget is the
-    // interaction ceiling (protocol.cpp caps every non-session_start frame
-    // at 5000), never the event's refresh-grade deadline. Carrying the
-    // session_start budget here made the host reject the hello and the
-    // registration die as an invisible advisory -- the 2026-09-26 trial-4
-    // incident; the conformance case is hello-with-refresh-deadline.
+    // The wire carries NO deadline (host-server redesign LL-3 — the
+    // trial-4 hello-ceiling class is dead by construction); the caller's
+    // read budget below is purely client-side.
     ipc::Request hello;
     hello.kind         = ipc::Request::Kind::Hello;
     hello.client_kind  = "zcode-hook";
-    hello.client_build = 1;
+    hello.client_build = 2;
     hello.request_id   = 1;
-    hello.deadline_ms  = run.deadline_ms < hello_ceiling_ms ? run.deadline_ms : hello_ceiling_ms;
     ipc::FrameHeader header;
     header.request_id     = hello.request_id;
     header.connection_seq = seq;
-    if (!client.value().write_bytes(codec.encode(header, ipc::encode_request_body(hello))))
+    if (!client.value().write_bytes(codec.encode(header, ipc::encode_request_body(hello)),
+                                    remaining_budget_ms()))
     {
         return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable,
                                                     hook_reason_host_unavailable,
                                                     "hello write failed"));
     }
-    auto hello_frame = client.value().read_frame(hello.deadline_ms);
+    auto hello_frame = client.value().read_frame(remaining_budget_ms());
     if (!hello_frame.has_value())
     {
         if (client.value().last_read_timed_out())
@@ -142,11 +154,18 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     if (hello_reply.value().kind == ipc::Reply::Kind::ErrorView)
     {
         // Typed host rejection at the handshake: the admission surface is a
-        // real reply now (pipe_service), so the class is diagnosable.
+        // real reply now (pipe_service), so the class is diagnosable —
+        // including the connection-cap busy frame (125, host-server LL-3).
         const std::string& detail = hello_reply.value().error_detail;
-        const i32 code            = detail.rfind("admission rejected", 0) == 0
-                                        ? hook_reason_admission
-                                        : static_cast<i32>(hello_reply.value().error_code);
+        i32 code                  = static_cast<i32>(hello_reply.value().error_code);
+        if (detail.rfind("admission rejected", 0) == 0)
+        {
+            code = hook_reason_admission;
+        }
+        else if (detail.rfind("server busy", 0) == 0)
+        {
+            code = hook_reason_server_busy;
+        }
         return ReplyResult::fail(
             qiven::Error::make(qiven::error_category::unavailable, code,
                                "handshake rejected by host: " + detail));
@@ -161,8 +180,10 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     ipc::Request request;
     request.kind  = ipc::Request::Kind::HookEvent;
     request.event = run.event;
-    request.session_handle =
-        run.session_handle.empty() ? fields.session_handle : run.session_handle;
+    // Registration-template authority (deny-118 correction): the session
+    // identity comes from the COMMAND LINE, never from payload fields — a
+    // missing --session-handle is a fail-closed misregistration.
+    request.session_handle = run.session_handle;
     request.tool_name      = run.tool.empty() ? fields.tool_name : run.tool;
     request.payload_sha256 = cognition::hex_lower(
         std::span<const std::byte>(fields.payload_digest.sha256.data(),
@@ -172,18 +193,18 @@ qiven::Result<qiven::runtime::ipc::Reply> transact(const HookRun& run,
     request.file_path      = fields.file_path;
     request.mediated_tools = run.mediated_tools;
     request.request_id     = 2;
-    request.deadline_ms    = run.deadline_ms;
 
     seq += 1;
     header.request_id     = request.request_id;
     header.connection_seq = seq;
-    if (!client.value().write_bytes(codec.encode(header, ipc::encode_request_body(request))))
+    if (!client.value().write_bytes(codec.encode(header, ipc::encode_request_body(request)),
+                                    remaining_budget_ms()))
     {
         return ReplyResult::fail(qiven::Error::make(qiven::error_category::unavailable,
                                                     hook_reason_host_unavailable,
                                                     "request write failed"));
     }
-    auto frame = client.value().read_frame(run.deadline_ms);
+    auto frame = client.value().read_frame(remaining_budget_ms());
     if (!frame.has_value())
     {
         if (client.value().last_read_timed_out())
@@ -247,7 +268,7 @@ i32 classify_transport_failure(const qiven::Error& error, bool read_deadline_exp
     }
     if (error.code == hook_reason_no_listener || error.code == hook_reason_admission ||
         error.code == hook_reason_version_skew || error.code == hook_reason_secret_skew ||
-        error.code == hook_reason_timeout)
+        error.code == hook_reason_timeout || error.code == hook_reason_server_busy)
     {
         return error.code; // already classified by transact
     }
@@ -294,6 +315,20 @@ HookOutcome run_zcode_hook(const HookRun& run)
                                run.tool + "' (misregistration)");
     }
 
+    if (run.session_handle.empty() && !fields.session_handle.empty())
+    {
+        if (pre_tool)
+        {
+            return deny_client(hook_reason_payload,
+                               "no --session-handle on the registration command line "
+                               "(payload fields are corroborating evidence only)");
+        }
+        if (is_advisory)
+        {
+            return advisory_note(run.event + ": no --session-handle on the registration "
+                                             "command line; event unregistered");
+        }
+    }
     auto reply = transact(run, fields);
     if (!reply.is_ok())
     {
@@ -315,7 +350,15 @@ HookOutcome run_zcode_hook(const HookRun& run)
                                         : " -- fail-closed deny (no governed status without a "
                                           "completed handshake)"));
         }
-        return advisory_note(run.event + ": host unreachable -- " + reply.reason().message +
+        // Host-ANSWERED classes (121/122/123/125) are not unreachability
+        // — the advisory text names the class honestly (the pre_tool
+        // branch was corrected for this; the advisory branch matches).
+        const bool host_unreachable_class =
+            code == hook_reason_host_unavailable || code == hook_reason_no_listener ||
+            code == hook_reason_timeout;
+        const char* cause = host_unreachable_class ? "host unreachable -- "
+                                                   : "host rejected the call -- ";
+        return advisory_note(run.event + ": " + cause + reply.reason().message +
                              (run.event == "session_start"
                                   ? "; session NOT registered"
                                   : "; outcome unobserved"));
@@ -343,6 +386,11 @@ HookOutcome run_zcode_hook(const HookRun& run)
     if (ack.verdict == "deny")
     {
         return deny_host(static_cast<i32>(ack.reason_code), ack.reason_detail);
+    }
+    if (run.event == "session_start" && ack.verdict == "degraded")
+    {
+        return advisory_note("session registered (id " + ack.session_id + "); DEGRADED: " +
+                             ack.reason_detail);
     }
     if (run.event == "session_start" && !ack.refresh.empty() && ack.refresh != "current")
     {

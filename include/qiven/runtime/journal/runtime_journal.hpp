@@ -27,6 +27,7 @@
 #include <qiven/runtime/journal/schema.hpp>
 #include <qiven/runtime/port/runtime_journal.hpp>
 
+#include <atomic>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -281,6 +282,13 @@ public:
                                                       const std::vector<std::byte>& payload,
                                                       u64 now_ms);
 
+    // Audit-channel honesty (LL-4): request-path audit appends are
+    // fire-and-forget by design (a verdict never fails because its audit
+    // row could not be written), but the failures are COUNTED and surfaced
+    // through status so "the journal records what was observed" degrades
+    // loudly, never silently.
+    [[nodiscard]] u64 audit_append_failures() const noexcept;
+
     // --- IRuntimeJournalPort ----------------------------------------------
     // append(): durable append of one control fact as a chain-protected
     // audit event carrying the record's typed payload bytes (the rich
@@ -315,6 +323,7 @@ private:
     std::string m_install_id;
     u64 m_boot_epoch   = no_boot_epoch;
     bool m_quarantined = false;
+    mutable std::atomic<u64> m_audit_append_failures { 0 };
     std::unique_ptr<IReconciliationInspector> m_inspector =
         std::make_unique<FailClosedInspector>();
 };

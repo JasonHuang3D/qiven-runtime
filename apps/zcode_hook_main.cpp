@@ -97,12 +97,17 @@ int main(int argc, char** argv)
     }
 
     qiven::runtime::adapter::HookRun run;
-    run.runtime_root   = root / ".qiven" / "runtime";
-    run.event          = event;
-    run.payload        = read_stdin_verbatim();
-    run.deadline_ms    = event == "session_start" ? 9750 : 4750; // minus the 250 ms margin
-    run.mediated_tools = "Bash,Write,Edit";                      // the declared manifest surface (profile-checked)
-    run.now_ms         = static_cast<qiven::u64>(0);             // transport stamps time; host uses its clock
+    run.runtime_root = root / ".qiven" / "runtime";
+    run.event        = event;
+    run.payload      = read_stdin_verbatim();
+    // Caller-side read bounds (host-server redesign LL-3): conservative
+    // choices inside the harness hook budgets (15 s / 10 s) covering
+    // process spawn + verdict mapping; the wire carries no deadline.
+    run.deadline_ms    = event == "session_start"
+                             ? qiven::runtime::adapter::session_start_read_budget_ms
+                             : qiven::runtime::adapter::tool_read_budget_ms;
+    run.mediated_tools = "Bash,Write,Edit";          // the declared manifest surface (profile-checked)
+    run.now_ms         = static_cast<qiven::u64>(0); // transport stamps time; host uses its clock
     run.tool           = tool;
     run.session_handle = session_handle;
 

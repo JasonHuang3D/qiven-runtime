@@ -46,15 +46,21 @@ inline constexpr i32 hook_reason_no_listener  = 120; // pipe connect: no host se
 inline constexpr i32 hook_reason_admission    = 121; // host rejected the client image
 inline constexpr i32 hook_reason_version_skew = 122; // protocol version mismatch
 inline constexpr i32 hook_reason_secret_skew  = 123; // HMAC fails (stale/different root)
-inline constexpr i32 hook_reason_timeout      = 124; // no reply within the deadline
+inline constexpr i32 hook_reason_timeout      = 124; // no reply within the caller budget
+// Host-server redesign LL-3: the serve-thread connection cap replied a
+// typed busy frame. The hook is one-shot and does NOT retry: pre_tool maps
+// this to a fail-closed deny with honest text; advisory events note it.
+inline constexpr i32 hook_reason_server_busy = 125;
 
-// The hello frame's deadline ceiling (protocol.cpp caps every non-
-// session_start frame at 5000 ms). The hello is a handshake, not the
-// event: even a refresh-grade session_start budget (9750) must not ride
-// the hello frame -- the 2026-09-26 trial-4 incident (hello rejected,
-// registration died as an invisible advisory, every later probe denied
-// 114). Exposed for the conformance table.
-inline constexpr u64 hello_ceiling_ms = 5000;
+// Caller-side read budgets (host-server redesign LL-3): chosen
+// conservatively INSIDE the harness hook budgets (15 s session_start /
+// 10 s pre/post in the registration template) to also cover process spawn
+// and verdict mapping — purely CLIENT-side choices; the wire carries no
+// deadline (protocol shape revision; mvp4-host-server.md). Writes and the
+// connect busy-wait draw from the SAME invocation budget (their remainder),
+// so a worst-case host cannot compose the stages past the harness bound.
+inline constexpr u64 session_start_read_budget_ms = 9750;
+inline constexpr u64 tool_read_budget_ms          = 4750;
 
 struct HookRun
 {
@@ -66,8 +72,9 @@ struct HookRun
     // the kit's --dump-stdin probe). The run OWNS the payload: this bug
     // class is now unconstructible.
     std::vector<std::byte> payload;
-    u64 deadline_ms = 4500; // ZCode budget minus the 250 ms margin
-    u64 now_ms      = 0;
+    u64 deadline_ms = tool_read_budget_ms; // caller-side read bound (LL-3);
+                                           // session_start uses 9750
+    u64 now_ms = 0;
     std::string mediated_tools; // session_start manifest note
     // Trusted registration template (2026-09-23 deny-118 correction): the
     // identity fields come from the hook COMMAND LINE the workspace config

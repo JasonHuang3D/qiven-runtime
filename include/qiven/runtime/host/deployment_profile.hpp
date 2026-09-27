@@ -61,6 +61,11 @@ struct ProfileFile
     u64 classifier_contract_revision = 0;
     std::string conformance_evidence;
     u64 freshness_window_ms = 0;
+    // Host-server redesign revision 3: the HOST-AUTONOMOUS refresh cadence
+    // (mvp4-host-server §6). Cross-validated against the freshness window
+    // at load time: a healthy worker must never straddle a window edge
+    // into recurring 117.
+    u64 refresh_interval_ms = 900'000;
     std::vector<std::string> governed_paths;
     ProfileCognition cognition;
     std::filesystem::path git_executable;

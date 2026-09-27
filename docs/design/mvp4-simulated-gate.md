@@ -38,7 +38,7 @@ MVP-4 exit. This design specifies that gate as a machine-checked rig that:
 | --- | --- | --- |
 | Rig driver | `tools/h1_sim_gate.py` | Scenario runner, receipt writer/verifier. Python stdlib only (Devkit python-standard law). Windows-only; a non-Windows invocation reports `[NOT_VALIDATED] platform leg skipped` and exits non-zero. |
 | Fixture corpus | `tests/fixtures/h1-sim/` | Payload fixtures + `catalogue.json` (provenance + digests + oracle class per fixture). Tracked, canonical test inputs. |
-| Wire fault client | inside the rig | A minimal protocol client (DPAPI-unprotected installation secret, HMAC-SHA256 framing per `src/ipc/framing.cpp`) used ONLY for fault-injection legs (bad deadline, wrong seq, oversized body) and the authenticated shutdown — never as a substitute for the real hook exe in lifecycle cases. |
+| Wire fault client | inside the rig | A minimal protocol client (DPAPI-unprotected installation secret, HMAC-SHA256 framing per `src/ipc/framing.cpp`) used for fault-injection legs (wrong seq, corrupt MAC, oversized body, retired `deadline_ms` field), the authenticated shutdown, and — dated amendment 2026-09-27, batch c — the N1 connection-cap fill loop; never as a substitute for the real hook exe in lifecycle cases. |
 | Gate wiring | `.qiven/operator.json` | Tasks `h1-sim` and `h1-kit-test` join the `local` publication gate after build/test, before diff-check. |
 | Kit regressions | `tools/h1_kit_test.py` | Skip-success semantics fixed: absent host exe is `[NOT_RUN]` and FAILS the suite (ADR-0055 decision 5). Packaging checks unchanged. |
 | Folded fixes | `src/adapter/zcode_hook.cpp`, `tools/h1_kit.py` | Trial-4 hello-deadline fix + preflight `session_start` registration coverage (see §7). |
@@ -79,12 +79,22 @@ Each scenario group gets a fresh scratch governed root:
   image.
 - Cognition refresh on a scratch root fails its `git fetch` (no origin) and
   falls back inside the boot-seeded freshness window (`local_fallback`), so
-  sessions register healthy without network — deterministic and honest. A
-  dedicated `--refresh expired` fault profile (`freshness_window_ms: 1`
-  pre-seeded journal meta) produces the deny-117 class.
+  sessions register healthy without network — deterministic and honest.
+  **Dated amendment (2026-09-27, batch c):** the deny-117 class is
+  produced by injecting a stale `last_refresh_ok_ms` directly into the
+  journal meta (`UPDATE runtime_meta ... 61 days past`) across a host
+  restart — the `--refresh expired` fault-profile mechanism described
+  above never landed. N4's real local bare origin produces genuine
+  refresh success for the recovery leg.
 - Journal and effect assertions run after the group's host has exited
   (authenticated shutdown), plus interim verdict assertions from each hook
   invocation's exit code / stderr / session id.
+  **Dated amendment (2026-09-27, batch c):** several assertion sites now
+  read the journal while the host is LIVE (the phase-dependent
+  registration retry, the A6/A7 unmatched rows, N2's trigger rows, N4's
+  recovery rows) — SQLite WAL read-only access against a live host is
+  the designed observation path, and the post-exit teardown rows (S8,
+  B25, A12, P20) remain post-exit.
 
 ## 4. Fixture provenance (ADR-0055 decision 2)
 
@@ -117,6 +127,17 @@ assumption (`PINNED_SOURCE_CONTRACT_REVIEWED` covers the pinned-source
 reading; `INSTALLED_DESKTOP_EXECUTION_UNVERIFIED` stays standing).
 
 ## 5. Case taxonomy and invariants
+
+> **Dated amendment (2026-09-27, batch c — §11):** the deny-114 clauses
+> below are SUPERSEDED by LL-2a first-contact minting. B13/B14 now assert
+> first-contact merits verdicts with the mint row; A7 (C-series row) asserts
+> the first-contact post mints and leaves its honest unmatched row; C3
+> asserts restart re-contact mints fresh and is judged on merits. INV-2's
+> operative definition is now: "first contact mints the session and every
+> event is judged on its merits (the deny-114 ritual is retired; the
+> historical mechanism stays as incident evidence)". The case count is
+> 106 (the N-group). The base rows are kept verbatim as the historical
+> record.
 
 Groups (one host boot each, ordered steps inside), 101 named cases
 (2026-09-27 review amendments folded: per-source repeat legs, the second
@@ -244,7 +265,9 @@ its new-pass leg on the candidate:
 `tools/h1_sim_gate.py run` (the `h1-sim` gate task):
 
 - asserts a clean tree, resolves the exact HEAD, and records: fixture
-  catalogue digest, per-fixture digests, scenario table digest (the rig's
+  catalogue digest (whole-file — dated amendment 2026-09-27: there are NO
+  per-fixture digests; any single-template change moves the whole-file
+  digest, which is the detection), scenario table digest (the rig's
   own source digest — the scenario table lives in the rig), candidate
   exe digests (host/hook/ctl), profile digest, git HEADs (runtime +
   `.qiven/dependencies.json` content digest), toolchain (the
@@ -272,8 +295,10 @@ format-check, configure, build-debug/release, test-debug/test-release,
   honored — the rig runs only Qiven binaries and reads pinned source).
 - Lexical path-policy fixtures assert the DOCUMENTED policy and record
   detector-scope limits; they make no authorization-equivalence claim.
-- The rig's wire client exists for fault injection and shutdown only; every
-  lifecycle case goes through the real hook exe.
+- The rig's wire client exists for fault injection, the authenticated
+  shutdown, and — dated amendment 2026-09-27, batch c — the N1
+  connection-cap fill loop; every lifecycle case goes through the real
+  hook exe.
 - C++-level regressions already covered by `ipc_multiframe_contract`,
   `hook_conformance`, `host_lifecycle` are not duplicated; the rig adds the
   external-process, real-pipe, whole-exe dimension those tests cannot.
@@ -378,3 +403,58 @@ day (factual record; the case count stays 101):
     pre-existing-host registration evidence is text-level (NOTE), and
     the inapplicable no-listener leg prints a typed SKIP label instead
     of passing silently.
+
+## 11. Host-server refactor (2026-09-27, batch c — the scenario table is refactored per the supersession map)
+
+The gate is refactored to the long-lived host-server contract
+(docs/design/mvp4-host-server.md; its §10 row names this batch):
+
+1. **The deny-114 class is retired** (LL-2a): B13/B14 assert
+   FIRST-CONTACT merits (a governed target still denies 110 with its
+   session_registered row minted; the outside-scope probe ALLOWS with
+   no registration ritual); A7 asserts the first-contact post mints and
+   leaves its honest UNMATCHED row (never a correlated one); C3 asserts
+   the restart re-contact mints a FRESH session row and is judged on
+   merits. The catalogue binding `unregistered_deny_114` is rewritten
+   as `first_contact_merits` (the retired mechanism stays as historical
+   evidence text); `unregistered_post_degraded` becomes
+   `unregistered_post_unmatched`.
+2. **The wire carries no deadline** (LL-3): the rig's wire client no
+   longer sends `deadline_ms`; I4a's expectation is the RETIRED-FIELD
+   rejection (typed 64 naming `deadline_ms`) — the trial-4 hello-ceiling
+   mechanism is dead by construction, and the binding text says so.
+3. **New N-group (106 cases total, up from 101)**: N1 typed 125 busy
+   (phase-independent fill loop — earlier wire-fault connections may
+   hold serve threads inside their idle window); N2 trigger coalescing
+   journaled (the FIRST trigger's text is phase-dependent because the
+   gate runs inside the boot attempt's 30 s cooldown — the LAW asserted
+   is the second trigger's coalesced_pending; the post-cooldown run is
+   the hook_conformance oracle); N3 drain-marks-outstanding
+   hook_outcome_indeterminate; N4 refresh RECOVERY against a real local
+   git bare origin (expired → 117 → successful fetch of a committed
+   change → merits verdict again — carried from the implementation
+   batch's amended §7 row); N5 the MIXED-FLEET transition (the
+   preserved pre-fix hook binary, still sending deadline_ms, fails
+   closed against the new host with honest text naming the field —
+   carried from the same amendment).
+4. **The per-connection `[open]` line is RESTORED in the library**
+   (ServeLoop::dispatch_connection logs one line per accepted
+   connection with the occupancy) — the redesign's rewrite had dropped
+   it, taking S9's one-connection oracle with it; S9 stands again.
+5. **Registration notes are phase-dependent** (LL-4/§6): a
+   window-current host answers session_start SILENTLY (the note carries
+   information only); the rig's registered() helper waits bounded for
+   the host-autonomous boot attempt to land and retries once — the
+   note then holds the refresh state for the window. Offline fixtures
+   observe `cognition local_fallback`; the N4 real-origin fixture
+   lawfully never notes (require_note=False).
+6. **B21 re-pinned to the per-tool degradation law**: the hook's
+   declared manifest (Bash,Write,Edit) omits the fault profile's
+   NotebookEdit — ONLY that tool degrades (113); manifest-declared
+   tools keep their merits verdicts in the same session.
+7. **The h1 kit is server-shaped** (§8 of the redesign): start-host.cmd
+   (idempotent), install-autostart/remove-autostart, rollback removes
+   autostart, the build-dir image-consistency invariant in the manifest
+   and the config, and the preflight rewritten to the §8 legs (leaves
+   the server running; shutdown/restart legs only when the preflight
+   itself started it).

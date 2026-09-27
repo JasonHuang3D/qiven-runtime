@@ -1,5 +1,16 @@
 # MVP-3 — RuntimeHost, IPC, and the Mechanical Execution Boundary (batch design)
 
+> **Dated amendment 2026-09-27 (host-server redesign,
+> docs/design/mvp4-host-server.md):** the single-threaded serve-loop
+> shape this batch shipped is SUPERSEDED by the ServeLoop listen pool
+> (thread-per-connection, never-fatal accept, phased stop); the §3.2
+> request `deadline_ms` law is superseded by the deadline-free wire
+> (LL-3); and the §3.4 singleton mutex is re-keyed from install-id to
+> the governed root's canonical identity — the FIRST implementable form
+> of §3.4's mutex-before-journal order (the install-id key was
+> journal-minted, forcing journal-first). The framing/HMAC/DPAPI/
+> admission machinery stands unchanged.
+
 Status: **batch design for MVP-3** (design-first standard; extends
 `docs/architecture/runtime-production-mvp-cpp-design.md` — **DESIGN** —
 §4, §10, §11, §3 topology; implementing

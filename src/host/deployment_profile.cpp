@@ -224,7 +224,8 @@ ProfileFileResult load_profile_file(const std::filesystem::path& file)
             else if (field->key == "revision" || field->key == "control_version" ||
                      field->key == "resolver_registry_revision" ||
                      field->key == "classifier_contract_revision" ||
-                     field->key == "freshness_window_ms")
+                     field->key == "freshness_window_ms" ||
+                     field->key == "refresh_interval_ms")
             {
                 const auto value = parse_u64(field->value);
                 ok               = value.has_value();
@@ -245,6 +246,14 @@ ProfileFileResult load_profile_file(const std::filesystem::path& file)
                     else if (field->key == "classifier_contract_revision")
                     {
                         profile.classifier_contract_revision = *value;
+                    }
+                    else if (field->key == "refresh_interval_ms")
+                    {
+                        // Revision 3 (host-server redesign): the worker
+                        // cadence; > 0 and cross-validated against the
+                        // window once both are known (after the parse walk).
+                        profile.refresh_interval_ms = *value;
+                        ok                          = *value > 0;
                     }
                     else
                     {
@@ -694,6 +703,16 @@ ProfileFileResult load_profile_file(const std::filesystem::path& file)
     if (profile.profile_id.empty() || profile.revision == 0 || profile.control_version == 0)
     {
         return ProfileFileResult::fail(malformed("identity and revision fields are required"));
+    }
+    // Revision 3 cross-validation (host-server redesign §5): the worker
+    // cadence plus the bounded fetch must fit inside the freshness window
+    // with margin — a healthy worker must never straddle a window edge into
+    // recurring 117. Constant 5000 is the refresh fetch bound (§6).
+    if (profile.refresh_interval_ms != 0 && profile.freshness_window_ms != 0 &&
+        profile.refresh_interval_ms + 5000 >= profile.freshness_window_ms)
+    {
+        return ProfileFileResult::fail(malformed(
+            "refresh_interval_ms + fetch bound (5000) must be < freshness_window_ms"));
     }
     if (profile.conformance_evidence.empty())
     {

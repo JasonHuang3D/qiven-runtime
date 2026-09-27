@@ -8,16 +8,18 @@ namespace qiven::runtime::ipc
 namespace
 {
 void write_error_frame(PipeConnection& connection, const FrameCodec& codec, u64 request_id,
-                       i32 code, const std::string& detail)
+                       i32 code, const std::string& detail, u64 write_deadline_ms,
+                       const std::atomic<bool>* stop = nullptr)
 {
     const Reply error      = make_error(request_id, code, detail);
     const std::string body = encode_reply(error);
     FrameHeader header;
     header.request_id = request_id;
-    connection.write_bytes(codec.encode(header, body));
+    (void)connection.write_bytes(codec.encode(header, body), write_deadline_ms, stop);
 }
+} // namespace
 
-// Bounded linger after a terminal error frame (2026-09-24, found by the
+// Bounded linger after a terminal error frame (2024-09-24, found by the
 // contract test): DisconnectNamedPipe in the connection destructor can
 // DISCARD bytes the client has not read yet — writing an error frame and
 // closing in the same breath loses the reply to a race. The linger must
@@ -39,20 +41,20 @@ void linger_for_client_read(PipeConnection& connection)
         Sleep(5);
     }
 }
-} // namespace
 
 ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec, const AdmitFn& admit,
                             const HandleFn& handle, const ServeOptions& options)
 {
     ServeStats stats;
 
-    const std::string rejection = admit ? admit() : std::string();
+    const std::string rejection = admit ? admit(connection) : std::string();
     if (!rejection.empty())
     {
         // Typed reply surface (corrective-lane decision D2): an admission
         // rejection is SILENT no longer — the client can tell admission
-        // apart from a dead host (the 2026-09-23 silent-drop class).
-        write_error_frame(connection, codec, 0, err_auth, "admission rejected: " + rejection);
+        // apart from a dead host (the 2024-09-23 silent-drop class).
+        write_error_frame(connection, codec, 0, err_auth, "admission rejected: " + rejection,
+                          options.write_deadline_ms, options.stop);
         linger_for_client_read(connection);
         stats.admission_rejected = true;
         return stats;
@@ -62,10 +64,23 @@ ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec,
     u64 last_seq = 0;
     while (true)
     {
-        auto frame = connection.read_frame(options.idle_timeout_ms);
+        // The stop flag is observed BETWEEN requests only (host-server
+        // redesign §5 phase 2): once set, no NEW frame is read; a request
+        // already in flight completes before its thread returns.
+        if (options.stop != nullptr && options.stop->load(std::memory_order_acquire))
+        {
+            stats.stop_closed = true;
+            return stats;
+        }
+
+        auto frame = connection.read_frame(options.idle_timeout_ms, options.stop);
         if (!frame.has_value())
         {
-            if (connection.last_read_timed_out())
+            if (connection.last_read_aborted())
+            {
+                stats.stop_closed = true;
+            }
+            else if (connection.last_read_timed_out())
             {
                 stats.idle_closed = true;
             }
@@ -80,7 +95,7 @@ ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec,
         if (!verified.is_ok())
         {
             write_error_frame(connection, codec, 0, verified.reason().code,
-                              verified.reason().message);
+                              verified.reason().message, options.write_deadline_ms, options.stop);
             linger_for_client_read(connection);
             stats.frame_error = true;
             return stats;
@@ -94,7 +109,8 @@ ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec,
             write_error_frame(connection, codec, verified.value().header.request_id, err_replay,
                               "connection sequence regression (expected > " +
                                   std::to_string(last_seq) + ", got " +
-                                  std::to_string(verified.value().header.connection_seq) + ")");
+                                  std::to_string(verified.value().header.connection_seq) + ")",
+                              options.write_deadline_ms, options.stop);
             linger_for_client_read(connection);
             stats.seq_violation = true;
             return stats;
@@ -105,7 +121,8 @@ ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec,
         if (!request.is_ok())
         {
             write_error_frame(connection, codec, verified.value().header.request_id,
-                              request.reason().code, request.reason().detail);
+                              request.reason().code, request.reason().detail,
+                              options.write_deadline_ms, options.stop);
             linger_for_client_read(connection);
             stats.frame_error = true;
             return stats;
@@ -114,7 +131,8 @@ ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec,
         if (stats.frames_served + 1 > options.max_frames)
         {
             write_error_frame(connection, codec, verified.value().header.request_id, err_frame,
-                              "connection frame budget exceeded");
+                              "connection frame budget exceeded", options.write_deadline_ms,
+                              options.stop);
             linger_for_client_read(connection);
             stats.budget_closed = true;
             return stats;
@@ -124,7 +142,8 @@ ServeStats serve_connection(PipeConnection& connection, const FrameCodec& codec,
         FrameHeader reply_header;
         reply_header.request_id     = verified.value().header.request_id;
         reply_header.connection_seq = verified.value().header.connection_seq;
-        if (!connection.write_bytes(codec.encode(reply_header, encode_reply(reply))))
+        if (!connection.write_bytes(codec.encode(reply_header, encode_reply(reply)),
+                                    options.write_deadline_ms, options.stop))
         {
             stats.client_closed = true;
             return stats;

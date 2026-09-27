@@ -1,5 +1,17 @@
 # MVP-4 — Production ZCode Hook Adapter (batch design)
 
+> **Dated amendment 2026-09-27 (host-server redesign,
+> docs/design/mvp4-host-server.md):** this batch's connection/lifecycle
+> clauses are SUPERSEDED where the redesign's supersession map
+> (mvp4-host-server.md §10) names them: the `deadline_ms` envelope and
+> its ceilings (§3.2), the session-registration precondition and its
+> deny-114 row (§3.4, §5), the H-2 refresh inside `session_start`
+> (§3.4 — refresh is now host-autonomous), and whole-session manifest
+> degradation (now per-tool 113). The kept machinery (framing, HMAC/
+> DPAPI admission, detectors, correlation, the hook exit contract) is
+> unchanged. Rows 2-5 of the exit gate stand; row 1 rides the simulated
+> gate per ADR-0055.
+
 Status: **batch design for MVP-4** (design-first standard; extends
 `docs/architecture/runtime-production-mvp-cpp-design.md` — **DESIGN** —
 §12, §10, §4, §3 topology; implementing

@@ -21,8 +21,10 @@
 #include <qiven/runtime/ipc/named_pipe_server.hpp>
 #include <qiven/runtime/ipc/pipe_service.hpp>
 #include <qiven/runtime/ipc/protocol.hpp>
+#include <qiven/runtime/ipc/serve_loop.hpp>
 #include <qiven/types.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -59,7 +61,8 @@ bool write_request(PipeClient& client, const FrameCodec& codec, const Request& r
     FrameHeader header;
     header.request_id     = request.request_id;
     header.connection_seq = connection_seq;
-    return client.write_bytes(codec.encode(header, qiven::runtime::ipc::encode_request_body(request)));
+    return client.write_bytes(codec.encode(header, qiven::runtime::ipc::encode_request_body(request)),
+                              5000);
 }
 
 Request hello_request(qiven::u64 id)
@@ -67,9 +70,8 @@ Request hello_request(qiven::u64 id)
     Request hello;
     hello.kind         = Request::Kind::Hello;
     hello.client_kind  = "contract-test";
-    hello.client_build = 1;
+    hello.client_build = 2;
     hello.request_id   = id;
-    hello.deadline_ms  = 2000;
     return hello;
 }
 
@@ -81,7 +83,6 @@ Request hook_request(qiven::u64 id)
     request.tool_name      = "Bash";
     request.session_handle = "contract-test-session";
     request.request_id     = id;
-    request.deadline_ms    = 2000;
     request.payload_sha256 = std::string(64, 'a');
     request.payload_bytes  = 8;
     return request;
@@ -167,7 +168,7 @@ int main()
             auto connection = server.value().accept();
             QIVEN_VERIFY(connection.is_ok());
             stats = qiven::runtime::ipc::serve_connection(
-                connection.value(), codec, [] { return std::string(""); },
+                connection.value(), codec, [](qiven::runtime::ipc::PipeConnection&) { return std::string(""); },
                 [](const Request& request) { return canned_reply(request); });
         });
 
@@ -209,7 +210,7 @@ int main()
             auto connection = server.value().accept();
             QIVEN_VERIFY(connection.is_ok());
             const auto stats = qiven::runtime::ipc::serve_connection(
-                connection.value(), codec, [] { return std::string("unit-test image rejection"); },
+                connection.value(), codec, [](qiven::runtime::ipc::PipeConnection&) { return std::string("unit-test image rejection"); },
                 [](const Request& request) { return canned_reply(request); });
             QIVEN_VERIFY(stats.admission_rejected);
             QIVEN_VERIFY(stats.frames_served == 0);
@@ -244,7 +245,7 @@ int main()
             auto connection = server.value().accept();
             QIVEN_VERIFY(connection.is_ok());
             const auto stats = qiven::runtime::ipc::serve_connection(
-                connection.value(), codec, [] { return std::string(""); },
+                connection.value(), codec, [](qiven::runtime::ipc::PipeConnection&) { return std::string(""); },
                 [](const Request& request) { return canned_reply(request); });
             QIVEN_VERIFY(stats.seq_violation);
         });
@@ -285,7 +286,7 @@ int main()
             qiven::runtime::ipc::ServeOptions options;
             options.idle_timeout_ms = 200;
             stats                   = qiven::runtime::ipc::serve_connection(
-                connection.value(), codec, [] { return std::string(""); },
+                connection.value(), codec, [](qiven::runtime::ipc::PipeConnection&) { return std::string(""); },
                 [](const Request& request) { return canned_reply(request); }, options);
         });
 
@@ -363,7 +364,7 @@ int main()
             qiven::runtime::ipc::ServeOptions options;
             options.max_frames = 2;
             stats              = qiven::runtime::ipc::serve_connection(
-                connection.value(), codec, [] { return std::string(""); },
+                connection.value(), codec, [](qiven::runtime::ipc::PipeConnection&) { return std::string(""); },
                 [](const Request& request) { return canned_reply(request); }, options);
         });
 
@@ -406,17 +407,396 @@ int main()
             qiven::runtime::ipc::ServeOptions options;
             options.idle_timeout_ms = 300;
             stats                   = qiven::runtime::ipc::serve_connection(
-                connection.value(), codec, [] { return std::string(""); },
+                connection.value(), codec, [](qiven::runtime::ipc::PipeConnection&) { return std::string(""); },
                 [](const Request& request) { return canned_reply(request); }, options);
         });
 
         // One byte of a header, then silence: the prior blocking read held
         // the serve thread forever (only first-byte arrival was bounded).
-        QIVEN_VERIFY(client.value().write_bytes("Q"));
+        QIVEN_VERIFY(client.value().write_bytes("Q", 2000));
         server_thread.join(); // must return within the bound, not hang
         QIVEN_VERIFY(stats.idle_closed);
         QIVEN_VERIFY(stats.frames_served == 0);
         std::printf("[ OK ] drip: partial-frame stall closed within the bound\n");
+    }
+
+    // --- ServeLoop (host-server redesign): the production listen pool ------
+    {
+        using qiven::runtime::ipc::ServeLoop;
+        ServeLoop::Options options;
+        options.listen_arms     = 2;
+        options.max_connections = 1; // tiny cap so the busy path is reachable
+        options.idle_timeout_ms = 1000;
+        ServeLoop::Hooks hooks;
+        hooks.handle = [](const Request& request) {
+            Reply reply;
+            reply.kind       = Reply::Kind::HelloAck;
+            reply.request_id = request.request_id;
+            reply.host_build = "serve-loop-test";
+            return reply;
+        };
+        auto loop = ServeLoop::create(unique_install_id("serveloop"), codec, options,
+                                      std::move(hooks));
+        QIVEN_VERIFY(loop.is_ok());
+        std::thread runner([&] { loop.value()->run(); });
+
+        // One client is served; the over-cap client receives the typed 125
+        // busy frame (never an ERROR_PIPE_BUSY fake-120 against a healthy
+        // pool).
+        auto served = PipeClient::connect(
+            qiven::runtime::ipc::pipe_name(unique_install_id("serveloop")));
+        QIVEN_VERIFY(served.is_ok());
+        QIVEN_VERIFY(write_request(served.value(), codec, hello_request(1), 1));
+        {
+            auto frame = served.value().read_frame(3000);
+            QIVEN_VERIFY(frame.has_value());
+            const Reply reply = decode_client_reply(codec, frame.value());
+            QIVEN_VERIFY(reply.kind == Reply::Kind::HelloAck);
+        }
+        auto busy = PipeClient::connect(
+            qiven::runtime::ipc::pipe_name(unique_install_id("serveloop")));
+        QIVEN_VERIFY(busy.is_ok());
+        QIVEN_VERIFY(write_request(busy.value(), codec, hello_request(2), 1));
+        {
+            auto frame = busy.value().read_frame(3000);
+            QIVEN_VERIFY(frame.has_value());
+            const Reply reply = decode_client_reply(codec, frame.value());
+            QIVEN_VERIFY(reply.kind == Reply::Kind::ErrorView);
+            QIVEN_VERIFY(reply.error_code == 125); // typed server-busy
+        }
+        QIVEN_VERIFY(loop.value()->stats().busy_rejected.load() >= 1);
+        QIVEN_VERIFY(loop.value()->stats().busy_occupancy_last.load() >= 1);
+
+        // Release the connections; after the idle close a fresh client is
+        // served promptly (the cap frees with the connection).
+        busy   = qiven::Result<PipeClient>::fail(qiven::Error {});
+        served = qiven::Result<PipeClient>::fail(qiven::Error {});
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200)); // idle close (1 s)
+        {
+            auto fresh = PipeClient::connect(
+                qiven::runtime::ipc::pipe_name(unique_install_id("serveloop")));
+            QIVEN_VERIFY(fresh.is_ok());
+            const auto begin = std::chrono::steady_clock::now();
+            QIVEN_VERIFY(write_request(fresh.value(), codec, hello_request(3), 1));
+            auto frame    = fresh.value().read_frame(3000);
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - begin)
+                                .count();
+            QIVEN_VERIFY(frame.has_value());
+            QIVEN_VERIFY(ms < 1000);
+            const Reply reply = decode_client_reply(codec, frame.value());
+            QIVEN_VERIFY(reply.kind == Reply::Kind::HelloAck);
+        }
+
+        // Client-independence of survival (LL-1/LL-3): a storm of abrupt
+        // garbage connections (connect, garbage byte, vanish) never ends
+        // the loop, and a well-formed client is still served afterwards.
+        for (int storm = 0; storm < 8; ++storm)
+        {
+            auto junk = PipeClient::connect(
+                qiven::runtime::ipc::pipe_name(unique_install_id("serveloop")));
+            if (junk.is_ok())
+            {
+                (void)junk.value().write_bytes("X", 500);                // garbage byte, no frame
+                junk = qiven::Result<PipeClient>::fail(qiven::Error {}); // abrupt close
+            }
+        }
+        // Let the storm's serve threads hit their idle bound and release
+        // the cap (cap 1 in this fixture) before the well-formed client.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+        {
+            auto after = PipeClient::connect(
+                qiven::runtime::ipc::pipe_name(unique_install_id("serveloop")));
+            QIVEN_VERIFY(after.is_ok());
+            QIVEN_VERIFY(write_request(after.value(), codec, hello_request(4), 1));
+            auto frame = after.value().read_frame(3000);
+            QIVEN_VERIFY(frame.has_value());
+            const Reply reply = decode_client_reply(codec, frame.value());
+            QIVEN_VERIFY(reply.kind == Reply::Kind::HelloAck);
+        }
+        QIVEN_VERIFY(!loop.value()->stop_requested()); // the loop SURVIVED
+
+        // Stalled-peer isolation (serial-loop old-fail): a connection that
+        // writes a PARTIAL frame and stalls must not delay another
+        // client's verdict — the pool serves it on another thread. Cap is
+        // 1 in this fixture, so raise it first (recreate is not possible;
+        // instead this leg runs against a SECOND loop instance).
+        {
+            using qiven::runtime::ipc::ServeLoop;
+            ServeLoop::Options iso;
+            iso.listen_arms     = 2;
+            iso.max_connections = 2;
+            iso.idle_timeout_ms = 3000;
+            ServeLoop::Hooks iso_hooks;
+            iso_hooks.handle = [](const Request& request) {
+                Reply reply;
+                reply.kind       = Reply::Kind::HelloAck;
+                reply.request_id = request.request_id;
+                return reply;
+            };
+            auto iso_loop = ServeLoop::create(unique_install_id("serveloop-iso"), codec,
+                                              iso, std::move(iso_hooks));
+            QIVEN_VERIFY(iso_loop.is_ok());
+            std::thread iso_runner([&] { iso_loop.value()->run(); });
+            auto stalled = PipeClient::connect(
+                qiven::runtime::ipc::pipe_name(unique_install_id("serveloop-iso")));
+            QIVEN_VERIFY(stalled.is_ok());
+            QIVEN_VERIFY(stalled.value().write_bytes("H", 2000)); // partial frame + stall
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            {
+                auto healthy = PipeClient::connect(
+                    qiven::runtime::ipc::pipe_name(unique_install_id("serveloop-iso")));
+                QIVEN_VERIFY(healthy.is_ok());
+                const auto begin = std::chrono::steady_clock::now();
+                QIVEN_VERIFY(write_request(healthy.value(), codec, hello_request(9), 1));
+                auto frame    = healthy.value().read_frame(3000);
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - begin)
+                                    .count();
+                QIVEN_VERIFY(frame.has_value());
+                QIVEN_VERIFY(ms < 1000); // NOT delayed by the stalled peer
+                const Reply reply = decode_client_reply(codec, frame.value());
+                QIVEN_VERIFY(reply.kind == Reply::Kind::HelloAck);
+            }
+            iso_loop.value()->request_stop();
+            iso_runner.join();
+        }
+
+        // Client busy etiquette (§5 accept topology): with every armed
+        // instance held by stalled connections, concurrent clients still
+        // connect within their bounded busy budget — the WaitNamedPipe
+        // etiquette recovers through arm churn; a healthy pool NEVER
+        // surfaces ERROR_PIPE_BUSY as a 120-class denial to a bounded
+        // client (the design row this carrier owes).
+        {
+            using qiven::runtime::ipc::ServeLoop;
+            ServeLoop::Options etq;
+            etq.listen_arms     = 2;
+            etq.max_connections = 10; // cap above the pressure set: busy is
+                                      // NOT the subject here; slot pressure is
+            etq.idle_timeout_ms = 4000;
+            ServeLoop::Hooks etq_hooks;
+            etq_hooks.handle = [](const Request& request) {
+                Reply reply;
+                reply.kind       = Reply::Kind::HelloAck;
+                reply.request_id = request.request_id;
+                return reply;
+            };
+            auto etq_loop = ServeLoop::create(unique_install_id("serveloop-etiquette"), codec,
+                                              etq, std::move(etq_hooks));
+            QIVEN_VERIFY(etq_loop.is_ok());
+            std::thread etq_runner([&] { etq_loop.value()->run(); });
+
+            // Two stalled connections hold both armed instances (partial
+            // frame + stall keeps each serve thread busy on its instance).
+            std::vector<PipeClient> stalled;
+            for (int i = 0; i < 2; ++i)
+            {
+                auto held = PipeClient::connect(
+                    qiven::runtime::ipc::pipe_name(unique_install_id("serveloop-etiquette")));
+                QIVEN_VERIFY(held.is_ok());
+                QIVEN_VERIFY(held.value().write_bytes("H", 2000)); // partial frame + stall
+                stalled.push_back(std::move(held.value()));
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+            // Pressure set: six concurrent bounded clients under slot
+            // pressure — every one connects within its budget and completes
+            // a hello round trip (etiquette, never a false no-listener).
+            constexpr int pressure_clients = 6;
+            std::vector<int> results(pressure_clients, -3);
+            std::vector<std::thread> pressers;
+            for (int i = 0; i < pressure_clients; ++i)
+            {
+                pressers.emplace_back([&, i] {
+                    auto client = PipeClient::connect(
+                        qiven::runtime::ipc::pipe_name(
+                            unique_install_id("serveloop-etiquette")),
+                        3000);
+                    if (!client.is_ok())
+                    {
+                        results[static_cast<std::size_t>(i)] = -1;
+                        return;
+                    }
+                    if (!write_request(client.value(), codec, hello_request(20 + i), 1))
+                    {
+                        results[static_cast<std::size_t>(i)] = -2;
+                        return;
+                    }
+                    auto frame = client.value().read_frame(3000);
+                    if (!frame.has_value())
+                    {
+                        results[static_cast<std::size_t>(i)] = -4;
+                        return;
+                    }
+                    const Reply reply = decode_client_reply(codec, frame.value());
+                    results[static_cast<std::size_t>(i)] =
+                        reply.kind == Reply::Kind::HelloAck ? 0 : -5;
+                });
+            }
+            for (auto& presser : pressers)
+            {
+                presser.join();
+            }
+            for (const int result : results)
+            {
+                QIVEN_VERIFY(result == 0);
+            }
+            QIVEN_VERIFY(etq_loop.value()->stats().connections_served.load() >=
+                         pressure_clients + 2);
+
+            etq_loop.value()->request_stop();
+            etq_runner.join();
+            std::printf("[ OK ] client etiquette: %d concurrent bounded clients under slot "
+                        "pressure all served\n",
+                        pressure_clients);
+        }
+
+        // Stop lost-wakeup window (recheck law): a stop issued while arms
+        // are between instance creation and ConnectNamedPipe still exits
+        // run() within the grace — exercised by stopping a FRESH loop
+        // immediately after run() starts (arms are in their first cycle).
+        {
+            using qiven::runtime::ipc::ServeLoop;
+            ServeLoop::Hooks wake_hooks;
+            wake_hooks.handle = [](const Request&) { return Reply {}; };
+            auto wake_loop    = ServeLoop::create(unique_install_id("serveloop-wake"), codec,
+                                                  ServeLoop::Options {}, std::move(wake_hooks));
+            QIVEN_VERIFY(wake_loop.is_ok());
+            std::thread wake_runner([&] { wake_loop.value()->run(); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            const auto begin = std::chrono::steady_clock::now();
+            wake_loop.value()->request_stop();
+            wake_runner.join();
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - begin)
+                                .count();
+            QIVEN_VERIFY(ms < 6000);
+        }
+
+        // Stop DURING arm churn (the recheck law under real re-arm cycles):
+        // a connect/die storm keeps the arms cycling through instance
+        // creation and ConnectNamedPipe; a stop issued mid-churn must still
+        // exit run() within the grace — the slot-cycle window, not just the
+        // fresh-loop parked window (the row's honest carrier; found weak by
+        // review).
+        {
+            using qiven::runtime::ipc::ServeLoop;
+            ServeLoop::Options churn;
+            churn.listen_arms     = 2;
+            churn.max_connections = 8;
+            churn.idle_timeout_ms = 500;
+            ServeLoop::Hooks churn_hooks;
+            churn_hooks.handle = [](const Request&) { return Reply {}; };
+            auto churn_loop    = ServeLoop::create(unique_install_id("serveloop-churn"), codec,
+                                                   churn, std::move(churn_hooks));
+            QIVEN_VERIFY(churn_loop.is_ok());
+            std::thread churn_runner([&] { churn_loop.value()->run(); });
+            std::atomic<bool> churning { true };
+            std::thread storm([&churn_loop, &churning] {
+                while (churning.load())
+                {
+                    auto junk = PipeClient::connect(
+                        qiven::runtime::ipc::pipe_name(unique_install_id("serveloop-churn")),
+                        500);
+                    if (junk.is_ok())
+                    {
+                        (void)junk.value().write_bytes("X", 200);
+                    }
+                    // abrupt close: the arm re-arms through its full cycle
+                }
+            });
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            const auto begin = std::chrono::steady_clock::now();
+            churn_loop.value()->request_stop();
+            churn_runner.join();
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - begin)
+                                .count();
+            churning.store(false);
+            storm.join();
+            QIVEN_VERIFY(ms < 6000);
+            std::printf("[ OK ] stop under arm churn exits within grace (%lld ms)\n",
+                        static_cast<long long>(ms));
+        }
+
+        // Write-deadline leg (§5 connection I/O model: "No unbounded
+        // blocking write exists" — tested, not assumed): a reply the peer
+        // never reads fills the kernel buffer and blocks the write; the
+        // deadline must close the connection and the loop stays healthy.
+        {
+            using qiven::runtime::ipc::ServeLoop;
+            ServeLoop::Options wr;
+            wr.listen_arms       = 2;
+            wr.max_connections   = 4;
+            wr.write_deadline_ms = 600;
+            wr.idle_timeout_ms   = 4000;
+            ServeLoop::Hooks wr_hooks;
+            wr_hooks.handle = [](const Request& request) {
+                Reply reply;
+                reply.kind       = Reply::Kind::HelloAck;
+                reply.request_id = request.request_id;
+                // Only the non-reading probe's reply is oversized; the
+                // follow-up gets a small reply (a >buffer frame does not
+                // stream against a whole-count overlapped reader — the
+                // write deadline closes it; honest note in the design's
+                // landing notes — so loop health is asserted with a
+                // normal-sized reply).
+                if (request.request_id == 40)
+                {
+                    reply.host_build = std::string(1024 * 1024, 'b'); // >> any pipe buffer
+                }
+                else
+                {
+                    reply.host_build = "serve-loop-test";
+                }
+                return reply;
+            };
+            auto wr_loop = ServeLoop::create(unique_install_id("serveloop-writedeadline"), codec,
+                                             wr, std::move(wr_hooks));
+            QIVEN_VERIFY(wr_loop.is_ok());
+            std::thread wr_runner([&] { wr_loop.value()->run(); });
+            {
+                auto hog = PipeClient::connect(
+                    qiven::runtime::ipc::pipe_name(unique_install_id("serveloop-writedeadline")));
+                QIVEN_VERIFY(hog.is_ok());
+                QIVEN_VERIFY(write_request(hog.value(), codec, hello_request(40), 1));
+                // Never read the reply: the serve thread's write must hit
+                // its deadline and close the connection (EOF observed
+                // client-side within a bounded wait).
+                const auto begin = std::chrono::steady_clock::now();
+                auto frame       = hog.value().read_frame(3000);
+                const auto ms    = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - begin)
+                                    .count();
+                QIVEN_VERIFY(!frame.has_value());
+                QIVEN_VERIFY(ms < 2500); // deadline (600 ms) + margin
+            }
+            // The loop stays healthy and serves a fresh client.
+            {
+                auto fresh = PipeClient::connect(
+                    qiven::runtime::ipc::pipe_name(unique_install_id("serveloop-writedeadline")));
+                QIVEN_VERIFY(fresh.is_ok());
+                QIVEN_VERIFY(write_request(fresh.value(), codec, hello_request(41), 1));
+                auto frame = fresh.value().read_frame(3000);
+                QIVEN_VERIFY(frame.has_value());
+            }
+            wr_loop.value()->request_stop();
+            wr_runner.join();
+            std::printf("[ OK ] write deadline: non-reading peer closed within the bound\n");
+        }
+
+        // Phased stop: request_stop wakes arms and serve threads inside
+        // their slices; run() returns within the grace.
+        const auto begin = std::chrono::steady_clock::now();
+        loop.value()->request_stop();
+        runner.join();
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - begin)
+                            .count();
+        QIVEN_VERIFY(ms < 6000); // grace (5 s) + margin; far faster in practice
+        std::printf("[ OK ] serve loop: pool admits, 125 busy typed, stop drains in %lld ms\n",
+                    static_cast<long long>(ms));
     }
 
     std::printf("[ OK ] ipc_multiframe_contract: all corrective regressions pass\n");
