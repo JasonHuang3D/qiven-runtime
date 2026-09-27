@@ -437,6 +437,13 @@ class Rig:
         if not condition:
             raise AssertionError(message)
 
+    def expect_tx_bound(self, elapsed: float, site: str) -> None:
+        # INV-10 at EVERY registration call site (not only registered()):
+        # the whole hello+event transaction under one monotonic bound.
+        self.expect(elapsed <= SESSION_TX_BOUND_S,
+                    f"{site}: registration transaction closed in {elapsed:.2f}s "
+                    f"(INV-10 whole-transaction bound {SESSION_TX_BOUND_S}s)")
+
     def expect_deny(self, code: int, stderr: str, exit_code: int, fragment: str = "",
                     source: str = "") -> None:
         self.expect(exit_code == 2, f"expected exit 2, got {exit_code}: {stderr}")
@@ -584,20 +591,22 @@ class Rig:
         def _s4():
             payload = self.hook_payload("pinned.session-start.no-session-field",
                                         s_root, s_outside, "unused")
-            code, err, _ = run_hook(hook, "session_start", s_root, payload,
+            code, err, elapsed = run_hook(hook, "session_start", s_root, payload,
                                     session_handle="h-nofield")
             self.expect(code == 0 and "session registered (id" in err,
                         f"trial-1 class regression: {err}")
+            self.expect_tx_bound(elapsed, "S4.no-session-field")
 
         @self.case("S5.capture-resume-dualkey-registers", ["INV-1"],
                    "capture.0.session-start.resume.dualkey")
         def _s5():
             payload = self.hook_payload("capture.0.session-start.resume.dualkey",
                                         s_root, s_outside, "sess-cap0")
-            code, err, _ = run_hook(hook, "session_start", s_root, payload,
+            code, err, elapsed = run_hook(hook, "session_start", s_root, payload,
                                     session_handle="h-cap0")
             self.expect(code == 0 and "session registered (id" in err,
                         f"capture row 0: {err}")
+            self.expect_tx_bound(elapsed, "S5.capture-resume")
             s_ids["h-cap0"] = self.session_id_of(err)
 
         @self.case("S6.capture-startup-dualkey-registers", ["INV-1"],
@@ -605,10 +614,11 @@ class Rig:
         def _s6():
             payload = self.hook_payload("capture.1.session-start.startup.dualkey",
                                         s_root, s_outside, "sess-cap1")
-            code, err, _ = run_hook(hook, "session_start", s_root, payload,
+            code, err, elapsed = run_hook(hook, "session_start", s_root, payload,
                                     session_handle="h-cap1")
             self.expect(code == 0 and "session registered (id" in err,
                         f"capture row 1: {err}")
+            self.expect_tx_bound(elapsed, "S6.capture-startup")
 
         @self.case("S7.capture-repeat-idempotent", ["INV-1"], "capture row 0 repeat "
                    "(repeat may answer silently; one-row law proves stability)")
@@ -992,11 +1002,12 @@ class Rig:
             cold_root, cold_outside = self.fresh_root("gB24")
             payload = self.hook_payload("pinned.session-start.startup", cold_root,
                                         cold_outside, "sess-cold2")
-            code, err, _ = run_hook(hook, "session_start", cold_root, payload,
+            code, err, elapsed = run_hook(hook, "session_start", cold_root, payload,
                                     session_handle="h-cold2")
             self.expect(code == 0, f"advisory event must exit 0, got {code}: {err}")
             self.expect("session NOT registered" in err,
                         "the trial-4 invisible symptom must at least be VISIBLE text")
+            self.expect_tx_bound(elapsed, "B24.no-host-session-start")
 
         @self.case("B25.deny-rows-journaled", ["INV-8"], "journal audit law")
         def _b25():
@@ -1320,7 +1331,7 @@ class Rig:
                                  self.run_root / "gD1-host.log", cwd=kit_dir)
             self.live_procs.append(proc)
             try:
-                code, err, _ = run_hook(hook, "session_start", d_root,
+                code, err, elapsed = run_hook(hook, "session_start", d_root,
                                         self.hook_payload("pinned.session-start.startup",
                                                           d_root, d_outside, "sess-d1"),
                                         session_handle="h-d1")
@@ -1342,6 +1353,7 @@ class Rig:
                 self.expect("session registered (id" in err,
                             f"kit-form registration note must appear once "
                             f"refresh is observable: {err!r}")
+                self.expect_tx_bound(elapsed, "D1.kit-entrypoint")
             finally:
                 stop_host(d_root, proc, fh)
 
@@ -1378,7 +1390,7 @@ class Rig:
                                  self.run_root / "gI5b-host.log", cwd=trap_cwd)
             self.live_procs.append(proc)
             try:
-                code, err, _ = run_hook(hook, "session_start", d_root,
+                code, err, elapsed = run_hook(hook, "session_start", d_root,
                                         self.hook_payload("pinned.session-start.startup",
                                                           d_root, d_outside, "sess-i5b"),
                                         session_handle="h-i5b")
@@ -1401,6 +1413,7 @@ class Rig:
                 self.expect("session registered (id" in err,
                             f"CWD-independent registration note must appear "
                             f"once refresh is observable: {err!r}")
+                self.expect_tx_bound(elapsed, "I5b.explicit-kit-profile")
             finally:
                 stop_host(d_root, proc, fh)
 
@@ -2050,7 +2063,7 @@ class Rig:
         def _x1():
             payload = self.hook_payload("capture.0.session-start.resume.dualkey",
                                         x_root, x_outside, "sess-x0")
-            code, err, _ = run_hook(hook, "session_start", x_root, payload,
+            code, err, elapsed = run_hook(hook, "session_start", x_root, payload,
                                     session_handle="h-x0")
             self.expect(code == 0, f"registration failed: {err}")
             if "session registered (id" not in err:
@@ -2062,12 +2075,13 @@ class Rig:
                                for kind, _ in audit_events(x_root)):
                         time.sleep(0.2)
                         continue
-                    code, err, _ = run_hook(hook, "session_start", x_root, payload,
+                    code, err, elapsed = run_hook(hook, "session_start", x_root, payload,
                                             session_handle="h-x0")
                     self.expect(code == 0, f"registration retry failed: {err}")
                     break
             self.expect("session registered (id" in err,
                         f"note must appear once refresh is observable: {err!r}")
+            self.expect_tx_bound(elapsed, "X1.capture-row0-fresh-root")
 
         @self.case("X3.capture-inert-bash-outside-root", ["INV-4", "INV-13"],
                    "capture.4 with substitutions: no governed reference -> not_governed")
