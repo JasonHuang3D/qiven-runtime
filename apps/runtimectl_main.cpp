@@ -434,6 +434,13 @@ std::vector<CheckoutBinding> parse_bindings(const std::string& text)
     return bindings;
 }
 
+qiven::u64 now_ms_epoch()
+{
+    return static_cast<qiven::u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::system_clock::now().time_since_epoch())
+                                       .count());
+}
+
 std::optional<std::string> read_file_text(const std::filesystem::path& file)
 {
     std::ifstream in(file, std::ios::binary);
@@ -703,13 +710,13 @@ int cognition_activate(const std::vector<std::string>& args)
     // envelope extraction (exact fields; unknown keys ignored)
     auto field = [&](const char* key) {
         const std::string needle = std::string("\"") + key + "\":\"";
-        const usize at           = envelope_text->find(needle);
+        const qiven::usize at    = envelope_text->find(needle);
         if (at == std::string::npos)
         {
             return std::string();
         }
-        const usize begin = at + needle.size();
-        const usize end   = envelope_text->find('"', begin);
+        const qiven::usize begin = at + needle.size();
+        const qiven::usize end   = envelope_text->find('"', begin);
         return end == std::string::npos ? std::string() : envelope_text->substr(begin, end - begin);
     };
     qiven::runtime::cognition::TaskEnvelope envelope;
@@ -736,22 +743,22 @@ int cognition_activate(const std::vector<std::string>& args)
                                              : qiven::runtime::cognition::TaskRisk::R2;
     {
         const std::string needle = "\"changed_paths\":[";
-        const usize at           = envelope_text->find(needle);
+        const qiven::usize at    = envelope_text->find(needle);
         if (at != std::string::npos)
         {
-            const usize end = envelope_text->find(']', at);
+            const qiven::usize end = envelope_text->find(']', at);
             if (end != std::string::npos)
             {
                 const std::string list = envelope_text->substr(at + needle.size(), end - at - needle.size());
-                usize position         = 0;
+                qiven::usize position  = 0;
                 while (position < list.size())
                 {
-                    const usize quote_begin = list.find('"', position);
+                    const qiven::usize quote_begin = list.find('"', position);
                     if (quote_begin == std::string::npos)
                     {
                         break;
                     }
-                    const usize quote_end = list.find('"', quote_begin + 1);
+                    const qiven::usize quote_end = list.find('"', quote_begin + 1);
                     if (quote_end == std::string::npos)
                     {
                         break;
@@ -777,9 +784,7 @@ int cognition_activate(const std::vector<std::string>& args)
         qiven::runtime::cognition::activation_policy_digest(request.policy);
     request.consumer_profile = profile;
     request.runtime_root     = root / ".qiven" / "runtime";
-    request.now_ms           = static_cast<qiven::u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                 std::chrono::system_clock::now().time_since_epoch())
-                                                           .count());
+    request.now_ms           = now_ms_epoch();
 
     const qiven::runtime::cognition::ActivationService service;
     auto outcome = service.activate(request);
