@@ -370,6 +370,11 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
         "if errorlevel 1 (echo [FAIL] shortcut creation failed & exit /b 1)",
         "echo [ OK ] autostart shortcut: %LNK%",
         f"call \"{start_host}\"",
+        "echo [ RUN] verdict round trip (the section 8 verification leg)",
+        f"\"{sys.executable}\" \"{REPO_ROOT / 'tools' / 'h1_kit.py'}\" preflight "
+        f"--kit \"{kit_dir}\" --session-token {token}",
+        "if errorlevel 1 (echo [FAIL] install verification failed) else "
+        "(echo [ OK ] install verified: verdict round trip + first contact)",
     ]) + "\n", encoding="utf-8", newline="\n")
 
     remove_autostart = kit_dir / "remove-autostart.cmd"

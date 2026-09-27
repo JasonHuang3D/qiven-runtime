@@ -465,6 +465,11 @@ class Rig:
         attempt (offline fixture: cognition_local_fallback) and retries
         once - after that the note is stable for the window. Identity
         stability is always proven by the journal's exactly-one-row law."""
+        # Snapshot BEFORE the first call: the boot attempt can land between
+        # the reply and a post-call snapshot (a lost-wakeup that would skip
+        # the retry and fail spuriously).
+        cognition_before = sum(1 for kind, _ in audit_events(root)
+                               if kind.startswith("cognition_"))
         payload = self.hook_payload("pinned.session-start.startup", root, outside,
                                     session_label)
         code, err, elapsed = run_hook(self.hook_exe, "session_start", root, payload,
@@ -481,14 +486,12 @@ class Rig:
             # once - after that the note is stable for the window. The count
             # (not mere existence) matters: restarted hosts carry earlier
             # lifetimes' cognition rows in the same journal.
-            before = sum(1 for kind, _ in audit_events(root)
-                         if kind.startswith("cognition_"))
             deadline = time.monotonic() + 6.0
             attempted = False
             while time.monotonic() < deadline and not attempted:
                 current = sum(1 for kind, _ in audit_events(root)
                               if kind.startswith("cognition_"))
-                attempted = current > before
+                attempted = current > cognition_before
                 if not attempted:
                     time.sleep(0.2)
             if attempted:
@@ -2403,6 +2406,16 @@ def main(argv=None) -> int:
                       "(build first; a missing binary is acceptance-fatal, never a "
                       "skip)")
                 return EXIT_FAIL
+        # N5's mixed-fleet leg drives the PRESERVED pre-fix hook binary (an
+        # untracked artifact); its absence is a typed precondition rejection,
+        # never a mid-suite case failure.
+        prefix_hook = (REPO_ROOT / ".generated-temp" / "h1-sim" / "prefix-reference"
+                       / "qiven-zcode-hook.exe")
+        if not prefix_hook.is_file():
+            print(f"[NOT_VALIDATED] pre-fix reference hook missing: {prefix_hook} "
+                  "(the old-fail evidence pair; regenerate from git history per "
+                  "the standing residual)")
+            return EXIT_FAIL
         outcome = rig.execute()
         receipt_path = rig.write_receipt(outcome, argv, dev=args.dev)
     except Exception as failure:  # noqa: BLE001 - typed containment, no traceback

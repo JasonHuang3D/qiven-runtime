@@ -38,7 +38,7 @@ MVP-4 exit. This design specifies that gate as a machine-checked rig that:
 | --- | --- | --- |
 | Rig driver | `tools/h1_sim_gate.py` | Scenario runner, receipt writer/verifier. Python stdlib only (Devkit python-standard law). Windows-only; a non-Windows invocation reports `[NOT_VALIDATED] platform leg skipped` and exits non-zero. |
 | Fixture corpus | `tests/fixtures/h1-sim/` | Payload fixtures + `catalogue.json` (provenance + digests + oracle class per fixture). Tracked, canonical test inputs. |
-| Wire fault client | inside the rig | A minimal protocol client (DPAPI-unprotected installation secret, HMAC-SHA256 framing per `src/ipc/framing.cpp`) used ONLY for fault-injection legs (bad deadline, wrong seq, oversized body) and the authenticated shutdown — never as a substitute for the real hook exe in lifecycle cases. |
+| Wire fault client | inside the rig | A minimal protocol client (DPAPI-unprotected installation secret, HMAC-SHA256 framing per `src/ipc/framing.cpp`) used for fault-injection legs (wrong seq, corrupt MAC, oversized body, retired `deadline_ms` field), the authenticated shutdown, and — dated amendment 2026-09-27, batch c — the N1 connection-cap fill loop; never as a substitute for the real hook exe in lifecycle cases. |
 | Gate wiring | `.qiven/operator.json` | Tasks `h1-sim` and `h1-kit-test` join the `local` publication gate after build/test, before diff-check. |
 | Kit regressions | `tools/h1_kit_test.py` | Skip-success semantics fixed: absent host exe is `[NOT_RUN]` and FAILS the suite (ADR-0055 decision 5). Packaging checks unchanged. |
 | Folded fixes | `src/adapter/zcode_hook.cpp`, `tools/h1_kit.py` | Trial-4 hello-deadline fix + preflight `session_start` registration coverage (see §7). |
@@ -117,6 +117,17 @@ assumption (`PINNED_SOURCE_CONTRACT_REVIEWED` covers the pinned-source
 reading; `INSTALLED_DESKTOP_EXECUTION_UNVERIFIED` stays standing).
 
 ## 5. Case taxonomy and invariants
+
+> **Dated amendment (2026-09-27, batch c — §11):** the deny-114 clauses
+> below are SUPERSEDED by LL-2a first-contact minting. B13/B14 now assert
+> first-contact merits verdicts with the mint row; A7 (C-series row) asserts
+> the first-contact post mints and leaves its honest unmatched row; C3
+> asserts restart re-contact mints fresh and is judged on merits. INV-2's
+> operative definition is now: "first contact mints the session and every
+> event is judged on its merits (the deny-114 ritual is retired; the
+> historical mechanism stays as incident evidence)". The case count is
+> 106 (the N-group). The base rows are kept verbatim as the historical
+> record.
 
 Groups (one host boot each, ordered steps inside), 101 named cases
 (2026-09-27 review amendments folded: per-source repeat legs, the second
@@ -244,7 +255,9 @@ its new-pass leg on the candidate:
 `tools/h1_sim_gate.py run` (the `h1-sim` gate task):
 
 - asserts a clean tree, resolves the exact HEAD, and records: fixture
-  catalogue digest, per-fixture digests, scenario table digest (the rig's
+  catalogue digest (whole-file — dated amendment 2026-09-27: there are NO
+  per-fixture digests; any single-template change moves the whole-file
+  digest, which is the detection), scenario table digest (the rig's
   own source digest — the scenario table lives in the rig), candidate
   exe digests (host/hook/ctl), profile digest, git HEADs (runtime +
   `.qiven/dependencies.json` content digest), toolchain (the
@@ -272,8 +285,10 @@ format-check, configure, build-debug/release, test-debug/test-release,
   honored — the rig runs only Qiven binaries and reads pinned source).
 - Lexical path-policy fixtures assert the DOCUMENTED policy and record
   detector-scope limits; they make no authorization-equivalence claim.
-- The rig's wire client exists for fault injection and shutdown only; every
-  lifecycle case goes through the real hook exe.
+- The rig's wire client exists for fault injection, the authenticated
+  shutdown, and — dated amendment 2026-09-27, batch c — the N1
+  connection-cap fill loop; every lifecycle case goes through the real
+  hook exe.
 - C++-level regressions already covered by `ipc_multiframe_contract`,
   `hook_conformance`, `host_lifecycle` are not duplicated; the rig adds the
   external-process, real-pipe, whole-exe dimension those tests cannot.

@@ -897,11 +897,12 @@ void ServeLoop::dispatch_connection(PipeConnection connection)
             m_live_serve_threads += 1;
         }
     }
-    // One observable line per ACCEPTED connection (the one-connection law's
+    // One observable line per SERVED connection (the one-connection law's
     // observable: a client that splits hello/event across two connections
-    // shows two [open] lines for one registration). The occupancy rides the
-    // line so the S-5 discriminator has a per-connection trace.
-    if (m_hooks.log)
+    // shows two [open] lines for one registration). Over-cap connections
+    // log the [busy] line instead - "[open]" means accepted-and-served,
+    // and the occupancy trace for rejections rides the [busy] line.
+    if (!over_cap && m_hooks.log)
     {
         m_hooks.log("[open] connection (occupancy " + std::to_string(occupancy) +
                     ")");
