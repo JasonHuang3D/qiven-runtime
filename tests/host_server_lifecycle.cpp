@@ -347,6 +347,82 @@ int main()
 
     const std::filesystem::path host_log = case_dir / "host.log";
 
+    // 0. ALIASED-STDIO boot (the 2026-09-27 MVP-4 kit incident): tools that
+    // spawn the host may merge stderr onto stdout as ONE inherited FILE
+    // handle AND pass --log pointing at that same file (exactly the kit
+    // preflight's start_server shape). The un-fixed host died inside its
+    // first printf (UCRT invalid parameter after the double freopen on
+    // aliased handles): fail-fast 0xC0000409, zero-byte log, server never
+    // answering. This row is the old-fail/new-pass discriminator for both
+    // the redirect fix and the headless CRT behavior (a residual CRT fault
+    // must now surface as exit 3143 WITH an evidence line, not silence).
+    {
+        const std::filesystem::path aliased_log = case_dir / "aliased-host.log";
+        SECURITY_ATTRIBUTES inheritable { sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
+        HANDLE log_write =
+            CreateFileA(aliased_log.string().c_str(), FILE_APPEND_DATA,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE, &inheritable, OPEN_ALWAYS,
+                        FILE_ATTRIBUTE_NORMAL, nullptr);
+        QIVEN_VERIFY(log_write != INVALID_HANDLE_VALUE);
+        std::string command = "\"" + procs.host.string() + "\" --root " + repo.string() +
+                              " --log " + aliased_log.string();
+        STARTUPINFOA si {};
+        si.cb         = sizeof(si);
+        si.dwFlags    = STARTF_USESTDHANDLES;
+        si.hStdOutput = log_write;
+        si.hStdError  = log_write; // ALIASED: one handle for both streams
+        PROCESS_INFORMATION pi {};
+        std::vector<char> mutable_command(command.begin(), command.end());
+        mutable_command.push_back('\0');
+        const BOOL aliased_started = CreateProcessA(
+            nullptr, mutable_command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
+            nullptr, &si, &pi);
+        QIVEN_VERIFY(aliased_started);
+        CloseHandle(log_write); // the child holds its own reference
+        const auto aliased_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        bool aliased_booted         = false;
+        while (std::chrono::steady_clock::now() < aliased_deadline)
+        {
+            if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0)
+            {
+                DWORD aliased_exit = 0;
+                GetExitCodeProcess(pi.hProcess, &aliased_exit);
+                std::fprintf(stderr,
+                             "[FAIL] aliased-stdio host died (exit %lu; the kit-incident "
+                             "class: 3143 means a CRT fault with evidence, 0xC0000409 means "
+                             "the headless behavior is not installed)\n",
+                             static_cast<unsigned long>(aliased_exit));
+                QIVEN_VERIFY(false);
+            }
+            std::string aliased_status;
+            if (run_command(procs.ctl.string(), { "status", "show", "--root", repo.string() }, "",
+                            20, &aliased_status) == 0)
+            {
+                aliased_booted = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        QIVEN_VERIFY(aliased_booted);
+        QIVEN_VERIFY(std::filesystem::file_size(aliased_log) > 0);
+        std::printf("[ OK ] aliased-stdio boot: merged stderr/stdout + --log serves\n");
+        // Typed shutdown so the main boot section below owns a quiet root.
+        run_command(procs.ctl.string(), { "host", "shutdown", "--root", repo.string() }, "", 20);
+        const auto aliased_stop_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (std::chrono::steady_clock::now() < aliased_stop_deadline)
+        {
+            if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0)
+            {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+        QIVEN_VERIFY(WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+
     // 1. Boot the long-lived server (background, log to file) and wait for
     // the pipe to answer (bounded wait, no polling past the budget).
     auto server = [&] {

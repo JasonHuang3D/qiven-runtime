@@ -178,6 +178,17 @@ LEAVES THE SERVER RUNNING (that is the model). EXPECT the final line
 `[ OK ] PREFLIGHT PASS`. If any `[FAIL]` appears, do NOT approve the
 config - paste the window's text back to the session instead.
 
+### If the preflight FAILS (troubleshooting)
+
+The preflight STARTS the server itself - you do NOT need to run
+`start-host.cmd` first. A `[FAIL] server did not answer within 20 s`
+means the server process died while starting. One extra diagnostic is
+yours to run: double-click `{start_host}` - it prints a typed `[FAIL]`
+line naming the failing leg (and never closes its window before you read
+it). A host exit code `3143` on that path is the CRT-fault evidence
+class: paste the window text AND `host.log` (same folder) back to the
+session. Do NOT approve the config and do NOT continue to Step 2.
+
 ## Step 2 - install the hook config + the server autostart
 
 1. Open Explorer at:  `{config_target}`   (file `{config_name}`)
@@ -316,20 +327,25 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
     start_host.write_text("\n".join([
         "@echo off",
         "setlocal",
+        # CMD PARSE LAW (2026-09-27 kit incident): a ')' inside an echo text
+        # that sits inside a parenthesized if-block TERMINATES the block --
+        # the following goto became unconditional and start-host never
+        # launched anything (the owner-live "cmd exits, no message"
+        # symptom). Echo texts in generated cmd files carry NO parentheses.
         f"set HOST={build_dir / 'qiven-runtime-host.exe'}",
         f"set CTL={build_dir / 'qiven-runtimectl.exe'}",
         f"set ROOT={GOVERNED_ROOT}",
         f"set PROFILE={profile_dst}",
         f"set LOG={kit_dir / 'host.log'}",
-        "echo [ RUN] qiven-runtime-host start (idempotent)",
+        "echo [ RUN] qiven-runtime-host start - idempotent",
         f"\"%CTL%\" status show --root \"%ROOT%\" >nul 2>&1",
         "if not errorlevel 1 (",
-        "  echo [ OK ] host already running (typed detection, no second instance)",
+        "  echo [ OK ] host already running - typed detection, no second instance",
         "  goto :done",
         ")",
         "echo [ RUN] launching image: %HOST%",
         "start \"qiven-runtime-host\" /MIN \"%HOST%\" --root \"%ROOT%\" --profile \"%PROFILE%\" --log \"%LOG%\"",
-        "echo [ OK ] launch issued (minimized; log at %LOG%)",
+        "echo [ OK ] launch issued - minimized; log at %LOG%",
         "set /a TRIES=0",
         ":wait",
         f"\"%CTL%\" status show --root \"%ROOT%\" >nul 2>&1",
@@ -337,6 +353,9 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
         "set /a TRIES+=1",
         "if %TRIES% GEQ 30 (",
         "  echo [FAIL] host did not answer status within 30 s - read the log: %LOG%",
+        "  pause",
+        # Preserve terminal outcome on direct launch: exit only AFTER the
+        # operator read the FAIL line (the window never just vanishes).
         "  exit /b 1",
         ")",
         "timeout /t 1 /nobreak >nul",
@@ -376,7 +395,7 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
         "$s.Arguments='--root \"'+$env:ROOT+'\" --profile \"'+$env:PROFILE+'\" --log \"'+$env:LOG+'\"';"
         "$s.WindowStyle=7;"
         "$s.Save()\"",
-        "if errorlevel 1 (echo [FAIL] shortcut creation failed & exit /b 1)",
+        "if errorlevel 1 (echo [FAIL] shortcut creation failed & pause & exit /b 1)",
         "echo [ OK ] autostart shortcut: %LNK%",
         f"call \"{start_host}\"",
         "echo [ RUN] verdict round trip (the section 8 verification leg)",
@@ -384,6 +403,7 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
         f"--kit \"{kit_dir}\" --session-token {token}",
         "if errorlevel 1 (echo [FAIL] install verification failed) else "
         "(echo [ OK ] install verified: verdict round trip + first contact)",
+        "pause",
     ]) + "\n", encoding="utf-8", newline="\n")
 
     remove_autostart = kit_dir / "remove-autostart.cmd"
@@ -588,6 +608,7 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
 
     result = EXIT_FAIL
     started_here = False
+    server_process: sp.Popen | None = None
 
     def status_show() -> sp.CompletedProcess:
         return sp.run(
@@ -599,8 +620,9 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
         """The normal start path (the same image/args start-host.cmd uses):
         launches the build-dir host with the KIT profile and --log, then
         waits bounded for a status round trip."""
+        nonlocal server_process
         with log_path.open("a", encoding="utf-8", newline="\n") as log:
-            sp.Popen(
+            server_process = sp.Popen(
                 [str(host_exe), "--root", str(GOVERNED_ROOT),
                  "--profile", str(profile_file), "--log", str(log_path)],
                 stdout=log, stderr=sp.STDOUT,
@@ -609,6 +631,11 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
         while time.monotonic() < deadline:
             if status_show().returncode == 0:
                 return True
+            # An instantly-dead boot (e.g. a typed [FAIL] line in the log)
+            # leaves nothing to wait for -- surface it now instead of
+            # burning the full 20 s budget on a corpse.
+            if server_process.poll() is not None:
+                return False
             time.sleep(0.5)
         return False
 
@@ -698,6 +725,17 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
                     stopped = True
                     break
                 time.sleep(0.5)
+            if stopped and server_process is not None:
+                # PROCESS exit is the death signal, not the pipe going
+                # silent: the ack'd host still drains, checkpoints the
+                # journal and releases the root lease AFTER the pipe stops
+                # answering (2026-09-27 preflight finding: the restart leg
+                # raced this tail and its boot denied with "another
+                # RuntimeHost owns this governed root").
+                try:
+                    server_process.wait(timeout=15)
+                except sp.TimeoutExpired:
+                    stopped = False
             print(("[ OK ] " if stopped else "[FAIL] ") +
                   f"server exited after the shutdown ack (ctl exit {stop.returncode})")
             if not stopped:

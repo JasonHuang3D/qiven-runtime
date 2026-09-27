@@ -16,6 +16,7 @@
 // absent. Exit codes: 0 pass, 2 deny/usage-failure.
 // ============================================================================
 
+#include <qiven/crt_failure.hpp>
 #include <qiven/runtime/adapter/zcode_hook.hpp>
 
 #include <cstdio>
@@ -49,6 +50,11 @@ std::vector<std::byte> read_stdin_verbatim()
 
 int main(int argc, char** argv)
 {
+    // Headless CRT failure behavior (the 2026-09-19 modal-abort law; the
+    // hook is invoked by the harness per tool call): a CRT fault terminates
+    // with evidence and exit 3143, never modal UI, never a hang.
+    qiven::install_headless_crt_failure_behavior();
+
     std::string event;
     std::string tool;
     std::string session_handle;

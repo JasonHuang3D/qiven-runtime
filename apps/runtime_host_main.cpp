@@ -18,6 +18,7 @@
 // Exit codes: 0 clean shutdown, 1 boot failure, 2 usage.
 // ============================================================================
 
+#include <qiven/crt_failure.hpp>
 #include <qiven/runtime/host/runtime_host.hpp>
 #include <qiven/runtime/ipc/framing.hpp>
 #include <qiven/runtime/ipc/named_pipe_server.hpp>
@@ -28,13 +29,17 @@
 
 #include <windows.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <io.h>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <sys/stat.h>
 #include <thread>
 #include <vector>
 
@@ -75,6 +80,12 @@ int usage()
 
 int main(int argc, char** argv)
 {
+    // Headless CRT failure behavior FIRST (the 2026-09-19 modal-abort law;
+    // 2026-09-27 MVP-4 kit incident class): a CRT fault must terminate
+    // deterministically with an evidence line and exit 3143, never a modal
+    // dialog and never a silent fail-fast with zero output.
+    qiven::install_headless_crt_failure_behavior();
+
     std::filesystem::path repo_root = std::filesystem::current_path();
     std::filesystem::path profile; // set by --profile, else derived from the
                                    // RESOLVED root below (never from CWD)
@@ -149,9 +160,38 @@ int main(int argc, char** argv)
     {
         std::error_code ec;
         std::filesystem::create_directories(log_file.parent_path(), ec);
-        FILE* redirected = nullptr;
-        freopen_s(&redirected, log_file.string().c_str(), "a", stdout);
-        freopen_s(&redirected, log_file.string().c_str(), "a", stderr);
+        // Spawned tools may alias stderr onto stdout as ONE inherited
+        // handle (the kit preflight's merged-stdout shape). Redirecting
+        // BOTH streams onto one path via freopen in that shape corrupts
+        // the UCRT lowio table: the first printf dies inside fwrite with
+        // an invalid parameter -- before this fix a silent fail-fast
+        // 0xC0000409 with a zero-byte log (2026-09-27 MVP-4 kit
+        // incident). Aliased std handles are detected here and stderr is
+        // re-pointed onto the reopened stdout (_dup2 closes the inherited
+        // pair exactly once).
+        // Unified _dup2 redirect. The historic double freopen onto one path
+        // breaks under spawned-tool stdio shapes: when the child still
+        // holds an inherited handle to the SAME file (stderr merged onto
+        // stdout, as duplicated handles or one aliased handle -- the kit
+        // preflight's start_server shape), the second path-open hits a
+        // sharing violation, and with a single aliased handle the UCRT
+        // lowio table corrupts and the first printf dies inside fwrite
+        // (invalid parameter, silent fail-fast 0xC0000409, zero-byte log
+        // -- the 2026-09-27 MVP-4 kit incident). _open once, then _dup2
+        // onto both std fds: no second path-open can conflict, and each
+        // _dup2 closes exactly its own inherited handle reference.
+        const int log_fd = _open(log_file.string().c_str(), _O_APPEND | _O_CREAT | _O_WRONLY,
+                                 _S_IWRITE);
+        if (log_fd < 0 || _dup2(log_fd, _fileno(stdout)) != 0 ||
+            _dup2(log_fd, _fileno(stderr)) != 0)
+        {
+            std::fprintf(stderr,
+                         "[FAIL] --log redirect failed: open errno %d; dup2 errno %d; "
+                         "GetLastError %lu\n",
+                         log_fd < 0 ? errno : 0, errno, GetLastError());
+            return 1;
+        }
+        _close(log_fd);
     }
 
     qiven::runtime::host::HostBoot boot;

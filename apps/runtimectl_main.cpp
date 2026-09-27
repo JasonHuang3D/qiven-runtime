@@ -12,6 +12,7 @@
 // early). Exit codes: 0 pass, 1 failure, 2 usage.
 // ============================================================================
 
+#include <qiven/crt_failure.hpp>
 #include <qiven/runtime/cognition/bundle.hpp>
 #include <qiven/runtime/host/deployment_profile.hpp>
 #include <qiven/runtime/ipc/framing.hpp>
@@ -361,6 +362,10 @@ int host_refresh(const std::vector<std::string>& args)
 
 int main(int argc, char** argv)
 {
+    // Headless CRT failure behavior (the 2026-09-19 modal-abort law): a CRT
+    // fault terminates with evidence and exit 3143, never modal UI.
+    qiven::install_headless_crt_failure_behavior();
+
     if (argc < 3)
     {
         return usage();
