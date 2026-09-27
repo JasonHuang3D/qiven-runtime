@@ -996,16 +996,16 @@ int activation_verify(const std::vector<std::string>& args)
         return exit_fail;
     }
     current.activation_generation = active;
-    const auto manifest           = read_text(root / ".qiven" / "runtime" / "activation-generations" /
-                                              active / "index-manifest.json");
+    const auto manifest = read_file_text(root / ".qiven" / "runtime" / "activation-generations" /
+                                         active / "index-manifest.json");
     if (manifest)
     {
-        const std::string needle = "\"external_source_lock_sha256\":\"";
-        const auto at            = manifest->find(needle);
+        const std::string needle   = "\"external_source_lock_sha256\":\"";
+        const auto at              = manifest->find(needle);
         if (at != std::string::npos)
         {
-            const auto begin = at + needle.size();
-            const auto end   = manifest->find('"', begin);
+            const auto begin       = at + needle.size();
+            const auto end         = manifest->find('"', begin);
             if (end != std::string::npos)
             {
                 current.external_source_lock_sha256 =
