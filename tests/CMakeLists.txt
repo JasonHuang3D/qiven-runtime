@@ -99,6 +99,7 @@ add_library(
         headers/cognition_policy.cpp
         headers/cognition_bundle_store.cpp
         headers/cognition_publisher.cpp
+        headers/cognition_source_lock.cpp
         headers/deployment_profile_file.cpp
         headers/generation_activation.cpp
         headers/ipc_framing.cpp
@@ -343,6 +344,7 @@ add_test(NAME qiven-runtime.rr0-byte-compat COMMAND rr0-byte-compat)
 qiven_runtime_add_journal_test(policy-parse policy_parse.cpp)
 qiven_runtime_add_journal_test(process-runner-bounded process_runner_bounded.cpp)
 qiven_runtime_add_journal_test(bundle-publish-pin bundle_publish_pin.cpp)
+qiven_runtime_add_journal_test(source-lock source_lock.cpp)
 qiven_runtime_add_journal_test(profile-accept profile_accept.cpp)
 qiven_runtime_add_journal_test(generation-stale generation_stale.cpp)
 
