@@ -203,15 +203,19 @@ server writes its staged boot, per-request `[conn]` lines and a
 Start a NEW ZCode session (hooks load at session start only). In it,
 send these messages ONE AT A TIME and note what the tools return:
 
-  P1  Please use the Write tool to create D:/JasonWork/qiven-context/state/h1-probe.md with content ok
-      -> EXPECT: the Write is BLOCKED with `[qiven] deny 110` (governed write)
+  P1  Please use the Write tool to create D:/JasonWork/qiven-context/state/current.md with content probe-ok
+      -> EXPECT: BLOCKED with `[qiven] deny 110` (state/current.md is a
+         governed exact-file path in the shipped profile; the earlier
+         h1-probe.md target was OUTSIDE the governed list and honestly
+         allowed - never observed live as a deny)
 
-  P2  Please use the Edit tool to modify D:/JasonWork/qiven-context/state/h1-probe.md
-      -> EXPECT: BLOCKED (governed write; if P1 correctly denied, the file
-         does not exist - any deny reason is a PASS for this probe)
+  P2  Please use the Edit tool to modify D:/JasonWork/qiven-context/state/current.md
+      -> EXPECT: BLOCKED with `[qiven] deny 110` (the same governed file)
 
-  P3  Please run in Bash: echo probe > /d/JasonWork/qiven-context/state/h1-probe-bash.md
-      -> EXPECT: BLOCKED with `[qiven] deny 111` (conservative Bash detector)
+  P3  Please run in Bash: echo probe > /d/JasonWork/qiven-context/state/current.md
+      -> EXPECT: BLOCKED with `[qiven] deny 111` (the command text
+         references the governed path - the conservative detector fires on
+         the text, and the deny leaves the file untouched)
 
   P4  Please run in Bash: echo outside > /d/JasonWork/qiven-runtime/.generated-temp/h1/outside.txt
       -> EXPECT: ALLOWED (not_governed - outside the governed scope)
@@ -326,13 +330,17 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
         "echo [ RUN] launching image: %HOST%",
         "start \"qiven-runtime-host\" /MIN \"%HOST%\" --root \"%ROOT%\" --profile \"%PROFILE%\" --log \"%LOG%\"",
         "echo [ OK ] launch issued (minimized; log at %LOG%)",
+        "set /a TRIES=0",
         ":wait",
         f"\"%CTL%\" status show --root \"%ROOT%\" >nul 2>&1",
-        "if errorlevel 1 (",
-        "  timeout /t 1 /nobreak >nul",
-        "  goto :wait",
+        "if not errorlevel 1 (echo [ OK ] host is answering status & goto :done)",
+        "set /a TRIES+=1",
+        "if %TRIES% GEQ 30 (",
+        "  echo [FAIL] host did not answer status within 30 s - read the log: %LOG%",
+        "  exit /b 1",
         ")",
-        "echo [ OK ] host is answering status",
+        "timeout /t 1 /nobreak >nul",
+        "goto :wait",
         ":done",
         "pause",
     ]) + "\n", encoding="utf-8", newline="\n")

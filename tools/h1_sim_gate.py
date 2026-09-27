@@ -847,6 +847,10 @@ class Rig:
                                     tool="Bash", session_handle="h-ghost2")
             self.expect(code == 0 and err == "",
                         f"first-contact outside probe must allow on merits: {err}")
+            rows = [p for kind, p in audit_events(b_root)
+                    if kind == "session_registered" and p.endswith("|h-ghost2")]
+            self.expect(len(rows) == 1,
+                        f"first contact must mint exactly one session row: {rows}")
             self.clear_outstanding(b_root, "h-ghost2", "Bash")
 
         @self.case("B15.unknown-tool-denied-112", ["INV-2"],
@@ -2178,6 +2182,12 @@ class Rig:
                 REPO_ROOT / "config" / "profiles" / PROFILE_NAME),
             "fixture_catalogue_digest": sha256_file(FIXTURES),
             "policy_fixture_digest": sha256_file(FIXTURES.parent / "invocation-policy.yaml"),
+            # N5's oracle input is an UNTRACKED preserved artifact (the
+            # old-fail evidence pair); the digest binds it to the receipt
+            # exactly like the policy fixture (a swapped binary moves it).
+            "prefix_reference_digest": sha256_file(
+                REPO_ROOT / ".generated-temp" / "h1-sim" / "prefix-reference"
+                / "qiven-zcode-hook.exe"),
             "dependencies_manifest_digest": sha256_file(
                 REPO_ROOT / ".qiven" / "dependencies.json"),
             "rig_self_digest": sha256_file(Path(__file__).resolve()),
@@ -2268,8 +2278,8 @@ class Rig:
             problems.append("receipt carries fewer than 90 scenarios - the "
                             "breadth floor (ADR-0055 decision 4 target: ~100)")
         for key in ("exe_digests", "profile_digest", "fixture_catalogue_digest",
-                    "policy_fixture_digest", "dependencies_manifest_digest",
-                    "rig_self_digest"):
+                    "policy_fixture_digest", "prefix_reference_digest",
+                    "dependencies_manifest_digest", "rig_self_digest"):
             if receipt.get("source_graph", {}).get(key) != graph.get(key):
                 problems.append(f"STALE receipt: {key} differs from the live tree")
         if receipt.get("head") != graph["runtime_head"]:

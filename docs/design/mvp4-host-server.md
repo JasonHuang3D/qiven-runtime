@@ -516,11 +516,14 @@ Every kit launcher states the exact image it runs.
   **2000 ms** for the full round trip (no refresh in the path; the
   bound is chosen far above the expected single-digit-ms answer and
   far below the old 9750 ms class); (5) status reports refresh state;
-  (6) authenticated shutdown exits the process; (7) `start-host.cmd`
-  brings it back and the next verdict succeeds — the no-residue proof
-  (LL-4). When the preflight did NOT start the server (it was
-  already running — the normal case under LL-1), legs (6)-(7) are
-  SKIPPED with an honest label: a verification tool does not bounce
+  (6) authenticated shutdown exits the process; (7) the normal START
+  PATH — the same image/arguments `start-host.cmd` runs; the preflight
+  invokes the launch directly, and the cmd file's own already-running
+  detection and bounded wait loop remain the owner's manual exercise
+  (GUIDE step P6) — brings it back and the next verdict succeeds — the
+  no-residue proof (LL-4). When the preflight did NOT start the server
+  (it was already running — the normal case under LL-1), legs (6)-(7)
+  are SKIPPED with an honest label: a verification tool does not bounce
   the autostart-owned server mid-flight (stop-host.cmd +
   start-host.cmd remain the owner's manual exercise of that path).
   The preflight LEAVES THE SERVER RUNNING (the long-lived

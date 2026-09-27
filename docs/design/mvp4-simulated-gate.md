@@ -79,12 +79,22 @@ Each scenario group gets a fresh scratch governed root:
   image.
 - Cognition refresh on a scratch root fails its `git fetch` (no origin) and
   falls back inside the boot-seeded freshness window (`local_fallback`), so
-  sessions register healthy without network — deterministic and honest. A
-  dedicated `--refresh expired` fault profile (`freshness_window_ms: 1`
-  pre-seeded journal meta) produces the deny-117 class.
+  sessions register healthy without network — deterministic and honest.
+  **Dated amendment (2026-09-27, batch c):** the deny-117 class is
+  produced by injecting a stale `last_refresh_ok_ms` directly into the
+  journal meta (`UPDATE runtime_meta ... 61 days past`) across a host
+  restart — the `--refresh expired` fault-profile mechanism described
+  above never landed. N4's real local bare origin produces genuine
+  refresh success for the recovery leg.
 - Journal and effect assertions run after the group's host has exited
   (authenticated shutdown), plus interim verdict assertions from each hook
   invocation's exit code / stderr / session id.
+  **Dated amendment (2026-09-27, batch c):** several assertion sites now
+  read the journal while the host is LIVE (the phase-dependent
+  registration retry, the A6/A7 unmatched rows, N2's trigger rows, N4's
+  recovery rows) — SQLite WAL read-only access against a live host is
+  the designed observation path, and the post-exit teardown rows (S8,
+  B25, A12, P20) remain post-exit.
 
 ## 4. Fixture provenance (ADR-0055 decision 2)
 
