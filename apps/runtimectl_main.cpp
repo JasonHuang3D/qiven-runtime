@@ -3,6 +3,11 @@
 // client (ARCH section 6.4; MVP-2 local surface + MVP-3 IPC surface)
 //
 //   qiven-runtimectl cognition show [--root <checkout>]
+//   qiven-runtimectl index rebuild --core <cognition-core.yaml>
+//                                 --policy <cognition-activation-policy.yaml>
+//                                 --request <checkout bindings json>
+//                                 --root <workspace root> --generation <id>
+//   qiven-runtimectl index status  [--root <workspace root>]
 //   qiven-runtimectl profile show  [--profile <file>]
 //   qiven-runtimectl status show    [--root <checkout>]   (authenticated IPC)
 //   qiven-runtimectl doctor show    [--root <checkout>]   (authenticated IPC)
@@ -13,11 +18,16 @@
 // ============================================================================
 
 #include <qiven/crt_failure.hpp>
+#include <qiven/hashing_sha256.hpp>
+#include <qiven/runtime/cognition/activation_index.hpp>
+#include <qiven/runtime/cognition/activation_policy.hpp>
 #include <qiven/runtime/cognition/bundle.hpp>
+#include <qiven/runtime/cognition/source_lock.hpp>
 #include <qiven/runtime/host/deployment_profile.hpp>
 #include <qiven/runtime/ipc/framing.hpp>
 #include <qiven/runtime/ipc/named_pipe_server.hpp>
 #include <qiven/runtime/ipc/protocol.hpp>
+#include <qiven/runtime/processx/process_runner.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -39,6 +49,9 @@ constexpr int exit_usage = 2;
 int usage()
 {
     std::cerr << "usage: qiven-runtimectl cognition show [--root <qiven-context checkout>]\n"
+              << "       qiven-runtimectl index rebuild --core <yaml> --policy <yaml>"
+                 " --request <json> --root <dir> --generation <id>\n"
+              << "       qiven-runtimectl index status [--root <dir>]\n"
               << "       qiven-runtimectl profile show [--profile <profile file>]\n"
               << "       qiven-runtimectl status show [--root <qiven-context checkout>]\n"
               << "       qiven-runtimectl doctor show [--root <qiven-context checkout>]\n"
@@ -360,6 +373,259 @@ int host_refresh(const std::vector<std::string>& args)
 }
 } // namespace
 
+// ---- CA-1: activation index verbs -----------------------------------------
+// The lock request binds each corpus repository (cognition-core.yaml) to
+// a LOCAL checkout + exact ref: [{"repository": "...", "checkout": "...",
+// "ref": "..."}]. Minimal strict JSON extraction — exact key order is
+// not required, unknown keys are ignored (the SOURCE LOCK validates the
+// real constraints; this only locates the checkouts).
+namespace
+{
+struct CheckoutBinding
+{
+    std::string repository;
+    std::string checkout;
+    std::string ref;
+};
+
+std::vector<CheckoutBinding> parse_bindings(const std::string& text)
+{
+    std::vector<CheckoutBinding> bindings;
+    usize position = 0;
+    while (true)
+    {
+        const usize object_begin = text.find('{', position);
+        if (object_begin == std::string::npos)
+        {
+            break;
+        }
+        const usize object_end = text.find('}', object_begin);
+        if (object_end == std::string::npos)
+        {
+            break;
+        }
+        const std::string object = text.substr(object_begin, object_end - object_begin);
+        auto field               = [&](const char* key) {
+            const std::string needle = std::string("\"") + key + "\":\"";
+            const usize at           = object.find(needle);
+            if (at == std::string::npos)
+            {
+                return std::string();
+            }
+            const usize start = at + needle.size();
+            const usize end   = object.find('"', start);
+            return end == std::string::npos ? std::string() : object.substr(start, end - start);
+        };
+        CheckoutBinding binding;
+        binding.repository = field("repository");
+        binding.checkout   = field("checkout");
+        binding.ref        = field("ref");
+        if (!binding.repository.empty() && !binding.checkout.empty() && !binding.ref.empty())
+        {
+            bindings.push_back(std::move(binding));
+        }
+        position = object_end + 1;
+    }
+    return bindings;
+}
+
+std::optional<std::string> read_file_text(const std::filesystem::path& file)
+{
+    std::ifstream in(file, std::ios::binary);
+    if (!in)
+    {
+        return std::nullopt;
+    }
+    in.seekg(0, std::ios::end);
+    const auto size = in.tellg();
+    if (size < 0)
+    {
+        return std::nullopt;
+    }
+    std::string text;
+    text.resize(static_cast<std::size_t>(size));
+    in.seekg(0, std::ios::beg);
+    if (!text.empty())
+    {
+        in.read(text.data(), static_cast<std::streamsize>(text.size()));
+    }
+    if (!in)
+    {
+        return std::nullopt;
+    }
+    return text;
+}
+
+int index_rebuild(const std::vector<std::string>& args)
+{
+    std::filesystem::path core_path;
+    std::filesystem::path policy_path;
+    std::filesystem::path request_path;
+    std::filesystem::path root;
+    std::string generation_id;
+    if (const auto given = flag_value(args, "--core"); !given.empty())
+    {
+        core_path = given;
+    }
+    if (const auto given = flag_value(args, "--policy"); !given.empty())
+    {
+        policy_path = given;
+    }
+    if (const auto given = flag_value(args, "--request"); !given.empty())
+    {
+        request_path = given;
+    }
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        root = given;
+    }
+    if (const auto given = flag_value(args, "--generation"); !given.empty())
+    {
+        generation_id = given.string();
+    }
+    if (core_path.empty() || policy_path.empty() || request_path.empty() || root.empty() ||
+        generation_id.empty())
+    {
+        std::cout << "index rebuild: --core, --policy, --request, --root and --generation"
+                     " are required\n";
+        return exit_usage;
+    }
+    const auto core_text    = read_file_text(core_path);
+    const auto policy_text  = read_file_text(policy_path);
+    const auto request_text = read_file_text(request_path);
+    if (!core_text || !policy_text || !request_text)
+    {
+        std::cout << "index rebuild: unreadable core/policy/request file\n";
+        return exit_fail;
+    }
+    auto core   = qiven::runtime::cognition::parse_cognition_core(*core_text);
+    auto policy = qiven::runtime::cognition::parse_activation_policy(*policy_text);
+    if (!core.is_ok() || !policy.is_ok())
+    {
+        std::cout << "index rebuild: policy instance rejected ("
+                  << (!core.is_ok() ? core.reason().detail : policy.reason().detail) << ")\n";
+        return exit_fail;
+    }
+
+    // The pinned canonical bundle + execution generation come from the
+    // ACTIVE verified bundle at the runtime root.
+    const qiven::runtime::cognition::BundleStore store(root);
+    auto bundle = store.load_active();
+    if (!bundle.is_ok())
+    {
+        std::cout << "index rebuild: no verified ACTIVE bundle (" << bundle.reason().detail
+                  << ")\n";
+        return exit_fail;
+    }
+
+    const auto bindings = parse_bindings(*request_text);
+    qiven::runtime::cognition::SourceLockRequest lock_request;
+    for (const auto& corpus : core.value().corpus)
+    {
+        const CheckoutBinding* bound = nullptr;
+        for (const CheckoutBinding& binding : bindings)
+        {
+            if (binding.repository == corpus.repository)
+            {
+                bound = &binding;
+                break;
+            }
+        }
+        if (bound == nullptr)
+        {
+            std::cout << "index rebuild: corpus repository " << corpus.repository
+                      << " has no checkout binding in the request\n";
+            return exit_fail;
+        }
+        qiven::runtime::cognition::LockRepository locked;
+        locked.repository   = corpus.repository;
+        locked.path_filters = corpus.path_filters;
+        locked.checkout     = bound->checkout;
+        locked.ref          = bound->ref;
+        lock_request.repositories.push_back(std::move(locked));
+    }
+    lock_request.git_executable = "git";
+    const qiven::runtime::processx::ProcessRunner runner;
+    lock_request.runner = &runner;
+
+    const qiven::runtime::cognition::SourceLockBuilder lock_builder;
+    auto lock = lock_builder.build(lock_request);
+    if (!lock.is_ok())
+    {
+        std::cout << "index rebuild: source lock failed ("
+                  << qiven::runtime::cognition::lock_error_text(lock.reason()) << ")\n";
+        return exit_fail;
+    }
+
+    // canonical bundle digest = sha256 over the verified bundle's
+    // manifest.json bytes (the publisher's content-address identity)
+    const auto manifest_text = read_file_text(bundle.value().dir / "manifest.json");
+    if (!manifest_text)
+    {
+        std::cout << "index rebuild: ACTIVE bundle manifest unreadable\n";
+        return exit_fail;
+    }
+    qiven::SHA256Hasher manifest_hasher;
+    manifest_hasher.update(reinterpret_cast<const std::byte*>(manifest_text->data()),
+                           manifest_text->size());
+    const qiven::SHA256Digest manifest_digest = manifest_hasher.finish();
+    static constexpr char manifest_hex[]      = "0123456789abcdef";
+    std::string bundle_digest;
+    bundle_digest.resize(manifest_digest.size() * 2);
+    for (std::size_t i = 0; i < manifest_digest.size(); ++i)
+    {
+        const auto b             = static_cast<unsigned char>(manifest_digest[i]);
+        bundle_digest[2 * i]     = manifest_hex[b >> 4];
+        bundle_digest[2 * i + 1] = manifest_hex[b & 0x0Fu];
+    }
+
+    qiven::runtime::cognition::IndexBuildRequest build;
+    build.runtime_root            = root / ".qiven" / "runtime";
+    build.source_lock             = std::move(lock.value());
+    build.policy                  = std::move(policy.value());
+    build.canonical_bundle_digest = bundle_digest;
+    build.runtime_generation_id   = generation_id; // execution generation, its own identity axis
+    build.publisher_build         = "qiven-runtime-ca1";
+
+    const qiven::runtime::cognition::ActivationIndexBuilder index_builder;
+    auto built = index_builder.build(build);
+    if (!built.is_ok())
+    {
+        std::cout << "index rebuild: build failed ("
+                  << qiven::runtime::cognition::index_error_text(built.reason()) << ")\n";
+        return exit_fail;
+    }
+    std::cout << "index rebuild: generation " << built.value().activation_generation << " ("
+              << built.value().source_count << " sources, " << built.value().rule_count
+              << " rules)\n";
+    return exit_ok;
+}
+
+int index_status(const std::vector<std::string>& args)
+{
+    std::filesystem::path root;
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        root = given;
+    }
+    if (root.empty())
+    {
+        std::cout << "index status: --root is required\n";
+        return exit_usage;
+    }
+    const qiven::runtime::cognition::ActivationIndexBuilder builder;
+    const auto generation =
+        builder.active_generation(root / ".qiven" / "runtime");
+    if (generation.empty())
+    {
+        std::cout << "index status: NO ACTIVE GENERATION\n";
+        return exit_ok; // absence is a state, not a failure
+    }
+    std::cout << "index status: ACTIVE generation " << generation << "\n";
+    return exit_ok;
+}
+} // namespace
+
 int main(int argc, char** argv)
 {
     // Headless CRT failure behavior (the 2026-09-19 modal-abort law): a CRT
@@ -376,6 +642,14 @@ int main(int argc, char** argv)
     if (object == "cognition" && verb == "show")
     {
         return cognition_show(args);
+    }
+    if (object == "index" && verb == "rebuild")
+    {
+        return index_rebuild(args);
+    }
+    if (object == "index" && verb == "status")
+    {
+        return index_status(args);
     }
     if (object == "profile" && verb == "show")
     {
