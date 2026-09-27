@@ -241,7 +241,7 @@ bool is_schema_v1_evidence(std::string_view value) noexcept
 // --- cognition-core.yaml ---------------------------------------------------
 CoreOutcome parse_cognition_core(std::string_view bytes)
 {
-    if (bytes.size() > max_policy_bytes)
+    if (bytes.size() > max_activation_policy_bytes)
     {
         return CoreOutcome::fail(fail(ActivationPolicyError::BoundExceeded, 0, "core too large"));
     }
@@ -534,7 +534,7 @@ CoreOutcome parse_cognition_core(std::string_view bytes)
 // --- cognition-activation-policy.yaml --------------------------------------
 PolicyOutcome parse_activation_policy(std::string_view bytes)
 {
-    if (bytes.size() > max_policy_bytes)
+    if (bytes.size() > max_activation_policy_bytes)
     {
         return PolicyOutcome::fail(
             fail(ActivationPolicyError::BoundExceeded, 0, "policy too large"));
@@ -806,7 +806,7 @@ PolicyOutcome parse_activation_policy(std::string_view bytes)
         return PolicyOutcome::fail(
             fail(ActivationPolicyError::MissingField, 0, "policy is missing required fields"));
     }
-    if (policy.rules.size() > max_policy_rules)
+    if (policy.rules.size() > max_activation_policy_rules)
     {
         return PolicyOutcome::fail(fail(ActivationPolicyError::BoundExceeded, 0, "too many rules"));
     }

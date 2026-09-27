@@ -26,8 +26,8 @@
 
 namespace qiven::runtime::cognition
 {
-inline constexpr usize max_policy_bytes = 256 * 1024;
-inline constexpr usize max_policy_rules = 512;
+inline constexpr usize max_activation_policy_bytes = 256 * 1024;
+inline constexpr usize max_activation_policy_rules = 512;
 
 enum class ActivationPolicyError : u8
 {
