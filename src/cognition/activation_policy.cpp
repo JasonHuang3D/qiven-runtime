@@ -254,18 +254,29 @@ CoreOutcome parse_cognition_core(std::string_view bytes)
     usize filter_indent = 0;
     bool in_filters     = false;
 
-    auto close_repo = [&]() {
+    // Fail-closed law: an incomplete corpus entry is NEVER silently
+    // dropped (a narrowed closure would silently change the lock digest).
+    std::optional<ActivationPolicyParseError> close_error;
+    auto close_repo = [&](usize line) {
         if (corpus_repo)
         {
-            if (corpus_repo->repository.empty() || corpus_repo->path_filters.empty())
+            if (corpus_repo->repository.empty())
             {
-                corpus_repo.reset();
+                close_error = fail(ActivationPolicyError::MissingField, line,
+                                   "corpus repository entry has no repository name");
+            }
+            else if (corpus_repo->path_filters.empty())
+            {
+                close_error = fail(ActivationPolicyError::MissingField, line,
+                                   "corpus repository '" + corpus_repo->repository +
+                                       "' has no path_filters - a silent closure narrowing is "
+                                       "forbidden");
             }
             else
             {
                 core.corpus.push_back(std::move(*corpus_repo));
-                corpus_repo.reset();
             }
+            corpus_repo.reset();
         }
     };
     auto close_capability = [&]() {
@@ -283,7 +294,11 @@ CoreOutcome parse_cognition_core(std::string_view bytes)
     {
         if (line.indent == 0)
         {
-            close_repo();
+            close_repo(line.number);
+            if (close_error)
+            {
+                return CoreOutcome::fail(*close_error);
+            }
             close_capability();
             subsection.clear();
             std::string_view key;
@@ -332,7 +347,11 @@ CoreOutcome parse_cognition_core(std::string_view bytes)
                 std::string_view item;
                 if (line.indent == 4 && list_item(line.text, item))
                 {
-                    close_repo();
+                    close_repo(line.number);
+                    if (close_error)
+                    {
+                        return CoreOutcome::fail(*close_error);
+                    }
                     corpus_repo = CorpusRepository {};
                     std::string_view key;
                     std::string_view value;
@@ -516,7 +535,11 @@ CoreOutcome parse_cognition_core(std::string_view bytes)
         return CoreOutcome::fail(
             fail(ActivationPolicyError::Malformed, line.number, "unknown section " + section));
     }
-    close_repo();
+    close_repo(lines.empty() ? 0 : lines.back().number);
+    if (close_error)
+    {
+        return CoreOutcome::fail(*close_error);
+    }
     close_capability();
 
     if (core.schema_version != 1 || core.corpus.empty() || core.compact_core_max_bytes == 0 ||

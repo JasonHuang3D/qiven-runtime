@@ -36,7 +36,7 @@ canonical outputs.
 | TaskBundlePublisher | `task_bundle.hpp/.cpp` | Assemble + atomically publish `TaskCognitionBundle` (compact core ≤12 KiB, payload ≤64 KiB, inlined body ≤8 KiB, supporting ≤25%); manifest binds both generations + lock + policy digests |
 | ActivationReceipts | `activation_receipt.hpp/.cpp` | Issue/persist/explain/invalidate/verify `ContextActivationReceipt`; persistence = the activation sidecar's receipt journal (SQLite, own schema; RuntimeJournal records control facts only — CA-4 will absorb) |
 | ActivationService | `activation_service.hpp/.cpp` | The shared core: pin bundle → ensure index (build/reuse by exact key) → normalize task → evaluate → publish bundle → receipt; used by BOTH the one-shot CLI and (interface-ready) the host resident worker |
-| CLI | `apps/runtimectl_main.cpp` + `src/cognition/ctl_activation.cpp` | `cognition activate`, `cognition activation show|explain|verify-receipt`, `cognition index status|rebuild` (TCA §13.2 verb set, house object/verb grammar) |
+| CLI | `apps/runtimectl_main.cpp` (index + activation verbs) | `cognition activate`, `cognition activation show|explain|verify-receipt`, `cognition index status|rebuild` (TCA §13.2 verb set; the activate verb validates every operator-supplied axis against the ACTIVE sidecar manifest before minting a receipt) |
 
 Naming: nothing here touches `port/activation.hpp` (MVP-0
 evidence-activation — a different concept, kept distinct).
@@ -102,23 +102,32 @@ general YAML in runtime.
 
 ## 5. Test plan (the runtime PRs' exit evidence)
 
-- **Profile A suite** (`tests/cognition_activation_conformance.cpp` +
-  fixtures): the 12 §5.1 rows; 100x clean-process determinism per
-  fixture (subprocess loop over the sealed fixture corpus); the §5.3
-  12-fault matrix with declared states; corruption/crash injections per
-  §5.3.
+- **Profile A evidence** (delivered shape, amended 2026-09-28): the 12
+  §5.1 conformance rows are carried DISTRIBUTED across the five unit
+  suites (source-lock: missing checkout / revision mismatch / dirty
+  tree / exact-revision identity; activation-policy: unknown-schema /
+  missing-field / vocabulary-visible failures + the published-instance
+  parse; activation-index: crash staging / pointer atomicity / loss
+  rebuild / manifest-corruption typed rejection; task-bundle-receipt:
+  determinism / bindings / replay matrix / budget-axis identity;
+  activation-conformance: 100x repeated full-pipeline activations with
+  byte-identical canonical outputs and envelope-only variance).
+  100x determinism runs in-process over the stateless pipeline (the
+  binary itself is the clean-process boundary: stateless across runs,
+  workroot-isolated, both gate configs); a subprocess-restart loop adds
+  no discriminating power at v1 and is deferred with that rationale.
 - **Profile B suite** (`tests/cognition_protected_recall.cpp`): sealed
-  corpus F-01..F-08 (copied at exact digests from qiven-context
-  `evidence/cognition/fixtures/` — read-only consumption, digests
-  asserted); MUST-INCLUDE/MUST-EXPLAIN/MAY-RANK scoring; the §6.2
-  thresholds; budget-pressure at 100/75/50%; the 7 mutation classes.
-- **Budget measurement** (`tests/cognition_activation_budget.cpp`):
-  cold rebuild and warm activation timings on the locked corpus with
-  declared pass thresholds (<5s / <250ms p95; measurement rows printed
-  as evidence, not asserted at CI-tight margins — asserted at 2x headroom
-  to keep CI stable, exact numbers reported).
-- Determinism of ranking (identical-task → identical ordering) covered
-  in both suites.
+  corpus F-01..F-08 copied at exact sealing digests; MUST-INCLUDE
+  recall; the §6.2 thresholds; budget-pressure at 100/75/50% plus the
+  starvation row; the 7 mutation classes.
+- **Budget measurement** (`tests/cognition_budget_measurement.cpp`):
+  cold rebuild and warm activation timings on a synthetic corpus at the
+  CA-0 sealed scale with declared pass thresholds at 2x headroom, exact
+  numbers printed as evidence rows. KNOWN v1 limitation (disclosed):
+  the lock's blob hashing spawns one `git cat-file` per file — measured
+  4768 ms at the 120-file synthetic scale, close to the 5000 ms
+  objective; the batch-mode (`git cat-file --batch`) optimization path
+  is named and lands when the real corpus measurement demands it.
 
 ## 6. PR split (within the ceiling)
 

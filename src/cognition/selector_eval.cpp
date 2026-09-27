@@ -321,9 +321,14 @@ SelectionResult evaluate_selection(const ActivationPolicy& policy, const TaskDes
         }
     }
 
-    // Budget law: protected material first; overflow fails closed.
-    const u64 budget = requested_budget_bytes > 0 ? requested_budget_bytes
-                                                  : budgets.task_payload_max_bytes;
+    // Budget law: protected material first; overflow fails closed. A
+    // requested budget can only NARROW the policy cap, never widen it
+    // (design §7 decision 9: min(requested, policy cap)).
+    u64 budget = budgets.task_payload_max_bytes;
+    if (requested_budget_bytes > 0 && requested_budget_bytes < budget)
+    {
+        budget = requested_budget_bytes;
+    }
     if (protected_bytes > budget)
     {
         result.readiness = Readiness::BudgetInsufficient;

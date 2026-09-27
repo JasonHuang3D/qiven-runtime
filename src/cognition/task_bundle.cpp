@@ -187,14 +187,20 @@ BundleOutcome TaskBundlePublisher::publish(const TaskBundleRequest& request) con
     payload += "]}";
 
     const u64 payload_bytes = payload.size();
-    if (payload_bytes > (request.requested_budget_bytes > 0
-                             ? request.requested_budget_bytes
-                             : request.budgets.task_payload_max_bytes))
+    // resolved budget: a request can only NARROW the policy cap (min law)
+    const u64 resolved_budget = request.requested_budget_bytes > 0 &&
+                                        request.requested_budget_bytes <
+                                            request.budgets.task_payload_max_bytes
+                                    ? request.requested_budget_bytes
+                                    : request.budgets.task_payload_max_bytes;
+    if (payload_bytes > resolved_budget)
     {
         return BundleOutcome::fail(BundleBuildError::BudgetExceeded);
     }
 
-    // ---- identity: bundle_id derived from every canonical input ----
+    // ---- identity: bundle_id derived from every canonical input,
+    // INCLUDING the resolved budget (TCA §17.3: the cache key covers the
+    // budget — different budgets are different bundles, never aliases) ----
     std::string identity_input = request.task.digest_hex();
     identity_input += '|';
     identity_input += request.activation_generation;
@@ -204,6 +210,8 @@ BundleOutcome TaskBundlePublisher::publish(const TaskBundleRequest& request) con
     identity_input += request.external_source_lock_sha256;
     identity_input += '|';
     identity_input += request.activation_policy_sha256;
+    identity_input += '|';
+    identity_input += std::to_string(resolved_budget);
     const std::string bundle_id = sha256_hex(identity_input);
 
     // ---- atomic publish ----

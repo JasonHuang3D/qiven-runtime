@@ -73,7 +73,10 @@ ActivationOutcomeResult ActivationService::activate(const ActivationRequest& req
     facts.external_source_lock_sha256      = request.external_source_lock_sha256;
     facts.activation_policy_sha256         = request.activation_policy_sha256;
     facts.budget_bytes                     = request.requested_budget_bytes > 0
-                                                 ? request.requested_budget_bytes
+                                                 ? (request.requested_budget_bytes <
+                                        budgets.task_payload_max_bytes
+                                                        ? request.requested_budget_bytes
+                                                        : budgets.task_payload_max_bytes)
                                                  : budgets.task_payload_max_bytes;
     facts.consumer_profile                 = request.consumer_profile;
     facts.evidence_expires_ms              = 0; // v1: no external live-evidence binding (declared)

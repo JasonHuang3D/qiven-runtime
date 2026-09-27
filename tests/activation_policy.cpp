@@ -6,6 +6,9 @@
 #include <qiven/runtime/cognition/activation_policy.hpp>
 
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 namespace
@@ -186,6 +189,65 @@ rules:
         return 8;
     }
     std::printf("[ OK ] unknown vocabulary fails visibly%s", eol.c_str());
+
+    // ---- the PUBLISHED instances parse (roadmap work item: validate the
+    // canonical cognition-core.yaml and cognition-activation-policy.yaml;
+    // digest-bound copies under tests/fixtures/cognition/policy from
+    // qiven-context main where they are canonical) ----
+    {
+        const auto core_path =
+            std::filesystem::path("tests/fixtures/cognition/policy/cognition-core.yaml");
+        const auto policy_path = std::filesystem::path(
+            "tests/fixtures/cognition/policy/cognition-activation-policy.yaml");
+        if (!std::filesystem::exists(core_path) || !std::filesystem::exists(policy_path))
+        {
+            std::printf("[FAIL] published-instance fixtures missing (run from repo root)%s",
+                        eol.c_str());
+            return 14;
+        }
+        std::ifstream core_in(core_path, std::ios::binary);
+        std::string core_text((std::istreambuf_iterator<char>(core_in)),
+                              std::istreambuf_iterator<char>());
+        std::ifstream policy_in(policy_path, std::ios::binary);
+        std::string policy_text((std::istreambuf_iterator<char>(policy_in)),
+                                std::istreambuf_iterator<char>());
+
+        auto real_core = parse_cognition_core(core_text);
+        if (!real_core.is_ok())
+        {
+            std::printf("[FAIL] published cognition-core.yaml rejected at line %zu: %s%s",
+                        real_core.reason().line, real_core.reason().detail.c_str(),
+                        eol.c_str());
+            return 16;
+        }
+        if (real_core.value().corpus.size() != 4 ||
+            real_core.value().corpus[0].repository != "qiven-context" ||
+            real_core.value().corpus[0].path_filters.size() != 6 ||
+            real_core.value().compact_core_max_bytes != 12288 ||
+            real_core.value().consumer_profiles != std::vector<std::string> { "zcode-jason" })
+        {
+            std::printf("[FAIL] published core fields wrong%s", eol.c_str());
+            return 17;
+        }
+        auto real_policy = parse_activation_policy(policy_text);
+        if (!real_policy.is_ok())
+        {
+            std::printf(
+                "[FAIL] published cognition-activation-policy.yaml rejected at line %zu: %s%s",
+                real_policy.reason().line, real_policy.reason().detail.c_str(), eol.c_str());
+            return 18;
+        }
+        // the bootstrap set after the F-05/F-07 scar additions: 15 rules
+        if (real_policy.value().rules.size() != 15)
+        {
+            std::printf("[FAIL] published policy rule count %zu (expected 15)%s",
+                        real_policy.value().rules.size(), eol.c_str());
+            return 19;
+        }
+        std::printf("[ OK ] published instances parse field-exact (core corpus 4 repos;"
+                    " policy 15 rules)%s",
+                    eol.c_str());
+    }
 
     std::printf("ACTIVATION-POLICY PASS%s", eol.c_str());
     return 0;

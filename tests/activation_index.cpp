@@ -191,6 +191,35 @@ int main()
     }
     std::printf("[ OK ] invalid request typed-rejected%s", eol.c_str());
 
+    // ---- corruption of an existing generation is NEVER silently reused:
+    // a tampered manifest mismatches the re-derived bytes → typed fault
+    // (Profile A.8; rebuild happens only from a clean state) ----
+    {
+        const auto manifest_file = first.value().index_dir / "index-manifest.json";
+        std::ofstream tamper(manifest_file, std::ios::binary | std::ios::trunc);
+        tamper << "{\"schema\":\"qiven-activation-index-manifest-v1\",\"tampered\":true}";
+        tamper.close();
+        auto reused = builder.build(request);
+        if (reused.is_ok() ||
+            reused.reason() != qiven::runtime::cognition::IndexError::ManifestMismatch)
+        {
+            std::printf("[FAIL] corrupted manifest silently reused%s", eol.c_str());
+            return 12;
+        }
+        // recovery: remove the corrupt generation; rebuild is identity-equal
+        std::error_code remove_ec;
+        std::filesystem::remove_all(first.value().index_dir, remove_ec);
+        auto recovered = builder.build(request);
+        if (!recovered.is_ok() ||
+            recovered.value().activation_generation != generation)
+        {
+            std::printf("[FAIL] corruption recovery not identity-equal%s", eol.c_str());
+            return 13;
+        }
+        std::printf("[ OK ] manifest corruption typed-rejected; rebuild identity-equal%s",
+                    eol.c_str());
+    }
+
     std::printf("ACTIVATION-INDEX PASS%s", eol.c_str());
     return 0;
 }

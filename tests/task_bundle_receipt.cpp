@@ -243,6 +243,37 @@ int main()
     std::printf("[ OK ] journal round-trip, id deterministic, nonce per-issuance%s",
                 eol.c_str());
 
+    // ---- budget axis in the cache key: different resolved budgets are
+    // DIFFERENT bundles (TCA §17.3 — the cache key covers the budget;
+    // no aliasing to the first-cached artifact) ----
+    {
+        qiven::runtime::cognition::TaskBundleRequest narrower = request;
+        narrower.requested_budget_bytes                       = 60000; // < the 65536 default → resolves to 60000
+        auto small                                            = publisher.publish(narrower);
+        if (!small.is_ok())
+        {
+            std::printf("[FAIL] narrower-budget publish failed%s", eol.c_str());
+            return 21;
+        }
+        if (small.value().bundle_id == first.value().bundle_id)
+        {
+            std::printf("[FAIL] budget change aliased to the same bundle id%s", eol.c_str());
+            return 22;
+        }
+        // an above-cap request resolves to the cap → identical to default
+        qiven::runtime::cognition::TaskBundleRequest wider = request;
+        wider.requested_budget_bytes                       = 999999;
+        auto capped                                        = publisher.publish(wider);
+        if (!capped.is_ok() || capped.value().bundle_id != first.value().bundle_id)
+        {
+            std::printf("[FAIL] above-cap request not clamped to the policy cap%s",
+                        eol.c_str());
+            return 23;
+        }
+        std::printf("[ OK ] budget keys the bundle identity; above-cap clamps to the cap%s",
+                    eol.c_str());
+    }
+
     std::printf("TASK-BUNDLE-RECEIPT PASS%s", eol.c_str());
     return 0;
 }

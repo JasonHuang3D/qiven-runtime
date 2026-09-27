@@ -292,11 +292,39 @@ IndexOutcome ActivationIndexBuilder::build(const IndexBuildRequest& request) con
     const auto index_dir         = generations_root / generation;
     const auto staging_dir       = generations_root / (".tmp-" + generation);
 
+    // ONE manifest construction shared by the reuse check and the publish
+    // (byte-identical by construction — no drift between the two paths).
+    const auto manifest_json = [&]() {
+        std::string manifest = "{\"schema\":\"qiven-activation-index-manifest-v1\",";
+        manifest += "\"activation_generation\":\"" + generation + "\",";
+        manifest += "\"canonical_bundle_sha256\":\"" + request.canonical_bundle_digest + "\",";
+        manifest += "\"runtime_generation\":\"" + request.runtime_generation_id + "\",";
+        manifest +=
+            "\"external_source_lock_sha256\":\"" + request.source_lock.digest_hex() + "\",";
+        manifest += "\"activation_policy_sha256\":\"" + policy_digest(request.policy) + "\",";
+        manifest +=
+            "\"index_schema_version\":" + std::to_string(request.index_schema_version) + ",";
+        manifest += "\"publisher_build\":\"" + request.publisher_build + "\"}";
+        return manifest;
+    };
+
     // Exact-key reuse: an existing manifest for this generation is final
-    // (immutable sidecar); reuse without rebuilding.
+    // (immutable sidecar) — but existence alone proves nothing about its
+    // CONTENT. Re-derive the manifest bytes and require byte equality; a
+    // mismatching or corrupt manifest is a typed fault, never silent
+    // reuse (Profile A.8: partial/corrupt indexes never become active).
     const auto existing_manifest = index_dir / "index-manifest.json";
     if (std::filesystem::exists(existing_manifest))
     {
+        const auto current = read_text(existing_manifest);
+        if (!current)
+        {
+            return IndexOutcome::fail(IndexError::ManifestMismatch);
+        }
+        if (*current != manifest_json())
+        {
+            return IndexOutcome::fail(IndexError::ManifestMismatch);
+        }
         return IndexOutcome(IndexBuildResult { generation, index_dir,
                                                request.source_lock.entries.size(),
                                                request.policy.rules.size() });
@@ -494,16 +522,9 @@ IndexOutcome ActivationIndexBuilder::build(const IndexBuildRequest& request) con
     sqlite3_close_v2(sqlite.db); // close BEFORE the atomic switch (Windows rename)
     sqlite.db = nullptr;
 
-    // index-manifest.json — the §9.2 binding set (deterministic order).
-    std::string manifest = "{\"schema\":\"qiven-activation-index-manifest-v1\",";
-    manifest += "\"activation_generation\":\"" + generation + "\",";
-    manifest += "\"canonical_bundle_sha256\":\"" + request.canonical_bundle_digest + "\",";
-    manifest += "\"runtime_generation\":\"" + request.runtime_generation_id + "\",";
-    manifest += "\"external_source_lock_sha256\":\"" + request.source_lock.digest_hex() + "\",";
-    manifest += "\"activation_policy_sha256\":\"" + policy_digest(request.policy) + "\",";
-    manifest += "\"index_schema_version\":" + std::to_string(request.index_schema_version) + ",";
-    manifest += "\"publisher_build\":\"" + request.publisher_build + "\"}";
-    if (!write_text(staging_dir / "index-manifest.json", manifest))
+    // index-manifest.json — the §9.2 binding set (deterministic order;
+    // the shared construction guarantees reuse-equality).
+    if (!write_text(staging_dir / "index-manifest.json", manifest_json()))
     {
         return IndexOutcome::fail(IndexError::StagingFault);
     }

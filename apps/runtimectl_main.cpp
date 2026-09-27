@@ -690,6 +690,62 @@ int cognition_activate(const std::vector<std::string>& args)
                      " --runtime-generation and --source-lock are required\n";
         return exit_usage;
     }
+
+    // ---- validate the operator-supplied facts against the SIDE CAR ----
+    // (TCA section 10 step 1 / section 13.2: the one-shot path must bind
+    // the LIVE activated state, never free strings. Every axis is checked
+    // against the ACTIVE generation's index manifest; mismatch = typed
+    // rejection, no receipt is minted.)
+    const auto sidecar_root = root / ".qiven" / "runtime" / "activation-generations";
+    const qiven::runtime::cognition::ActivationIndexBuilder index_builder;
+    const std::string active = index_builder.active_generation(root / ".qiven" / "runtime");
+    if (active.empty())
+    {
+        std::cout << "activate: NO ACTIVE activation generation - run `cognition index"
+                     " rebuild` first\n";
+        return exit_fail;
+    }
+    if (active != generation)
+    {
+        std::cout << "activate: --generation " << generation
+                  << " does not match the ACTIVE generation " << active
+                  << " - stale or fabricated axis rejected\n";
+        return exit_fail;
+    }
+    const auto manifest_text = read_file_text(sidecar_root / active / "index-manifest.json");
+    if (!manifest_text)
+    {
+        std::cout << "activate: ACTIVE index manifest unreadable\n";
+        return exit_fail;
+    }
+    const auto manifest_field = [&](const char* key) {
+        const std::string needle = std::string("\"") + key + "\":\"";
+        const auto at            = manifest_text->find(needle);
+        if (at == std::string::npos)
+        {
+            return std::string();
+        }
+        const auto begin = at + needle.size();
+        const auto end   = manifest_text->find('"', begin);
+        return end == std::string::npos ? std::string()
+                                        : manifest_text->substr(begin, end - begin);
+    };
+    const std::string manifest_lock    = manifest_field("external_source_lock_sha256");
+    const std::string manifest_runtime = manifest_field("runtime_generation");
+    const std::string manifest_policy  = manifest_field("activation_policy_sha256");
+    if (manifest_lock != lock_digest)
+    {
+        std::cout << "activate: --source-lock does not match the ACTIVE index manifest ("
+                  << manifest_lock << ") - stale or fabricated axis rejected\n";
+        return exit_fail;
+    }
+    if (manifest_runtime != runtime_generation)
+    {
+        std::cout << "activate: --runtime-generation does not match the ACTIVE index manifest ("
+                  << manifest_runtime << ") - stale or fabricated axis rejected\n";
+        return exit_fail;
+    }
+
     const auto core_text     = read_file_text(core_path);
     const auto policy_text   = read_file_text(policy_path);
     const auto envelope_text = read_file_text(envelope_path);
@@ -782,6 +838,14 @@ int cognition_activate(const std::vector<std::string>& args)
     request.external_source_lock_sha256 = lock_digest;
     request.activation_policy_sha256 =
         qiven::runtime::cognition::activation_policy_digest(request.policy);
+    // the parsed policy must BE the policy the ACTIVE index bound
+    if (request.activation_policy_sha256 != manifest_policy)
+    {
+        std::cout << "activate: the parsed policy's digest does not match the ACTIVE index"
+                     " manifest ("
+                  << manifest_policy << ") - policy/axis drift rejected\n";
+        return exit_fail;
+    }
     request.consumer_profile = profile;
     request.runtime_root     = root / ".qiven" / "runtime";
     request.now_ms           = now_ms_epoch();
@@ -802,6 +866,158 @@ int cognition_activate(const std::vector<std::string>& args)
               << outcome.value().bundle.payload_bytes << " bytes)\n"
               << "  receipt " << outcome.value().receipt.receipt_id << "\n";
     return exit_ok;
+}
+
+// cognition activation show|explain|verify-receipt: the receipt surfaces
+// (roadmap CA-1: issue, persist, EXPLAIN, INVALIDATE, verify — v1 CLI
+// carries show/explain/verify-receipt; invalidation is implicit by
+// generation movement (receipts fail verify on any bound-axis change)
+// and by deleting the sidecar journal entry at re-key time).
+int activation_show(const std::vector<std::string>& args)
+{
+    std::filesystem::path root;
+    std::string receipt_id;
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        root = given;
+    }
+    if (const auto given = flag_value(args, "--id"); !given.empty())
+    {
+        receipt_id = given.string();
+    }
+    if (root.empty())
+    {
+        std::cout << "activation show: --root is required ([--id <receipt>])\n";
+        return exit_usage;
+    }
+    const qiven::runtime::cognition::ActivationIndexBuilder index_builder;
+    const std::string active =
+        index_builder.active_generation(root / ".qiven" / "runtime");
+    std::cout << "activation show: ACTIVE generation "
+              << (active.empty() ? "<none>" : active) << "\n";
+    if (!receipt_id.empty())
+    {
+        const qiven::runtime::cognition::ActivationReceiptJournal journal(
+            root / ".qiven" / "runtime" / "receipts");
+        auto loaded = journal.load(receipt_id);
+        if (!loaded.is_ok())
+        {
+            std::cout << "activation show: journal error ("
+                      << qiven::runtime::cognition::receipt_error_text(loaded.reason())
+                      << ")\n";
+            return exit_fail;
+        }
+        if (!loaded.value().has_value())
+        {
+            std::cout << "activation show: receipt " << receipt_id << " UNKNOWN\n";
+            return exit_fail;
+        }
+        const auto& receipt = *loaded.value();
+        std::cout << "  receipt " << receipt.receipt_id << "\n"
+                  << "    issued_at_ms " << receipt.issued_at_ms << "\n"
+                  << "    bundle " << receipt.facts.bundle_id << "\n"
+                  << "    runtime_generation " << receipt.facts.runtime_generation_id << "\n"
+                  << "    activation_generation " << receipt.facts.activation_generation << "\n"
+                  << "    budget " << receipt.facts.budget_bytes << "\n";
+    }
+    return exit_ok;
+}
+
+int activation_explain(const std::vector<std::string>& args)
+{
+    std::filesystem::path root;
+    std::string receipt_id;
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        root = given;
+    }
+    if (const auto given = flag_value(args, "--id"); !given.empty())
+    {
+        receipt_id = given.string();
+    }
+    if (root.empty() || receipt_id.empty())
+    {
+        std::cout << "activation explain: --root and --id are required\n";
+        return exit_usage;
+    }
+    const qiven::runtime::cognition::ActivationReceiptJournal journal(
+        root / ".qiven" / "runtime" / "receipts");
+    auto loaded = journal.load(receipt_id);
+    if (!loaded.is_ok() || !loaded.value().has_value())
+    {
+        std::cout << "activation explain: receipt " << receipt_id << " unavailable\n";
+        return exit_fail;
+    }
+    const auto& receipt = *loaded.value();
+    // the canonical facts ARE the explanation (every axis an activation
+    // bound; the receipt explains itself deterministically)
+    std::cout << "activation explain: " << receipt.receipt_id << "\n"
+              << receipt.canonical_json() << "\n";
+    return exit_ok;
+}
+
+int activation_verify(const std::vector<std::string>& args)
+{
+    std::filesystem::path root;
+    std::string receipt_id;
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        root = given;
+    }
+    if (const auto given = flag_value(args, "--id"); !given.empty())
+    {
+        receipt_id = given.string();
+    }
+    if (root.empty() || receipt_id.empty())
+    {
+        std::cout << "activation verify-receipt: --root and --id are required\n";
+        return exit_usage;
+    }
+    const qiven::runtime::cognition::ActivationReceiptJournal journal(
+        root / ".qiven" / "runtime" / "receipts");
+    auto loaded = journal.load(receipt_id);
+    if (!loaded.is_ok() || !loaded.value().has_value())
+    {
+        std::cout << "activation verify-receipt: receipt " << receipt_id << " unavailable\n";
+        return exit_fail;
+    }
+    const auto& receipt = *loaded.value();
+
+    // verify against the LIVE activated state: the ACTIVE generation and
+    // its manifest are the current facts (task/bundle axes verified at
+    // consume time by the service; this is the state-axis check).
+    qiven::runtime::cognition::ReceiptFacts current = receipt.facts;
+    const qiven::runtime::cognition::ActivationIndexBuilder index_builder;
+    const std::string active =
+        index_builder.active_generation(root / ".qiven" / "runtime");
+    if (active.empty())
+    {
+        std::cout << "activation verify-receipt: NO ACTIVE generation\n";
+        return exit_fail;
+    }
+    current.activation_generation = active;
+    const auto manifest           = read_text(root / ".qiven" / "runtime" / "activation-generations" /
+                                              active / "index-manifest.json");
+    if (manifest)
+    {
+        const std::string needle = "\"external_source_lock_sha256\":\"";
+        const auto at            = manifest->find(needle);
+        if (at != std::string::npos)
+        {
+            const auto begin = at + needle.size();
+            const auto end   = manifest->find('"', begin);
+            if (end != std::string::npos)
+            {
+                current.external_source_lock_sha256 =
+                    manifest->substr(begin, end - begin);
+            }
+        }
+    }
+    const auto verdict = qiven::runtime::cognition::verify_receipt(
+        receipt, current, now_ms_epoch());
+    std::cout << "activation verify-receipt: "
+              << qiven::runtime::cognition::receipt_verify_text(verdict) << "\n";
+    return verdict == qiven::runtime::cognition::ReceiptVerify::Valid ? exit_ok : exit_fail;
 }
 } // namespace
 
@@ -825,6 +1041,18 @@ int main(int argc, char** argv)
     if (object == "cognition" && verb == "activate")
     {
         return cognition_activate(args);
+    }
+    if (object == "activation" && verb == "show")
+    {
+        return activation_show(args);
+    }
+    if (object == "activation" && verb == "explain")
+    {
+        return activation_explain(args);
+    }
+    if (object == "activation" && verb == "verify-receipt")
+    {
+        return activation_verify(args);
     }
     if (object == "index" && verb == "rebuild")
     {
