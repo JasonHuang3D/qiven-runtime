@@ -239,8 +239,7 @@ const char* fixture_digest(const char* file)
 int main()
 {
     const std::string eol(1, char(10));
-    const auto fixtures = std::filesystem::path(QIVEN_RUNTIME_RR0_FIXTURES).parent_path() /
-                          "cognition";
+    const auto fixtures = std::filesystem::path(QIVEN_RUNTIME_COGNITION_FIXTURES);
     const Budgets budgets {};
     const ActivationPolicy policy = bootstrap_policy();
 
@@ -280,7 +279,7 @@ int main()
         }
         return false;
     };
-    usize protected_misses = 0;
+    std::size_t protected_misses = 0;
     for (const FixtureCase& fixture : cases)
     {
         const auto task      = qiven::runtime::cognition::normalize_task(envelope_of(fixture));
@@ -325,9 +324,9 @@ int main()
     for (const FixtureCase& fixture : cases)
     {
         const auto task = qiven::runtime::cognition::normalize_task(envelope_of(fixture));
-        for (const u64 share : { u64 { 100 }, u64 { 75 }, u64 { 50 } })
+        for (const qiven::u64 share : { qiven::u64 { 100 }, qiven::u64 { 75 }, qiven::u64 { 50 } })
         {
-            const u64 budget = budgets.task_payload_max_bytes * share / 100;
+            const qiven::u64 budget = budgets.task_payload_max_bytes * share / 100;
             const auto under =
                 qiven::runtime::cognition::evaluate_selection(policy, task, budgets, budget);
             if (!rule_present(under, fixture.must_include))
@@ -435,28 +434,50 @@ int main()
             return 11;
         }
     }
-    // (5) exact-id substitution: a similarly worded id does not trigger
+    // (5) exact-id substitution: the rule's SOURCE is swapped to a
+    // similarly worded record. Typed selection may still fire (phases/
+    // risk match — correctly so), but the delivered binding names the
+    // WRONG canonical source: detection = the delivered source differs
+    // from the canonical owner AND the policy digest moved.
     {
         auto mutated = policy;
         for (ActivationRule& rule : mutated.rules)
         {
             if (rule.rule_id == "SCAR-ASSUMED-FIELD-H1KIT")
             {
-                rule.selectors.boundary_kinds.clear();
-                rule.selectors.explicit_ids = { "MEM-20260923T115500Z-A0B0C0" }; // close, wrong
-                rule.selectors.phases       = { "specify", "design", "implementation" };
-                rule.selectors.risk         = { "R1", "R2", "R3" };
+                rule.source.path            = "memory/records/MEM-20260923T115500Z-A0B0C0.md"; // close, wrong
+                rule.selectors.explicit_ids = { "MEM-20260923T115500Z-A0B0C0" };
             }
         }
         TaskEnvelope envelope = envelope_of(cases[1]);
         envelope.objective    = std::string(cases[1].objective) +
                              " per MEM-20260923T115500Z-A1B2C3"; // the REAL id arrives late
-        const auto task      = qiven::runtime::cognition::normalize_task(envelope);
-        const auto selection = qiven::runtime::cognition::evaluate_selection(mutated, task,
-                                                                             budgets);
-        if (rule_present(selection, "SCAR-ASSUMED-FIELD-H1KIT"))
+        const auto task                 = qiven::runtime::cognition::normalize_task(envelope);
+        const auto selection            = qiven::runtime::cognition::evaluate_selection(mutated, task,
+                                                                                        budgets);
+        const ActivationRule* delivered = nullptr;
+        for (const auto* rule : selection.protected_included)
         {
-            std::printf("[FAIL] similar-wording id substitution triggered the rule%s",
+            if (rule->rule_id == "SCAR-ASSUMED-FIELD-H1KIT")
+            {
+                delivered = rule;
+            }
+        }
+        for (const auto* rule : selection.unresolved)
+        {
+            if (rule->rule_id == "SCAR-ASSUMED-FIELD-H1KIT")
+            {
+                delivered = rule;
+            }
+        }
+        // Discriminating assertion: if the rule rides the bundle, its
+        // delivered source must EXPOSE the substitution (the wrong path —
+        // never the canonical one silently); if absent, the canonical
+        // recall check catches the removal. Either way the digest moved.
+        if (delivered != nullptr &&
+            delivered->source.path == "memory/records/MEM-20260923T115500Z-A1B2C3.md")
+        {
+            std::printf("[FAIL] id substitution hidden: canonical source delivered%s",
                         eol.c_str());
             return 12;
         }
