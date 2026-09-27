@@ -68,14 +68,14 @@ void append_string_list(std::string& out, const char* key,
     out.push_back(']');
 }
 
-std::string lower_alpha_run(std::string_view text, usize& position)
+std::string lower_alpha_run(std::string_view text, usize& position, bool allow_dash = true)
 {
     std::string out;
     while (position < text.size() &&
            ((text[position] >= 'a' && text[position] <= 'z') ||
             (text[position] >= 'A' && text[position] <= 'Z') ||
-            (text[position] >= '0' && text[position] <= '9') || text[position] == '-' ||
-            text[position] == '_'))
+            (text[position] >= '0' && text[position] <= '9') ||
+            (allow_dash && text[position] == '-') || text[position] == '_'))
     {
         out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(text[position]))));
         ++position;
@@ -123,8 +123,10 @@ std::vector<std::string> extract_explicit_ids(std::string_view text)
     usize position = 0;
     while (position < text.size())
     {
-        const usize run_begin   = position;
-        const std::string token = lower_alpha_run(text, position);
+        const usize run_begin = position;
+        // the leading word must NOT consume '-': "ADR-0024" splits so the
+        // id prefix is recognized before its tail
+        const std::string token = lower_alpha_run(text, position, /*allow_dash=*/false);
         const bool token_like =
             token == "adr" || token == "obl" || token == "mem" || token == "tca";
         if (token_like && position < text.size() && text[position] == '-')
@@ -139,7 +141,11 @@ std::vector<std::string> extract_explicit_ids(std::string_view text)
             {
                 ++after_dash;
             }
-            std::string candidate = token;
+            std::string candidate;
+            for (const char ch : token)
+            {
+                candidate.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(ch))));
+            }
             candidate.push_back('-');
             for (usize i = position + 1; i < after_dash; ++i)
             {

@@ -75,8 +75,12 @@ int main()
     }
     if (!saw_adr || !saw_mem)
     {
-        std::printf("[FAIL] explicit id extraction wrong (%zu ids)%s",
-                    task.explicit_ids.size(), eol.c_str());
+        std::printf("[FAIL] explicit id extraction wrong (%zu ids)%s", task.explicit_ids.size(),
+                    eol.c_str());
+        for (const std::string& id : task.explicit_ids)
+        {
+            std::printf("  id: [%s]%s", id.c_str(), eol.c_str());
+        }
         return 3;
     }
     const auto again = qiven::runtime::cognition::normalize_task(envelope);
