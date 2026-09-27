@@ -195,14 +195,14 @@ rules:
     // digest-bound copies under tests/fixtures/cognition/policy from
     // qiven-context main where they are canonical) ----
     {
-        const auto core_path =
-            std::filesystem::path("tests/fixtures/cognition/policy/cognition-core.yaml");
-        const auto policy_path = std::filesystem::path(
-            "tests/fixtures/cognition/policy/cognition-activation-policy.yaml");
+        const auto fixtures_root =
+            std::filesystem::path(QIVEN_RUNTIME_COGNITION_POLICY_FIXTURES);
+        const auto core_path   = fixtures_root / "cognition-core.yaml";
+        const auto policy_path = fixtures_root / "cognition-activation-policy.yaml";
         if (!std::filesystem::exists(core_path) || !std::filesystem::exists(policy_path))
         {
-            std::printf("[FAIL] published-instance fixtures missing (run from repo root)%s",
-                        eol.c_str());
+            std::printf("[FAIL] published-instance fixtures missing under %s%s",
+                        fixtures_root.string().c_str(), eol.c_str());
             return 14;
         }
         std::ifstream core_in(core_path, std::ios::binary);
@@ -241,7 +241,7 @@ rules:
         // (4 TCA docs + 6 scars + 4 laws + 2 supporting + 1 P4 + TCA-GOV scar-lifecycle)
         if (real_policy.value().rules.size() != 19)
         {
-            std::printf("[FAIL] published policy rule count %zu (expected 15)%s",
+            std::printf("[FAIL] published policy rule count %zu (expected 19)%s",
                         real_policy.value().rules.size(), eol.c_str());
             return 19;
         }

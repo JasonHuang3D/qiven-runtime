@@ -353,6 +353,12 @@ qiven_runtime_add_journal_test(process-runner-bounded process_runner_bounded.cpp
 qiven_runtime_add_journal_test(bundle-publish-pin bundle_publish_pin.cpp)
 qiven_runtime_add_journal_test(source-lock source_lock.cpp)
 qiven_runtime_add_journal_test(activation-policy activation_policy.cpp)
+# the published-instance parse gate reads digest-bound copies of the
+# canonical context instances; ctest runs from the build tree, so the
+# fixtures root is an absolute compile-time path (same pattern as
+# protected-recall / rr0-byte-compat)
+target_compile_definitions(activation-policy PRIVATE
+    QIVEN_RUNTIME_COGNITION_POLICY_FIXTURES="${CMAKE_SOURCE_DIR}/tests/fixtures/cognition/policy")
 qiven_runtime_add_journal_test(activation-index activation_index.cpp)
 qiven_runtime_add_journal_test(selector-eval selector_eval.cpp)
 qiven_runtime_add_journal_test(task-bundle-receipt task_bundle_receipt.cpp)
