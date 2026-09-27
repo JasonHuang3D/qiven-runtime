@@ -194,8 +194,8 @@ void put_id(qiven::ByteBuilder& out, const SortableId128& id)
     hasher.update(prev.data(), prev.size());
     auto kind_wire = make_payload_builder();
     put_str(*kind_wire, kind);
-    const auto kind_bytes = kind_wire->bytes();
-    hasher.update(kind_bytes.data(), kind_bytes.size());
+    const auto kind_span = payload_span(*kind_wire);
+    hasher.update(kind_span.data(), kind_span.size());
     hasher.update(payload.data(), payload.size());
     return hasher.finish();
 }

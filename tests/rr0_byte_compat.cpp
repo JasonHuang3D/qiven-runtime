@@ -35,6 +35,7 @@
 #include <qiven/runtime/journal/runtime_journal.hpp>
 #include <qiven/runtime/observed_action.hpp>
 #include <qiven/runtime/reconciliation.hpp>
+#include <qiven/runtime/resolver.hpp>
 #include <qiven/runtime/scope.hpp>
 #include <qiven/runtime/state_store.hpp>
 
@@ -168,6 +169,110 @@ std::string decision_action_hex()
                                                                 arguments);
     const ContentDigest digest = qiven::runtime::action_digest_of(action);
     return hex_of(digest.sha256);
+}
+
+// The remaining decision preimage encodings (intents / requirements /
+// evidence) through one fixed-input bind_allow call. The digests are
+// deterministic for fixed inputs (only the decision id and token MAC
+// embed wall-clock ids and the CSPRNG nonce; neither feeds these three).
+std::string decision_set_digests_hex()
+{
+    using qiven::context::PreparationPacket;
+    using qiven::context::PreparedRequirement;
+    using qiven::context::RequirementBoundary;
+    using qiven::context::RequirementStatus;
+    using qiven::runtime::SortableIdMinter;
+    using qiven::runtime::TransactionMinter;
+    using qiven::runtime::resolver::EvidenceReceipt;
+
+    constexpr std::array<std::byte, 2> blob { std::byte { 0x42 }, std::byte { 0x99 } };
+    auto action  = qiven::runtime::observe_action(qiven::runtime::AdapterInstanceId { 0x1111222233334444ull },
+                                                  qiven::runtime::HarnessSessionId { 0x99ull },
+                                                  qiven::runtime::ActorInstanceId { 0x77ull },
+                                                  qiven::runtime::CapabilityId { 0x1234ull },
+                                                  "build",
+                                                  "state/active-work.yaml",
+                                                  blob);
+    auto intents = qiven::runtime::make_intent_set(
+        { qiven::runtime::IntentClassification { qiven::context::ActionIntent {},
+                                                 qiven::runtime::ClassificationBasis::Mechanical } });
+    if (!intents.is_ok())
+        return "SCAFFOLD-FAILED";
+
+    const qiven::runtime::CorrelationKey correlation { qiven::runtime::RuntimeGenerationId { 1 },
+                                                       qiven::runtime::AdapterInstanceId { 0x1111222233334444ull },
+                                                       qiven::runtime::HarnessSessionId { 0x99ull },
+                                                       qiven::runtime::ActorInstanceId { 0x77ull },
+                                                       qiven::runtime::HarnessActionId { 1 } };
+
+    PreparationPacket packet;
+    PreparedRequirement satisfied;
+    satisfied.requirement.subject = "search";
+    satisfied.boundary            = RequirementBoundary::BeforeExecution;
+    satisfied.status              = RequirementStatus::Satisfied;
+    packet.requirements.push_back(satisfied);
+
+    TransactionMinter tx_minter;
+    auto transaction = qiven::runtime::begin_control_transaction(
+        tx_minter.next(), std::nullopt, correlation, std::move(action), std::move(intents).value(),
+        qiven::runtime::port::PinnedCognition {}, std::move(packet));
+    if (!qiven::runtime::evaluate_before_judgment(transaction) ||
+        !qiven::runtime::evaluate_before_execution(transaction) ||
+        transaction.phase != qiven::runtime::TransactionPhase::CognitiveAllowed)
+    {
+        return "SCAFFOLD-FAILED";
+    }
+
+    qiven::runtime::profile::ProfileBuilder builder;
+    qiven::runtime::profile::GovernedActorSet actors;
+    qiven::runtime::profile::ActorBinding binding;
+    binding.adapter          = qiven::runtime::AdapterInstanceId { 1 };
+    binding.session_token    = 1;
+    binding.credential_token = 1;
+    actors.actors.push_back(binding);
+    auto profile = builder.set_name("rr0-golden-profile")
+                       .set_revision(qiven::runtime::ProfileRevision { 5 })
+                       .set_actor_set(std::move(actors))
+                       .set_conformance_evidence("rr0-golden")
+                       .build();
+    if (!profile.is_ok())
+        return "SCAFFOLD-FAILED";
+    qiven::runtime::GenerationMinter generation_minter;
+    auto generation = generation_minter.mint(std::move(profile).value(), {}, {});
+
+    EvidenceReceipt receipt {};
+    receipt.id.fnv                       = 0xFEEDBEEF01234567ull;
+    receipt.requirement.subject          = "search";
+    receipt.resolver.name                = "rr0-golden-resolver";
+    receipt.resolver.version             = 3;
+    receipt.subject                      = "evidence-subject";
+    receipt.source                       = "evidence-source";
+    receipt.source_revision.value        = "abc123def456";
+    receipt.source_path                  = "corpus/golden.jsonl";
+    receipt.resolver_build               = "rr0-golden-build";
+    receipt.content_digest               = digest_of(0x11);
+    receipt.issued_at_ms                 = 1'500'000;
+    receipt.expires_at_ms                = 2'000'000;
+    receipt.policy_digest                = digest_of(0x22);
+    receipt.generation                   = qiven::runtime::RuntimeGenerationId { 1 };
+    receipt.reusable_across_transactions = true;
+    const std::vector<EvidenceReceipt> evidence { receipt };
+
+    SortableIdMinter ids;
+    const auto decision = qiven::runtime::bind_allow(transaction, generation,
+                                                     qiven::runtime::ResourceScope {}.digest(), 9,
+                                                     evidence, fixed_key(), ids, 1'000'000, 3'600'000);
+    if (!decision.is_ok())
+        return "SCAFFOLD-FAILED";
+
+    std::string out;
+    out += hex_of(decision.value().intent_set_digest.sha256);
+    out += "\n";
+    out += hex_of(decision.value().requirement_set_digest.sha256);
+    out += "\n";
+    out += hex_of(decision.value().evidence_set_digest.sha256);
+    out += "\n";
+    return out;
 }
 
 std::string scope_digest_hex()
@@ -375,6 +480,7 @@ struct Fixture
 const Fixture fixtures[] = {
     { "frame.hex", frame_bytes_hex },
     { "decision-action.sha256", decision_action_hex },
+    { "decision-set-digests.txt", decision_set_digests_hex },
     { "scope.sha256", scope_digest_hex },
     { "state-image.hex", state_image_hex },
     { "manifest.sha256", manifest_identity_hex },
