@@ -128,7 +128,7 @@ int main()
     }
     // hand-verified canonical prefix (schema + first entry key order)
     const std::string json = first.value().canonical_json();
-    if (json.compare(0, 44, "{\"schema\":\"qiven-source-lock-v1\",\"") != 0 ||
+    if (json.rfind("{\"schema\":\"qiven-source-lock-v1\",\"entries\":[", 0) != 0 ||
         json.find("\"repository\":\"qiven-fixture\",\"commit\":") == std::string::npos ||
         json.find("docs/outside.md") != std::string::npos ||
         json.find("memory/index.yaml") != std::string::npos)

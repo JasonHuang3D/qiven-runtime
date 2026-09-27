@@ -266,7 +266,7 @@ std::string SourceLock::digest_hex() const
     const std::string json = canonical_json();
     qiven::SHA256Hasher hasher;
     hasher.update(reinterpret_cast<const std::byte*>(json.data()), json.size());
-    const qiven::SHA256Digest digest = hasher.finalize();
+    const qiven::SHA256Digest digest = hasher.finish();
     static constexpr char hex[]      = "0123456789abcdef";
     std::string out;
     out.resize(digest.size() * 2);
@@ -367,7 +367,7 @@ qiven::Result<SourceLock, LockError> SourceLockBuilder::build(const SourceLockRe
             qiven::SHA256Hasher hasher;
             hasher.update(reinterpret_cast<const std::byte*>(blob.value().data()),
                           blob.value().size());
-            const qiven::SHA256Digest digest = hasher.finalize();
+            const qiven::SHA256Digest digest = hasher.finish();
             static constexpr char hex[]      = "0123456789abcdef";
             std::string content;
             content.resize(digest.size() * 2);
