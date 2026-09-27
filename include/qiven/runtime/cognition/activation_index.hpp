@@ -58,6 +58,10 @@ struct IndexBuildResult
 // version ‖ publisher build). Exact-equality reuse only.
 [[nodiscard]] std::string activation_generation_of(const IndexBuildRequest& request);
 
+// Deterministic canonical digest over the parsed rule table (rule-sorted
+// JSON; the same serialization the index manifest and receipts bind).
+[[nodiscard]] std::string activation_policy_digest(const ActivationPolicy& policy);
+
 class ActivationIndexBuilder
 {
 public:

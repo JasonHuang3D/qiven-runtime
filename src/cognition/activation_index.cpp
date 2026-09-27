@@ -236,6 +236,12 @@ std::string_view index_error_text(IndexError error) noexcept
     return text_of(error);
 }
 
+std::string activation_policy_digest(const ActivationPolicy& policy)
+{
+    // unnamed-namespace helper, visible here in the enclosing namespace
+    return policy_digest(policy);
+}
+
 std::string activation_generation_of(const IndexBuildRequest& request)
 {
     // §9.4 exact identity — every input in fixed order, no timestamps.
