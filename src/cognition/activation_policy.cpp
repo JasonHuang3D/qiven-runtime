@@ -252,6 +252,7 @@ CoreOutcome parse_cognition_core(std::string_view bytes)
     std::optional<CorpusRepository> corpus_repo;
     std::optional<CapabilitySurface> capability;
     usize filter_indent = 0;
+    bool in_filters     = false;
 
     auto close_repo = [&]() {
         if (corpus_repo)
@@ -338,23 +339,24 @@ CoreOutcome parse_cognition_core(std::string_view bytes)
                     if (split_key(item, key, value) && key == "repository")
                     {
                         corpus_repo->repository = unquote(value);
-                        filter_indent           = 6;
+                        filter_indent           = 4;
+                        in_filters              = false;
                         continue;
                     }
                     return CoreOutcome::fail(fail(ActivationPolicyError::Malformed, line.number,
                                                   "repository list entry must start with repository:"));
                 }
-                if (corpus_repo && line.indent == filter_indent)
+                if (corpus_repo && line.text == "path_filters:")
                 {
-                    if (line.text == "path_filters:")
-                    {
-                        continue;
-                    }
-                    if (list_item(line.text, item))
-                    {
-                        corpus_repo->path_filters.push_back(unquote(item));
-                        continue;
-                    }
+                    filter_indent = line.indent; // items follow DEEPER than this key
+                    in_filters    = true;
+                    continue;
+                }
+                if (corpus_repo && in_filters && line.indent > filter_indent &&
+                    list_item(line.text, item))
+                {
+                    corpus_repo->path_filters.push_back(unquote(item));
+                    continue;
                 }
                 return CoreOutcome::fail(
                     fail(ActivationPolicyError::Malformed, line.number, "unexpected corpus line"));
@@ -589,27 +591,32 @@ PolicyOutcome parse_activation_policy(std::string_view bytes)
         }
 
         std::string_view item;
+        // indent-2 list entry = the NEXT rule (closes the previous one even
+        // while its nested field is still active)
+        if (line.indent == 2 && list_item(line.text, item))
+        {
+            close_rule();
+            rule = ActivationRule {};
+            std::string_view key;
+            std::string_view value;
+            if (split_key(item, key, value) && key == "rule_id")
+            {
+                rule->rule_id = unquote(value);
+                continue;
+            }
+            return PolicyOutcome::fail(fail(ActivationPolicyError::Malformed, line.number,
+                                            "rule entry must start with rule_id:"));
+        }
         if (!rule)
         {
-            if (line.indent == 2 && list_item(line.text, item))
-            {
-                rule = ActivationRule {};
-                std::string_view key;
-                std::string_view value;
-                if (split_key(item, key, value) && key == "rule_id")
-                {
-                    rule->rule_id = unquote(value);
-                    continue;
-                }
-                return PolicyOutcome::fail(fail(ActivationPolicyError::Malformed, line.number,
-                                                "rule entry must start with rule_id:"));
-            }
             return PolicyOutcome::fail(
                 fail(ActivationPolicyError::Malformed, line.number, "expected rule entry"));
         }
 
         // inside a rule
-        if (line.indent == 4 && field.empty())
+        // indent-4 rule keys (and nested-section headers) always dispatch:
+        // a new key at this level ends the previous nested section
+        if (line.indent == 4)
         {
             list_key.clear();
             std::string_view key;
