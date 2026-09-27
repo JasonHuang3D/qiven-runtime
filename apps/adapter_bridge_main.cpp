@@ -16,6 +16,7 @@
 // the reason on stderr.
 // ============================================================================
 
+#include <qiven/crt_failure.hpp>
 #include <qiven/runtime/adapter/bridge.hpp>
 
 #include <cstdio>
@@ -81,6 +82,10 @@ int finish(const BridgeReport& report)
 
 int main(int argc, char** argv)
 {
+    // Headless CRT failure behavior (the 2026-09-19 modal-abort law): a CRT
+    // fault terminates with evidence and exit 3143, never modal UI.
+    qiven::install_headless_crt_failure_behavior();
+
     if (argc < 2)
     {
         std::fprintf(stderr, "usage: qiven-adapter-bridge <command> [options]\n");
