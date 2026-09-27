@@ -132,6 +132,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/bundle.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/publisher.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/source_lock.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/activation_policy.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/host/deployment_profile.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/host/generation_activation.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/host/runtime_host.hpp
@@ -182,6 +183,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/bundle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/publisher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/source_lock.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/activation_policy.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/host/deployment_profile.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/host/generation_activation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/host/runtime_host.cpp
