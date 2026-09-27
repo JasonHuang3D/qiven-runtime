@@ -103,6 +103,8 @@ add_library(
         headers/cognition_activation_policy.cpp
         headers/cognition_activation_index.cpp
         headers/cognition_selection.cpp
+        headers/cognition_task_bundle.cpp
+        headers/cognition_activation_receipt.cpp
         headers/deployment_profile_file.cpp
         headers/generation_activation.cpp
         headers/ipc_framing.cpp
@@ -351,6 +353,7 @@ qiven_runtime_add_journal_test(source-lock source_lock.cpp)
 qiven_runtime_add_journal_test(activation-policy activation_policy.cpp)
 qiven_runtime_add_journal_test(activation-index activation_index.cpp)
 qiven_runtime_add_journal_test(selector-eval selector_eval.cpp)
+qiven_runtime_add_journal_test(task-bundle-receipt task_bundle_receipt.cpp)
 qiven_runtime_add_journal_test(profile-accept profile_accept.cpp)
 qiven_runtime_add_journal_test(generation-stale generation_stale.cpp)
 
