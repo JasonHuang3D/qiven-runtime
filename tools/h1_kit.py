@@ -608,6 +608,7 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
 
     result = EXIT_FAIL
     started_here = False
+    server_process: sp.Popen | None = None
 
     def status_show() -> sp.CompletedProcess:
         return sp.run(
@@ -619,8 +620,9 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
         """The normal start path (the same image/args start-host.cmd uses):
         launches the build-dir host with the KIT profile and --log, then
         waits bounded for a status round trip."""
+        nonlocal server_process
         with log_path.open("a", encoding="utf-8", newline="\n") as log:
-            sp.Popen(
+            server_process = sp.Popen(
                 [str(host_exe), "--root", str(GOVERNED_ROOT),
                  "--profile", str(profile_file), "--log", str(log_path)],
                 stdout=log, stderr=sp.STDOUT,
@@ -629,6 +631,11 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
         while time.monotonic() < deadline:
             if status_show().returncode == 0:
                 return True
+            # An instantly-dead boot (e.g. a typed [FAIL] line in the log)
+            # leaves nothing to wait for -- surface it now instead of
+            # burning the full 20 s budget on a corpse.
+            if server_process.poll() is not None:
+                return False
             time.sleep(0.5)
         return False
 
@@ -718,6 +725,17 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
                     stopped = True
                     break
                 time.sleep(0.5)
+            if stopped and server_process is not None:
+                # PROCESS exit is the death signal, not the pipe going
+                # silent: the ack'd host still drains, checkpoints the
+                # journal and releases the root lease AFTER the pipe stops
+                # answering (2026-09-27 preflight finding: the restart leg
+                # raced this tail and its boot denied with "another
+                # RuntimeHost owns this governed root").
+                try:
+                    server_process.wait(timeout=15)
+                except sp.TimeoutExpired:
+                    stopped = False
             print(("[ OK ] " if stopped else "[FAIL] ") +
                   f"server exited after the shutdown ack (ctl exit {stop.returncode})")
             if not stopped:
