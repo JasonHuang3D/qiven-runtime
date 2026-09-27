@@ -1,5 +1,10 @@
 #include <qiven/runtime/adapter/manifest.hpp>
 
+#include <qiven/byte_builder.hpp>
+#include <qiven/contracts.hpp>
+#include <qiven/memory/allocator.hpp>
+#include <qiven/memory/system_allocator.hpp>
+
 #include <algorithm>
 #include <array>
 
@@ -7,31 +12,16 @@ namespace qiven::runtime::adapter
 {
 namespace
 {
-// Canonical little-endian preimage writers for the manifest digest. Fixed
-// widths, host-endian independent (representation law, foundation.md §10).
-void put_u32(std::vector<std::byte>& out, u32 value)
-{
-    for (int i = 0; i < 4; ++i)
-    {
-        out.push_back(static_cast<std::byte>(value >> (8 * i)));
-    }
-}
+// RR-0: the local shift-loop put mechanics are retired; accumulation
+// rides the foundation ByteBuilder (representation unchanged — the golden
+// manifest fixture pins it).
+constexpr qiven::usize preimage_capacity_limit = 16 * 1024 * 1024;
 
-void put_u64(std::vector<std::byte>& out, u64 value)
+void put_bytes(qiven::ByteBuilder& out, const std::string& text)
 {
-    for (int i = 0; i < 8; ++i)
-    {
-        out.push_back(static_cast<std::byte>(value >> (8 * i)));
-    }
-}
-
-void put_bytes(std::vector<std::byte>& out, const std::string& text)
-{
-    put_u64(out, static_cast<u64>(text.size()));
-    for (const char ch : text)
-    {
-        out.push_back(static_cast<std::byte>(ch));
-    }
+    // per-format representation decision: u64 length prefix + raw bytes
+    (void)out.append_le_u64(static_cast<qiven::u64>(text.size()));
+    (void)out.append({ reinterpret_cast<const std::byte*>(text.data()), text.size() });
 }
 } // namespace
 
@@ -46,20 +36,25 @@ ContentDigest manifest_identity(const AdapterManifest& manifest)
     // capability count + each capability's exact declared surface, in
     // manifest order. Two manifests with identical content hash identically
     // regardless of allocation history.
-    std::vector<std::byte> preimage;
-    put_bytes(preimage, manifest.adapter_name);
-    put_u32(preimage, manifest.manifest_version);
-    put_u64(preimage, static_cast<u64>(manifest.capabilities.size()));
+    qiven::memory::SystemAllocator allocator;
+    auto preimage = qiven::ByteBuilder::try_create(qiven::memory::AllocatorRef { allocator },
+                                                   preimage_capacity_limit);
+    QIVEN_ASSERT(preimage.has_value());
+    put_bytes(*preimage, manifest.adapter_name);
+    (void)preimage->append_le_u32(manifest.manifest_version);
+    (void)preimage->append_le_u64(static_cast<qiven::u64>(manifest.capabilities.size()));
     for (const CapabilityDescriptor& capability : manifest.capabilities)
     {
-        put_u64(preimage, capability.id.value);
-        put_u64(preimage, capability.adapter.fnv);
-        put_u32(preimage, static_cast<u32>(capability.operation_class));
-        put_u32(preimage,
-                (capability.can_mutate_world ? 1U : 0U) | (capability.can_publish_claims ? 2U : 0U) |
-                    (capability.requires_execution_authority ? 4U : 0U));
+        (void)preimage->append_le_u64(capability.id.value);
+        (void)preimage->append_le_u64(capability.adapter.fnv);
+        (void)preimage->append_le_u32(static_cast<qiven::u32>(capability.operation_class));
+        (void)preimage->append_le_u32(
+            (capability.can_mutate_world ? 1U : 0U) |
+            (capability.can_publish_claims ? 2U : 0U) |
+            (capability.requires_execution_authority ? 4U : 0U));
     }
+    QIVEN_ASSERT(preimage->ok()); // bounded far beyond any manifest enumeration
 
-    return ContentDigest { sha256(preimage.data(), preimage.size()) };
+    return ContentDigest { sha256(preimage->bytes().data(), preimage->bytes().size()) };
 }
 } // namespace qiven::runtime::adapter

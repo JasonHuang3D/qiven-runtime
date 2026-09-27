@@ -316,6 +316,26 @@ qiven_runtime_add_journal_test(journal-commands journal_commands.cpp)
 qiven_runtime_add_journal_test(journal-schema-conformance journal_schema_conformance.cpp)
 qiven_runtime_add_journal_test(audit-chain-verify audit_chain_verify.cpp)
 
+# RR-0 byte-compat goldens: fixtures live in the source tree; the gate runs
+# compare mode (capture mode is a one-shot batch tool at the pre-
+# consolidation head). Registered inline (not via the helper) for the
+# fixtures-path define.
+add_executable(rr0-byte-compat rr0_byte_compat.cpp)
+target_link_libraries(rr0-byte-compat PRIVATE qiven::runtime qiven::tp::sqlite3)
+qiven_enable_test_warnings(rr0-byte-compat)
+target_precompile_headers(rr0-byte-compat REUSE_FROM qiven-runtime)
+set_target_properties(
+    rr0-byte-compat
+    PROPERTIES
+        CXX_EXTENSIONS OFF
+        FOLDER "Tests"
+        VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+target_compile_definitions(rr0-byte-compat PRIVATE
+    QIVEN_RUNTIME_TEST_WORKROOT="${QIVEN_RUNTIME_TEST_WORKROOT}/$<CONFIG>"
+    QIVEN_RUNTIME_RR0_FIXTURES="${CMAKE_SOURCE_DIR}/tests/fixtures/rr0")
+add_test(NAME qiven-runtime.rr0-byte-compat COMMAND rr0-byte-compat)
+
 # --- MVP-2 cognition/profile tests (design docs/design/mvp2-cognition.md §6)
 
 # The cognition tests exercise the library surface plus, where noted,

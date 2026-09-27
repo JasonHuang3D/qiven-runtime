@@ -1,6 +1,7 @@
 #include <qiven/runtime/ipc/named_pipe_server.hpp>
 #include <qiven/runtime/ipc/serve_loop.hpp>
 
+#include <qiven/endian.hpp>
 #include <qiven/error.hpp>
 #include <qiven/runtime/ipc/framing.hpp>
 #include <qiven/runtime/jsonx/json_codec.hpp>
@@ -234,11 +235,12 @@ std::optional<std::string> read_bounded_ov(HANDLE handle, u64 timeout_ms,
     {
         return std::nullopt;
     }
-    u64 body_len = 0;
-    for (int i = 0; i < 8; ++i)
-    {
-        body_len |= static_cast<u64>(static_cast<unsigned char>(header[8 + i])) << (8 * i);
-    }
+    // body_len rides the foundation codec (RR-0: the inventoried local
+    // shift-loop decode is retired; the framing layout it reads — u64 LE
+    // at offset 8 — is unchanged)
+    const u64 body_len =
+        qiven::decode_le_u64({ reinterpret_cast<const std::byte*>(header.data()) + 8, 8 })
+            .value_or(0);
     if (body_len > max_body_bytes)
     {
         return std::nullopt;

@@ -1,91 +1,89 @@
 #include <qiven/runtime/decision.hpp>
 
+#include <qiven/byte_builder.hpp>
+#include <qiven/contracts.hpp>
 #include <qiven/hashing.hpp>
 #include <qiven/hashing_sha256.hpp>
+#include <qiven/memory/allocator.hpp>
+#include <qiven/memory/system_allocator.hpp>
 
 namespace qiven::runtime
 {
 namespace
 {
-// Canonical little-endian preimage writers (same representation law as the
-// manifest identity): fixed widths, host-endian independent.
-void put_u32(std::vector<std::byte>& out, u32 value)
+// RR-0: the local shift-loop put mechanics are retired; preimage
+// accumulation rides the foundation ByteBuilder and scalars ride the
+// foundation codecs. Every width and field order below is a
+// representation decision that stays with this format (byte-compat
+// goldens pin the action digest; the golden fixtures bind the rest).
+constexpr usize preimage_capacity_limit = 16 * 1024 * 1024;
+
+[[nodiscard]] std::optional<qiven::ByteBuilder> make_preimage_builder() noexcept
 {
-    for (int i = 0; i < 4; ++i)
-    {
-        out.push_back(static_cast<std::byte>(value >> (8 * i)));
-    }
+    static qiven::memory::SystemAllocator allocator;
+    return qiven::ByteBuilder::try_create(qiven::memory::AllocatorRef { allocator },
+                                          preimage_capacity_limit);
 }
 
-void put_u64(std::vector<std::byte>& out, u64 value)
+void put_bytes(qiven::ByteBuilder& out, const std::string& text)
 {
-    for (int i = 0; i < 8; ++i)
-    {
-        out.push_back(static_cast<std::byte>(value >> (8 * i)));
-    }
+    // per-format representation: u64 length prefix + raw bytes
+    (void)out.append_le_u64(static_cast<u64>(text.size()));
+    (void)out.append({ reinterpret_cast<const std::byte*>(text.data()), text.size() });
 }
 
-void put_bytes(std::vector<std::byte>& out, const std::string& text)
+void put_digest(qiven::ByteBuilder& out, const ContentDigest& digest)
 {
-    put_u64(out, static_cast<u64>(text.size()));
-    for (const char ch : text)
-    {
-        out.push_back(static_cast<std::byte>(ch));
-    }
+    (void)out.append({ digest.sha256.data(), digest.sha256.size() });
 }
 
-void put_digest(std::vector<std::byte>& out, const ContentDigest& digest)
+void put_action(qiven::ByteBuilder& out, const ObservedAction& action)
 {
-    out.insert(out.end(), digest.sha256.begin(), digest.sha256.end());
-}
-
-void put_action(std::vector<std::byte>& out, const ObservedAction& action)
-{
-    put_u64(out, action.adapter.fnv);
-    put_u64(out, action.session.value);
-    put_u64(out, action.actor.value);
-    put_u64(out, action.capability.value);
+    (void)out.append_le_u64(action.adapter.fnv);
+    (void)out.append_le_u64(action.session.value);
+    (void)out.append_le_u64(action.actor.value);
+    (void)out.append_le_u64(action.capability.value);
     put_bytes(out, action.operation);
     put_bytes(out, action.target);
     put_digest(out, action.argument_digest);
 }
 
-void put_intents(std::vector<std::byte>& out, const IntentSet& intents)
+void put_intents(qiven::ByteBuilder& out, const IntentSet& intents)
 {
     const std::span<const IntentClassification> members = intents.members();
-    put_u32(out, static_cast<u32>(members.size()));
+    (void)out.append_le_u32(static_cast<u32>(members.size()));
     for (const IntentClassification& member : members)
     {
-        put_u32(out, static_cast<u32>(member.basis));
-        put_u32(out, static_cast<u32>(member.intent.kind));
-        put_u32(out, static_cast<u32>(member.intent.claimClass));
+        (void)out.append_le_u32(static_cast<u32>(member.basis));
+        (void)out.append_le_u32(static_cast<u32>(member.intent.kind));
+        (void)out.append_le_u32(static_cast<u32>(member.intent.claimClass));
         put_bytes(out, member.intent.tool);
         put_bytes(out, member.intent.operation);
-        put_u64(out, static_cast<u64>(member.intent.concepts.size()));
+        (void)out.append_le_u64(static_cast<u64>(member.intent.concepts.size()));
         for (const std::string& item : member.intent.concepts)
         {
             put_bytes(out, item);
         }
-        put_u64(out, static_cast<u64>(member.intent.files.size()));
+        (void)out.append_le_u64(static_cast<u64>(member.intent.files.size()));
         for (const std::string& file : member.intent.files)
         {
             put_bytes(out, file);
         }
-        put_u32(out, member.intent.priorFailure.has_value() ? 1U : 0U);
+        (void)out.append_le_u32(member.intent.priorFailure.has_value() ? 1U : 0U);
     }
 }
 
-void put_requirements(std::vector<std::byte>& out, const qiven::context::PreparationPacket& packet)
+void put_requirements(qiven::ByteBuilder& out, const qiven::context::PreparationPacket& packet)
 {
-    put_u32(out, static_cast<u32>(packet.requirements.size()));
+    (void)out.append_le_u32(static_cast<u32>(packet.requirements.size()));
     for (const qiven::context::PreparedRequirement& prepared : packet.requirements)
     {
-        put_u32(out, static_cast<u32>(prepared.requirement.kind));
+        (void)out.append_le_u32(static_cast<u32>(prepared.requirement.kind));
         put_bytes(out, prepared.requirement.subject);
-        put_u32(out, static_cast<u32>(prepared.boundary));
-        put_u32(out, prepared.requirement.blocking ? 1U : 0U);
-        put_u32(out, static_cast<u32>(prepared.status));
-        put_u64(out, static_cast<u64>(prepared.evidence.size()));
+        (void)out.append_le_u32(static_cast<u32>(prepared.boundary));
+        (void)out.append_le_u32(prepared.requirement.blocking ? 1U : 0U);
+        (void)out.append_le_u32(static_cast<u32>(prepared.status));
+        (void)out.append_le_u64(static_cast<u64>(prepared.evidence.size()));
         for (const std::string& evidence : prepared.evidence)
         {
             put_bytes(out, evidence);
@@ -93,36 +91,37 @@ void put_requirements(std::vector<std::byte>& out, const qiven::context::Prepara
     }
 }
 
-void put_evidence(std::vector<std::byte>& out, const std::vector<resolver::EvidenceReceipt>& receipts)
+void put_evidence(qiven::ByteBuilder& out, const std::vector<resolver::EvidenceReceipt>& receipts)
 {
-    put_u32(out, static_cast<u32>(receipts.size()));
+    (void)out.append_le_u32(static_cast<u32>(receipts.size()));
     for (const resolver::EvidenceReceipt& receipt : receipts)
     {
-        put_u64(out, receipt.id.fnv);
-        put_u32(out, static_cast<u32>(receipt.requirement.kind));
+        (void)out.append_le_u64(receipt.id.fnv);
+        (void)out.append_le_u32(static_cast<u32>(receipt.requirement.kind));
         put_bytes(out, receipt.requirement.subject);
-        put_u32(out, static_cast<u32>(receipt.requirement.boundary));
-        put_u32(out, receipt.requirement.blocking ? 1U : 0U);
-        put_u64(out, static_cast<u64>(receipt.type));
+        (void)out.append_le_u32(static_cast<u32>(receipt.requirement.boundary));
+        (void)out.append_le_u32(receipt.requirement.blocking ? 1U : 0U);
+        (void)out.append_le_u64(static_cast<u64>(receipt.type));
         put_bytes(out, receipt.resolver.name);
-        put_u64(out, receipt.resolver.version);
+        (void)out.append_le_u64(receipt.resolver.version);
         put_bytes(out, receipt.subject);
         put_bytes(out, receipt.source);
         put_bytes(out, receipt.source_revision.value);
         put_bytes(out, receipt.source_path);
         put_bytes(out, receipt.resolver_build);
         put_digest(out, receipt.content_digest);
-        put_u64(out, receipt.issued_at_ms);
-        put_u64(out, receipt.expires_at_ms);
+        (void)out.append_le_u64(receipt.issued_at_ms);
+        (void)out.append_le_u64(receipt.expires_at_ms);
         put_digest(out, receipt.policy_digest);
-        put_u64(out, receipt.generation.value);
-        put_u32(out, receipt.reusable_across_transactions ? 1U : 0U);
+        (void)out.append_le_u64(receipt.generation.value);
+        (void)out.append_le_u32(receipt.reusable_across_transactions ? 1U : 0U);
     }
 }
 
-ContentDigest digest_of(const std::vector<std::byte>& preimage)
+ContentDigest digest_of(const qiven::ByteBuilder& preimage)
 {
-    return ContentDigest { sha256(preimage.data(), preimage.size()) };
+    const auto bytes = preimage.bytes();
+    return ContentDigest { sha256(bytes.data(), bytes.size()) };
 }
 
 // The canonical authorization binding (production-MVP §4 invariant 8 /
@@ -130,27 +129,27 @@ ContentDigest digest_of(const std::vector<std::byte>& preimage)
 // resource scope + operation + candidate digests + expiry + identity.
 // Every field the token authorizes participates; changing any bound fact
 // is a different authorization.
-void put_binding(std::vector<std::byte>& out, const ExecutionDecision& decision)
+void put_binding(qiven::ByteBuilder& out, const ExecutionDecision& decision)
 {
-    put_u32(out, 1); // binding preimage version
-    out.insert(out.end(), decision.id.bytes.begin(), decision.id.bytes.end());
-    put_u64(out, decision.transaction.value);
-    put_u64(out, decision.generation.value);
-    put_u64(out, decision.session.value);
-    put_u64(out, decision.actor.value);
-    put_u64(out, decision.capability.value);
+    (void)out.append_le_u32(1); // binding preimage version
+    (void)out.append({ decision.id.bytes.data(), decision.id.bytes.size() });
+    (void)out.append_le_u64(decision.transaction.value);
+    (void)out.append_le_u64(decision.generation.value);
+    (void)out.append_le_u64(decision.session.value);
+    (void)out.append_le_u64(decision.actor.value);
+    (void)out.append_le_u64(decision.capability.value);
     put_bytes(out, decision.operation);
     put_bytes(out, decision.target);
     put_digest(out, decision.resource_scope_digest);
-    put_u64(out, decision.expires_at_ms);
+    (void)out.append_le_u64(decision.expires_at_ms);
     put_digest(out, decision.action_digest);
     put_digest(out, decision.intent_set_digest);
     put_bytes(out, decision.cognition_revision.value);
     put_digest(out, decision.policy_digest);
     put_digest(out, decision.requirement_set_digest);
     put_digest(out, decision.evidence_set_digest);
-    put_u64(out, decision.profile.value);
-    put_u64(out, decision.resolver_registry_revision);
+    (void)out.append_le_u64(decision.profile.value);
+    (void)out.append_le_u64(decision.resolver_registry_revision);
 }
 } // namespace
 
@@ -164,10 +163,11 @@ TokenHash token_hash_of(const DecisionToken& token)
 
 ContentDigest action_digest_of(const ObservedAction& action)
 {
-    std::vector<std::byte> preimage;
-    preimage.reserve(128);
-    put_action(preimage, action);
-    return digest_of(preimage);
+    auto preimage = make_preimage_builder();
+    QIVEN_ASSERT(preimage.has_value());
+    put_action(*preimage, action);
+    QIVEN_ASSERT(preimage->ok());
+    return digest_of(*preimage);
 }
 
 qiven::Result<ExecutionDecision> bind_allow(const ControlTransaction& transaction,
@@ -203,19 +203,25 @@ qiven::Result<ExecutionDecision> bind_allow(const ControlTransaction& transactio
     decision.expires_at_ms         = now_ms + ttl_ms;
     decision.action_digest         = action_digest_of(transaction.action);
     {
-        std::vector<std::byte> preimage;
-        put_intents(preimage, transaction.intents);
-        decision.intent_set_digest = digest_of(preimage);
+        auto preimage = make_preimage_builder();
+        QIVEN_ASSERT(preimage.has_value());
+        put_intents(*preimage, transaction.intents);
+        QIVEN_ASSERT(preimage->ok());
+        decision.intent_set_digest = digest_of(*preimage);
     }
     {
-        std::vector<std::byte> preimage;
-        put_requirements(preimage, transaction.packet);
-        decision.requirement_set_digest = digest_of(preimage);
+        auto preimage = make_preimage_builder();
+        QIVEN_ASSERT(preimage.has_value());
+        put_requirements(*preimage, transaction.packet);
+        QIVEN_ASSERT(preimage->ok());
+        decision.requirement_set_digest = digest_of(*preimage);
     }
     {
-        std::vector<std::byte> preimage;
-        put_evidence(preimage, evidence);
-        decision.evidence_set_digest = digest_of(preimage);
+        auto preimage = make_preimage_builder();
+        QIVEN_ASSERT(preimage.has_value());
+        put_evidence(*preimage, evidence);
+        QIVEN_ASSERT(preimage->ok());
+        decision.evidence_set_digest = digest_of(*preimage);
     }
     decision.cognition_revision         = transaction.cognition.revision;
     decision.policy_digest              = transaction.cognition.policy_digest;
@@ -230,10 +236,14 @@ qiven::Result<ExecutionDecision> bind_allow(const ControlTransaction& transactio
     decision.token.nonce = {};
     auth::csrandom_fill(decision.token.nonce);
     {
-        std::vector<std::byte> preimage;
-        put_binding(preimage, decision);
-        preimage.insert(preimage.end(), decision.token.nonce.begin(), decision.token.nonce.end());
-        const SHA256Digest mac = auth::hmac_sha256(secret, preimage);
+        auto preimage = make_preimage_builder();
+        QIVEN_ASSERT(preimage.has_value());
+        put_binding(*preimage, decision);
+        (void)preimage->append({ decision.token.nonce.data(), decision.token.nonce.size() });
+        QIVEN_ASSERT(preimage->ok());
+        const auto bytes       = preimage->bytes();
+        const SHA256Digest mac = auth::hmac_sha256(
+            secret, { bytes.data(), bytes.size() });
         std::copy(mac.begin(), mac.end(), decision.token.mac.begin());
     }
     decision.token_hash = token_hash_of(decision.token);
@@ -242,10 +252,13 @@ qiven::Result<ExecutionDecision> bind_allow(const ControlTransaction& transactio
 
 bool decision_binding_valid(const ExecutionDecision& decision, const auth::SecretKey& secret)
 {
-    std::vector<std::byte> preimage;
-    put_binding(preimage, decision);
-    preimage.insert(preimage.end(), decision.token.nonce.begin(), decision.token.nonce.end());
-    const SHA256Digest expected = auth::hmac_sha256(secret, preimage);
+    auto preimage = make_preimage_builder();
+    QIVEN_ASSERT(preimage.has_value());
+    put_binding(*preimage, decision);
+    (void)preimage->append({ decision.token.nonce.data(), decision.token.nonce.size() });
+    QIVEN_ASSERT(preimage->ok());
+    const auto bytes            = preimage->bytes();
+    const SHA256Digest expected = auth::hmac_sha256(secret, { bytes.data(), bytes.size() });
     return auth::constant_time_equal(expected, decision.token.mac);
 }
 

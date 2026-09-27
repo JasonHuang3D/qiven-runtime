@@ -19,7 +19,11 @@
 
 #include <qiven/runtime/journal/runtime_journal.hpp>
 
+#include <qiven/byte_builder.hpp>
+#include <qiven/contracts.hpp>
 #include <qiven/hashing_sha256.hpp>
+#include <qiven/memory/allocator.hpp>
+#include <qiven/memory/system_allocator.hpp>
 #include <qiven/runtime/auth.hpp>
 
 #include <sqlite3.h>
@@ -113,36 +117,51 @@ template <typename T, typename SourceT>
 }
 
 // --- canonical audit-payload encoding (append-only per kind) --------------
-void put_u64(std::vector<std::byte>& out, u64 value)
+// RR-0: the local shift-loop put mechanics are retired; accumulation rides
+// the foundation ByteBuilder. The composition helpers below encode THIS
+// format's representation decisions (u32 length prefixes for bytes/str,
+// raw digest/id insertion) and are byte-pinned by the golden fixtures.
+constexpr qiven::usize payload_capacity_limit = 16 * 1024 * 1024;
+
+[[nodiscard]] std::optional<qiven::ByteBuilder> make_payload_builder() noexcept
 {
-    for (int i = 0; i < 8; ++i)
-    {
-        out.push_back(static_cast<std::byte>((value >> (8 * i)) & 0xFFu));
-    }
+    static qiven::memory::SystemAllocator allocator;
+    return qiven::ByteBuilder::try_create(qiven::memory::AllocatorRef { allocator },
+                                          payload_capacity_limit);
 }
-void put_u32(std::vector<std::byte>& out, u32 value)
+
+[[nodiscard]] std::span<const std::byte> payload_span(qiven::ByteBuilder& payload) noexcept
 {
-    for (int i = 0; i < 4; ++i)
-    {
-        out.push_back(static_cast<std::byte>((value >> (8 * i)) & 0xFFu));
-    }
+    QIVEN_ASSERT(payload.ok()); // bounded far beyond any audit payload
+    const auto bytes = payload.bytes();
+    return { bytes.data(), bytes.size() };
 }
-void put_bytes(std::vector<std::byte>& out, std::span<const std::byte> value)
+
+void put_u64(qiven::ByteBuilder& out, u64 value)
 {
-    put_u32(out, static_cast<u32>(value.size()));
-    out.insert(out.end(), value.begin(), value.end());
+    (void)out.append_le_u64(value);
 }
-void put_str(std::vector<std::byte>& out, std::string_view value)
+void put_u32(qiven::ByteBuilder& out, u32 value)
+{
+    (void)out.append_le_u32(value);
+}
+void put_bytes(qiven::ByteBuilder& out, std::span<const std::byte> value)
+{
+    // per-format representation: u32 length prefix + raw bytes
+    (void)out.append_le_u32(static_cast<u32>(value.size()));
+    (void)out.append(value);
+}
+void put_str(qiven::ByteBuilder& out, std::string_view value)
 {
     put_bytes(out, { reinterpret_cast<const std::byte*>(value.data()), value.size() });
 }
-void put_digest(std::vector<std::byte>& out, const ContentDigest& digest)
+void put_digest(qiven::ByteBuilder& out, const ContentDigest& digest)
 {
-    out.insert(out.end(), digest.sha256.begin(), digest.sha256.end());
+    (void)out.append({ digest.sha256.data(), digest.sha256.size() });
 }
-void put_id(std::vector<std::byte>& out, const SortableId128& id)
+void put_id(qiven::ByteBuilder& out, const SortableId128& id)
 {
-    out.insert(out.end(), id.bytes.begin(), id.bytes.end());
+    (void)out.append({ id.bytes.data(), id.bytes.size() });
 }
 
 [[nodiscard]] std::array<std::byte, 32> zero_hash() noexcept
@@ -173,9 +192,10 @@ void put_id(std::vector<std::byte>& out, const SortableId128& id)
 {
     SHA256Hasher hasher;
     hasher.update(prev.data(), prev.size());
-    std::vector<std::byte> kind_wire;
-    put_str(kind_wire, kind);
-    hasher.update(kind_wire.data(), kind_wire.size());
+    auto kind_wire = make_payload_builder();
+    put_str(*kind_wire, kind);
+    const auto kind_span = payload_span(*kind_wire);
+    hasher.update(kind_span.data(), kind_span.size());
     hasher.update(payload.data(), payload.size());
     return hasher.finish();
 }
@@ -743,11 +763,11 @@ qiven::Result<JournalDb> JournalDb::open(const std::filesystem::path& file,
                 return failed<void>(meta);
             }
 
-            std::vector<std::byte> payload;
-            put_str(payload, install);
-            put_u64(payload, static_cast<u64>(current_schema_version));
-            put_u64(payload, now_ms);
-            auto genesis = append_audit_row(db, kind_journal_created, payload);
+            auto payload = make_payload_builder();
+            put_str(*payload, install);
+            put_u64(*payload, static_cast<u64>(current_schema_version));
+            put_u64(*payload, now_ms);
+            auto genesis = append_audit_row(db, kind_journal_created, payload_span(*payload));
             if (!genesis.is_ok())
             {
                 return failed<void>(genesis);
@@ -916,7 +936,7 @@ qiven::Result<void> RuntimeJournal::touch_wall_clock(u64 now_ms)
 }
 
 qiven::Result<void> RuntimeJournal::append_audit(std::string_view kind,
-                                                 const std::vector<std::byte>& payload)
+                                                 std::span<const std::byte> payload)
 {
     auto appended = append_audit_row(m_db, kind, payload);
     if (!appended.is_ok())
@@ -1006,13 +1026,13 @@ qiven::Result<u64> RuntimeJournal::open_session(const SessionOpen& session, u64 
         }
         row_id = static_cast<u64>(m_db.last_insert_rowid());
 
-        std::vector<std::byte> payload;
-        put_u64(payload, row_id);
-        put_u64(payload, session.generation.value);
-        put_u64(payload, session.actor.value_or(0));
-        put_str(payload, session.harness);
-        put_u64(payload, now_ms);
-        if (auto audit = append_audit(kind_session_opened, payload); !audit.is_ok())
+        auto payload = make_payload_builder();
+        put_u64(*payload, row_id);
+        put_u64(*payload, session.generation.value);
+        put_u64(*payload, session.actor.value_or(0));
+        put_str(*payload, session.harness);
+        put_u64(*payload, now_ms);
+        if (auto audit = append_audit(kind_session_opened, payload_span(*payload)); !audit.is_ok())
         {
             return failed<void>(audit);
         }
@@ -1110,30 +1130,30 @@ qiven::Result<ControlTransactionId> RuntimeJournal::open_transaction(const Trans
             return failed<void>(inserted);
         }
 
-        std::vector<std::byte> payload;
-        put_u64(payload, created.value);
-        put_u64(payload, m_boot_epoch);
+        auto payload = make_payload_builder();
+        put_u64(*payload, created.value);
+        put_u64(*payload, m_boot_epoch);
         if (open.causal_parent.has_value())
         {
-            put_u64(payload, 1);
-            put_u64(payload, open.causal_parent->value);
+            put_u64(*payload, 1);
+            put_u64(*payload, open.causal_parent->value);
         }
         else
         {
-            put_u64(payload, 0);
+            put_u64(*payload, 0);
         }
-        put_str(payload, open.correlation);
-        put_digest(payload, open.request_digest);
+        put_str(*payload, open.correlation);
+        put_digest(*payload, open.request_digest);
         if (open.base_revision.has_value())
         {
-            put_u64(payload, 1);
-            put_str(payload, *open.base_revision);
+            put_u64(*payload, 1);
+            put_str(*payload, *open.base_revision);
         }
         else
         {
-            put_u64(payload, 0);
+            put_u64(*payload, 0);
         }
-        if (auto audit = append_audit(kind_transaction_opened, payload); !audit.is_ok())
+        if (auto audit = append_audit(kind_transaction_opened, payload_span(*payload)); !audit.is_ok())
         {
             return failed<void>(audit);
         }
@@ -1178,15 +1198,15 @@ qiven::Result<void> RuntimeJournal::accept_evidence(ControlTransactionId transac
                 err_constraint("evidence-tx-state-invalid: " + state.value()));
         }
 
-        std::vector<std::byte> payload;
-        put_u64(payload, transaction.value);
-        put_u64(payload, static_cast<u64>(evidence.size()));
+        auto payload = make_payload_builder();
+        put_u64(*payload, transaction.value);
+        put_u64(*payload, static_cast<u64>(evidence.size()));
         for (const ContentDigest& digest : evidence)
         {
-            put_digest(payload, digest);
+            put_digest(*payload, digest);
         }
-        put_u64(payload, now_ms);
-        if (auto audit = append_audit(kind_evidence_accepted, payload); !audit.is_ok())
+        put_u64(*payload, now_ms);
+        if (auto audit = append_audit(kind_evidence_accepted, payload_span(*payload)); !audit.is_ok())
         {
             return failed<void>(audit);
         }
@@ -1292,15 +1312,15 @@ qiven::Result<void> RuntimeJournal::bind_decision(const DecisionBind& decision, 
             return failed<void>(row);
         }
 
-        std::vector<std::byte> payload;
-        put_id(payload, decision.id);
-        put_digest(payload, ContentDigest { decision.token_hash.value });
-        put_u64(payload, decision.transaction.value);
-        put_u64(payload, decision.generation.value);
-        put_digest(payload, decision.binding_digest);
-        put_u64(payload, decision.expires_ms);
-        put_u64(payload, now_ms);
-        if (auto audit = append_audit(kind_decision_bound, payload); !audit.is_ok())
+        auto payload = make_payload_builder();
+        put_id(*payload, decision.id);
+        put_digest(*payload, ContentDigest { decision.token_hash.value });
+        put_u64(*payload, decision.transaction.value);
+        put_u64(*payload, decision.generation.value);
+        put_digest(*payload, decision.binding_digest);
+        put_u64(*payload, decision.expires_ms);
+        put_u64(*payload, now_ms);
+        if (auto audit = append_audit(kind_decision_bound, payload_span(*payload)); !audit.is_ok())
         {
             return failed<void>(audit);
         }
@@ -1387,10 +1407,10 @@ qiven::Result<void> RuntimeJournal::consume_decision(const DecisionId& id, u64 n
             return failed<void>(updated);
         }
 
-        std::vector<std::byte> payload;
-        put_id(payload, id);
-        put_u64(payload, now_ms);
-        if (auto audit = append_audit(kind_decision_consumed, payload); !audit.is_ok())
+        auto payload = make_payload_builder();
+        put_id(*payload, id);
+        put_u64(*payload, now_ms);
+        if (auto audit = append_audit(kind_decision_consumed, payload_span(*payload)); !audit.is_ok())
         {
             return failed<void>(audit);
         }
@@ -1499,13 +1519,13 @@ qiven::Result<LeaseState> RuntimeJournal::acquire_lease(const LeaseRequest& requ
         acquired = LeaseState { request.workspace, request.holder_install, m_boot_epoch,
                                 new_epoch, now_ms, now_ms + request.ttl_ms };
 
-        std::vector<std::byte> payload;
-        put_str(payload, request.workspace);
-        put_str(payload, request.holder_install);
-        put_u64(payload, m_boot_epoch);
-        put_u64(payload, new_epoch);
-        put_u64(payload, now_ms + request.ttl_ms);
-        if (auto audit = append_audit(kind_lease_acquired, payload); !audit.is_ok())
+        auto payload = make_payload_builder();
+        put_str(*payload, request.workspace);
+        put_str(*payload, request.holder_install);
+        put_u64(*payload, m_boot_epoch);
+        put_u64(*payload, new_epoch);
+        put_u64(*payload, now_ms + request.ttl_ms);
+        if (auto audit = append_audit(kind_lease_acquired, payload_span(*payload)); !audit.is_ok())
         {
             return failed<void>(audit);
         }
@@ -1597,12 +1617,12 @@ qiven::Result<void> RuntimeJournal::record_dispatch_prepared(const DispatchPrepa
             return failed<void>(row);
         }
 
-        std::vector<std::byte> payload;
-        put_id(payload, dispatch.id);
-        put_u64(payload, dispatch.transaction.value);
-        put_digest(payload, dispatch.plan_digest);
-        put_u64(payload, now_ms);
-        if (auto audit = append_audit(kind_dispatch_prepared, payload); !audit.is_ok())
+        auto payload = make_payload_builder();
+        put_id(*payload, dispatch.id);
+        put_u64(*payload, dispatch.transaction.value);
+        put_digest(*payload, dispatch.plan_digest);
+        put_u64(*payload, now_ms);
+        if (auto audit = append_audit(kind_dispatch_prepared, payload_span(*payload)); !audit.is_ok())
         {
             return failed<void>(audit);
         }
@@ -1748,20 +1768,20 @@ qiven::Result<void> RuntimeJournal::record_outcome(const OutcomeRecord& outcome,
             return failed<void>(row);
         }
 
-        std::vector<std::byte> payload;
-        put_id(payload, outcome.dispatch);
-        put_str(payload, outcome.status);
+        auto payload = make_payload_builder();
+        put_id(*payload, outcome.dispatch);
+        put_str(*payload, outcome.status);
         if (outcome.ref_observed.has_value())
         {
-            put_u64(payload, 1);
-            put_str(payload, *outcome.ref_observed);
+            put_u64(*payload, 1);
+            put_str(*payload, *outcome.ref_observed);
         }
         else
         {
-            put_u64(payload, 0);
+            put_u64(*payload, 0);
         }
-        put_u64(payload, now_ms);
-        if (auto audit = append_audit(kind_outcome_observed, payload); !audit.is_ok())
+        put_u64(*payload, now_ms);
+        if (auto audit = append_audit(kind_outcome_observed, payload_span(*payload)); !audit.is_ok())
         {
             return failed<void>(audit);
         }
@@ -1821,11 +1841,11 @@ qiven::Result<void> RuntimeJournal::open_barrier(const BarrierOpen& barrier, u64
             return failed<void>(inserted);
         }
 
-        std::vector<std::byte> payload;
-        put_str(payload, barrier.scope);
-        put_str(payload, barrier.reason);
-        put_u64(payload, now_ms);
-        if (auto audit = append_audit(kind_barrier_opened, payload); !audit.is_ok())
+        auto payload = make_payload_builder();
+        put_str(*payload, barrier.scope);
+        put_str(*payload, barrier.reason);
+        put_u64(*payload, now_ms);
+        if (auto audit = append_audit(kind_barrier_opened, payload_span(*payload)); !audit.is_ok())
         {
             return failed<void>(audit);
         }
@@ -1894,11 +1914,11 @@ qiven::Result<void> RuntimeJournal::close_barrier(std::string_view scope,
             return failed<void>(row);
         }
 
-        std::vector<std::byte> payload;
-        put_str(payload, scope);
-        put_str(payload, evidence);
-        put_u64(payload, now_ms);
-        if (auto audit = append_audit(kind_barrier_closed, payload); !audit.is_ok())
+        auto payload = make_payload_builder();
+        put_str(*payload, scope);
+        put_str(*payload, evidence);
+        put_u64(*payload, now_ms);
+        if (auto audit = append_audit(kind_barrier_closed, payload_span(*payload)); !audit.is_ok())
         {
             return failed<void>(audit);
         }
@@ -1971,12 +1991,12 @@ qiven::Result<void> RuntimeJournal::advance_generation(RuntimeGenerationId id,
             return failed<void>(inserted);
         }
 
-        std::vector<std::byte> payload;
-        put_u64(payload, id.value);
-        put_digest(payload, bundle_digest);
-        put_digest(payload, profile_digest);
-        put_str(payload, build_id);
-        put_u64(payload, now_ms);
+        auto payload = make_payload_builder();
+        put_u64(*payload, id.value);
+        put_digest(*payload, bundle_digest);
+        put_digest(*payload, profile_digest);
+        put_str(*payload, build_id);
+        put_u64(*payload, now_ms);
 
         // MVP-2 exit gate 4 (ARCH section 15): creating a new generation
         // invalidates every UNCONSUMED decision bound under an older
@@ -2001,9 +2021,9 @@ qiven::Result<void> RuntimeJournal::advance_generation(RuntimeGenerationId id,
         {
             return failed<void>(staled);
         }
-        put_u64(payload, static_cast<u64>(m_db.changes()));
+        put_u64(*payload, static_cast<u64>(m_db.changes()));
 
-        if (auto audit = append_audit(kind_generation_advanced, payload); !audit.is_ok())
+        if (auto audit = append_audit(kind_generation_advanced, payload_span(*payload)); !audit.is_ok())
         {
             return failed<void>(audit);
         }
@@ -2564,11 +2584,11 @@ qiven::Result<port::JournalRecoveryReport> RuntimeJournal::recover_at(u64 now_ms
                 {
                     return failed<void>(flag);
                 }
-                std::vector<std::byte> quarantine_payload;
-                put_str(quarantine_payload, "recovery-inspector-quarantine");
-                put_u64(quarantine_payload, now_ms);
+                auto quarantine_payload = make_payload_builder();
+                put_str(*quarantine_payload, "recovery-inspector-quarantine");
+                put_u64(*quarantine_payload, now_ms);
                 if (auto audit =
-                        append_audit(kind_quarantine_entered, quarantine_payload);
+                        append_audit(kind_quarantine_entered, payload_span(*quarantine_payload));
                     !audit.is_ok())
                 {
                     return failed<void>(audit);
@@ -2589,22 +2609,22 @@ qiven::Result<port::JournalRecoveryReport> RuntimeJournal::recover_at(u64 now_ms
         }
 
         // Step 8: the recovery itself is audited with its outcome.
-        std::vector<std::byte> payload;
-        put_u64(payload, m_boot_epoch);
-        put_u64(payload, stale_marked);
-        put_u64(payload, static_cast<u64>(unresolved));
-        put_u64(payload, static_cast<u64>(barriers));
+        auto payload = make_payload_builder();
+        put_u64(*payload, m_boot_epoch);
+        put_u64(*payload, stale_marked);
+        put_u64(*payload, static_cast<u64>(unresolved));
+        put_u64(*payload, static_cast<u64>(barriers));
         if (any_conflict || any_reconstructed || any_not_performed)
         {
-            put_str(payload, any_conflict        ? "indeterminate"
-                             : any_reconstructed ? "reconstructed"
-                                                 : "not_performed");
+            put_str(*payload, any_conflict        ? "indeterminate"
+                              : any_reconstructed ? "reconstructed"
+                                                  : "not_performed");
         }
         else
         {
-            put_str(payload, "clean");
+            put_str(*payload, "clean");
         }
-        if (auto audit = append_audit(kind_recovery_completed, payload); !audit.is_ok())
+        if (auto audit = append_audit(kind_recovery_completed, payload_span(*payload)); !audit.is_ok())
         {
             return failed<void>(audit);
         }
@@ -2729,11 +2749,11 @@ qiven::Result<void> RuntimeJournal::apply_resolution(const PendingDispatch& disp
         return failed<void>(row);
     }
 
-    std::vector<std::byte> payload;
-    put_id(payload, dispatch.id);
-    put_str(payload, status);
-    put_u64(payload, now_ms);
-    return append_audit(kind_outcome_observed, payload);
+    auto payload = make_payload_builder();
+    put_id(*payload, dispatch.id);
+    put_str(*payload, status);
+    put_u64(*payload, now_ms);
+    return append_audit(kind_outcome_observed, payload_span(*payload));
 }
 
 // --- IRuntimeJournalPort ----------------------------------------------------
@@ -2751,11 +2771,11 @@ qiven::Result<void> RuntimeJournal::append(const port::JournalRecord& record)
     }
 
     auto txn = m_db.txn([&]() -> qiven::Result<void> {
-        std::vector<std::byte> payload;
-        put_id(payload, record.record_id);
-        put_u64(payload, record.transaction.value);
-        put_bytes(payload, record.payload);
-        if (auto audit = append_audit(port_kind_name(record.kind), payload); !audit.is_ok())
+        auto payload = make_payload_builder();
+        put_id(*payload, record.record_id);
+        put_u64(*payload, record.transaction.value);
+        put_bytes(*payload, record.payload);
+        if (auto audit = append_audit(port_kind_name(record.kind), payload_span(*payload)); !audit.is_ok())
         {
             return failed<void>(audit);
         }

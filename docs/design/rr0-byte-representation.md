@@ -96,5 +96,21 @@ and asserted identical at the post-consolidation head.
   bounded batch, tracked by the program obligation — the corrective
   interval cannot close before the real H1 rerun regardless (owner
   hands), so no sequencing claim is weakened by this split.
+- **Batch disposition (2026-09-28, the consolidation landing).** The
+  inventory row "scope.cpp, resolver.cpp, named_pipe_server.cpp one-off
+  shift loops" resolved as follows: scope.cpp's preimage lambda is
+  consolidated (foundation ByteBuilder); named_pipe_server.cpp's u64
+  body_len decode loop is consolidated (foundation decode codec — the
+  site had moved from line 70-74 to the serve-loop read path since the
+  inventory was bound at f0ca5b7); resolver.cpp's `mix_u64` is an
+  INVENTORY CORRECTION, not a consolidation: it is FNV-1a hash mixing
+  over scalar bytes (same class as identity's hash helpers), not byte
+  representation — consolidating it onto the endian codecs would be a
+  category error, and it is retained by this recorded decision. Byte
+  compat is proven by seven committed goldens (frame, decision action
+  digest, decision set digests, scope digest, state image, manifest
+  identity, journal audit payloads) — the decision set digests were
+  additionally captured at the pre-consolidation sources and verified
+  byte-identical post-consolidation.
 - RR-0 evidence counts toward NEITHER Profile A/B nor Cognitive Utility
   (evidential independence, ADR-0050).

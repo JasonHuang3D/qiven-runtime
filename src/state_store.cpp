@@ -1,5 +1,11 @@
 #include <qiven/runtime/state_store.hpp>
 
+#include <qiven/byte_builder.hpp>
+#include <qiven/contracts.hpp>
+#include <qiven/endian.hpp>
+#include <qiven/memory/allocator.hpp>
+#include <qiven/memory/system_allocator.hpp>
+
 #include <algorithm>
 #include <unordered_set>
 
@@ -7,21 +13,10 @@ namespace qiven::runtime
 {
 namespace
 {
-void put_u32(std::vector<std::byte>& out, u32 value)
-{
-    for (int i = 0; i < 4; ++i)
-    {
-        out.push_back(static_cast<std::byte>(value >> (8 * i)));
-    }
-}
-
-void put_u64(std::vector<std::byte>& out, u64 value)
-{
-    for (int i = 0; i < 8; ++i)
-    {
-        out.push_back(static_cast<std::byte>(value >> (8 * i)));
-    }
-}
+// RR-0: the local shift-loop put/get mechanics are retired; scalars ride
+// the foundation codecs and accumulation rides the foundation ByteBuilder
+// (representation unchanged — the golden state-image fixture pins it).
+constexpr usize image_capacity_limit = 16 * 1024 * 1024;
 
 [[nodiscard]] bool get_u32(std::span<const std::byte> bytes, usize& offset, u32& value) noexcept
 {
@@ -29,11 +24,12 @@ void put_u64(std::vector<std::byte>& out, u64 value)
     {
         return false;
     }
-    value = 0;
-    for (int i = 0; i < 4; ++i)
+    const auto decoded = qiven::decode_le_u32(bytes.subspan(offset, 4));
+    if (!decoded)
     {
-        value |= static_cast<u32>(bytes[offset + static_cast<usize>(i)]) << (8 * i);
+        return false;
     }
+    value = *decoded;
     offset += 4;
     return true;
 }
@@ -44,11 +40,12 @@ void put_u64(std::vector<std::byte>& out, u64 value)
     {
         return false;
     }
-    value = 0;
-    for (int i = 0; i < 8; ++i)
+    const auto decoded = qiven::decode_le_u64(bytes.subspan(offset, 8));
+    if (!decoded)
     {
-        value |= static_cast<u64>(bytes[offset + static_cast<usize>(i)]) << (8 * i);
+        return false;
     }
+    value = *decoded;
     offset += 8;
     return true;
 }
@@ -65,22 +62,26 @@ std::vector<std::byte> serialize_test_state_image(const std::unordered_set<Token
     std::sort(hashes.begin(), hashes.end(),
               [](const TokenHash& a, const TokenHash& b) { return a.value < b.value; });
 
-    std::vector<std::byte> out;
-    put_u32(out, test_state_magic);
+    qiven::memory::SystemAllocator allocator;
+    auto out = qiven::ByteBuilder::try_create(qiven::memory::AllocatorRef { allocator },
+                                              image_capacity_limit);
+    QIVEN_ASSERT(out.has_value());
+    (void)out->append_le_u32(test_state_magic);
 
-    put_u32(out, static_cast<u32>(hashes.size()));
+    (void)out->append_le_u32(static_cast<u32>(hashes.size()));
     for (const TokenHash& hash : hashes)
     {
-        out.insert(out.end(), hash.value.begin(), hash.value.end());
+        (void)out->append({ hash.value.data(), hash.value.size() });
     }
 
     const std::vector<u64> scopes = barriers.active_scope_ids(); // sorted
-    put_u32(out, static_cast<u32>(scopes.size()));
+    (void)out->append_le_u32(static_cast<u32>(scopes.size()));
     for (const u64 scope : scopes)
     {
-        put_u64(out, scope);
+        (void)out->append_le_u64(scope);
     }
-    return out;
+    QIVEN_ASSERT(out->ok()); // bounded far beyond any test image
+    return { out->bytes().begin(), out->bytes().end() };
 }
 
 std::optional<TestOnlyStateImage> deserialize_test_state_image(std::span<const std::byte> bytes)
