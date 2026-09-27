@@ -91,7 +91,8 @@ public:
     explicit ActivationReceiptJournal(std::filesystem::path sidecar_root);
 
     // Persist one issuance (idempotent on receipt_id).
-    [[nodiscard]] qiven::Result<void, ReceiptError> persist(const ContextActivationReceipt& receipt);
+    [[nodiscard]] qiven::Result<void, ReceiptError> persist(
+        const ContextActivationReceipt& receipt) const;
 
     // Load by receipt id (nullopt = unknown).
     [[nodiscard]] qiven::Result<std::optional<ContextActivationReceipt>, ReceiptError> load(

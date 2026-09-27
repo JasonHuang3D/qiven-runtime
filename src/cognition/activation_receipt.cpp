@@ -195,7 +195,7 @@ m_root(std::move(sidecar_root))
 }
 
 qiven::Result<void, ReceiptError> ActivationReceiptJournal::persist(
-    const ContextActivationReceipt& receipt)
+    const ContextActivationReceipt& receipt) const
 {
     std::filesystem::create_directories(m_root);
     sqlite3* db     = nullptr;
@@ -239,7 +239,7 @@ qiven::Result<void, ReceiptError> ActivationReceiptJournal::persist(
     {
         return qiven::Result<void, ReceiptError>::fail(ReceiptError::Persistence);
     }
-    return qiven::Result<void, ReceiptError>();
+    return qiven::Result<void, ReceiptError>::ok();
 }
 
 qiven::Result<std::optional<ContextActivationReceipt>, ReceiptError>
