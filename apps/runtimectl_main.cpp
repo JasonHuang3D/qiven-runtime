@@ -391,15 +391,15 @@ struct CheckoutBinding
 std::vector<CheckoutBinding> parse_bindings(const std::string& text)
 {
     std::vector<CheckoutBinding> bindings;
-    usize position = 0;
+    qiven::usize position = 0;
     while (true)
     {
-        const usize object_begin = text.find('{', position);
+        const qiven::usize object_begin = text.find('{', position);
         if (object_begin == std::string::npos)
         {
             break;
         }
-        const usize object_end = text.find('}', object_begin);
+        const qiven::usize object_end = text.find('}', object_begin);
         if (object_end == std::string::npos)
         {
             break;
@@ -407,13 +407,13 @@ std::vector<CheckoutBinding> parse_bindings(const std::string& text)
         const std::string object = text.substr(object_begin, object_end - object_begin);
         auto field               = [&](const char* key) {
             const std::string needle = std::string("\"") + key + "\":\"";
-            const usize at           = object.find(needle);
+            const qiven::usize at    = object.find(needle);
             if (at == std::string::npos)
             {
                 return std::string();
             }
-            const usize start = at + needle.size();
-            const usize end   = object.find('"', start);
+            const qiven::usize start = at + needle.size();
+            const qiven::usize end   = object.find('"', start);
             return end == std::string::npos ? std::string() : object.substr(start, end - start);
         };
         CheckoutBinding binding;
