@@ -356,6 +356,7 @@ qiven_runtime_add_journal_test(activation-index activation_index.cpp)
 qiven_runtime_add_journal_test(selector-eval selector_eval.cpp)
 qiven_runtime_add_journal_test(task-bundle-receipt task_bundle_receipt.cpp)
 qiven_runtime_add_journal_test(activation-conformance cognition_activation_conformance.cpp)
+qiven_runtime_add_journal_test(protected-recall cognition_protected_recall.cpp)
 qiven_runtime_add_journal_test(profile-accept profile_accept.cpp)
 qiven_runtime_add_journal_test(generation-stale generation_stale.cpp)
 
