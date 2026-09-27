@@ -1,5 +1,7 @@
 #include <qiven/runtime/cognition/activation_service.hpp>
 
+#include <algorithm>
+
 namespace qiven::runtime::cognition
 {
 namespace
@@ -19,12 +21,24 @@ std::string_view activation_error_text(ActivationError error) noexcept
         return "selection is empty";
     case ActivationError::BudgetInsufficient:
         return "protected material exceeds the task budget";
+    case ActivationError::UnknownConsumerProfile:
+        return "consumer profile is not enumerated in cognition-core";
     }
     return "activation error";
 }
 
 ActivationOutcomeResult ActivationService::activate(const ActivationRequest& request) const
 {
+    // 0. consumer-profile admission (design decision 11): the profile is
+    // validated against the core's enumerated profiles - an unlisted
+    // profile must fail visibly, never ride into the receipt's canonical
+    // facts and digest.
+    if (std::find(request.core.consumer_profiles.begin(), request.core.consumer_profiles.end(),
+                  request.consumer_profile) == request.core.consumer_profiles.end())
+    {
+        return ActivationOutcomeResult::fail(ActivationError::UnknownConsumerProfile);
+    }
+
     // 1. fixed normalization (condition-blind; judgment fields stay empty)
     TaskDescriptor task = normalize_task(request.envelope);
 

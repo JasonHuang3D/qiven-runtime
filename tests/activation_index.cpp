@@ -6,6 +6,8 @@
 
 #include <qiven/runtime/cognition/activation_index.hpp>
 
+#include <sqlite3.h>
+
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -44,8 +46,8 @@ ActivationPolicy sample_policy()
     ActivationRule rule;
     rule.rule_id              = "LAW-SEMANTIC-OWNERSHIP";
     rule.source               = { "qiven-context", "decisions/ADR-0024.md", "body" };
-    rule.selectors.phases     = { "design" };
-    rule.selectors.risk       = { "R2" };
+    rule.selectors.phases     = { "design", "implementation", "review" };
+    rule.selectors.risk       = { "R1", "R2" };
     rule.expected_controls    = { "semantic owner law" };
     rule.independent_evidence = { "mechanical" };
     policy.rules.push_back(rule);
@@ -168,6 +170,91 @@ int main()
         return 9;
     }
     std::printf("[ OK ] sidecar shape, manifest bindings, ACTIVE pointer%s", eol.c_str());
+
+    // ---- sidecar content: every selector VALUE persists and rule_sources
+    // binds the REAL sources row (the sidecar must not misrepresent the
+    // rule table; a placeholder join is a misrepresentation) ----
+    {
+        sqlite3* db = nullptr;
+        if (sqlite3_open_v2((first.value().index_dir / "index.sqlite").string().c_str(), &db,
+                            SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK)
+        {
+            std::printf("[FAIL] cannot open sidecar index for read-back%s", eol.c_str());
+            sqlite3_close(db);
+            return 20;
+        }
+        auto count_values = [&](const char* kind) -> int {
+            sqlite3_stmt* stmt = nullptr;
+            if (sqlite3_prepare_v2(db,
+                                   "SELECT COUNT(*) FROM selectors WHERE "
+                                   "rule_id='LAW-SEMANTIC-OWNERSHIP' AND selector_kind=?",
+                                   -1, &stmt, nullptr) != SQLITE_OK)
+            {
+                return -1;
+            }
+            sqlite3_bind_text(stmt, 1, kind, -1, SQLITE_TRANSIENT);
+            const int rows = sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_int(stmt, 0) : -1;
+            sqlite3_finalize(stmt);
+            return rows;
+        };
+        if (count_values("phase") != 3 || count_values("risk") != 2)
+        {
+            std::printf("[FAIL] selector values truncated in sidecar (phase=%d risk=%d)%s",
+                        count_values("phase"), count_values("risk"), eol.c_str());
+            sqlite3_close(db);
+            return 21;
+        }
+        sqlite3_stmt* join = nullptr;
+        if (sqlite3_prepare_v2(db,
+                               "SELECT rs.source_id, s.path FROM rule_sources rs "
+                               "JOIN sources s ON s.source_id = rs.source_id "
+                               "WHERE rs.rule_id='LAW-SEMANTIC-OWNERSHIP'",
+                               -1, &join, nullptr) != SQLITE_OK ||
+            sqlite3_step(join) != SQLITE_ROW)
+        {
+            std::printf("[FAIL] rule_sources does not join a real sources row%s", eol.c_str());
+            sqlite3_finalize(join);
+            sqlite3_close(db);
+            return 22;
+        }
+        const char* joined_path = reinterpret_cast<const char*>(sqlite3_column_text(join, 1));
+        if (joined_path == nullptr ||
+            std::string(joined_path) != "decisions/ADR-0024.md" ||
+            sqlite3_column_int(join, 0) != 1)
+        {
+            std::printf("[FAIL] rule_sources joined the wrong source row%s", eol.c_str());
+            sqlite3_finalize(join);
+            sqlite3_close(db);
+            return 23;
+        }
+        sqlite3_finalize(join);
+        sqlite3_close(db);
+    }
+    std::printf("[ OK ] sidecar carries every selector value; rule_sources joins the real "
+                "source row%s",
+                eol.c_str());
+
+    // ---- a rule whose source is OUTSIDE the locked closure: typed
+    // rejection (no dangling rule_sources reference) ----
+    {
+        IndexBuildRequest dangling           = request;
+        dangling.policy.rules[0].source.path = "decisions/ADR-9999.md";
+        dangling.canonical_bundle_digest     = std::string(64, 'd');
+        auto failed                          = builder.build(dangling);
+        if (failed.is_ok() || failed.reason() !=
+                                  qiven::runtime::cognition::IndexError::InvalidRequest)
+        {
+            std::printf("[FAIL] out-of-closure rule source not typed-rejected%s", eol.c_str());
+            return 24;
+        }
+        std::error_code sweep;
+        std::filesystem::remove_all(request.runtime_root / "activation-generations" /
+                                        (".tmp-" +
+                                         qiven::runtime::cognition::activation_generation_of(
+                                             dangling)),
+                                    sweep);
+    }
+    std::printf("[ OK ] out-of-closure rule source typed-rejected%s", eol.c_str());
 
     // ---- index loss is recoverable: delete the generation, rebuild equal ----
     std::error_code ec;

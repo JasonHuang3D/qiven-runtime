@@ -121,6 +121,7 @@ ActivationPolicy bootstrap_policy()
     borrowed.selectors.risk           = { "R1", "R2", "R3" };
     borrowed.selectors.languages      = { "cpp" };
     borrowed.selectors.boundary_kinds = { "lifetime", "ownership", "representation" };
+    borrowed.selectors.explicit_ids   = { "MEM-20260924T032100Z-D4E5F6" };
 
     auto assumed                     = bootstrap_rule("SCAR-ASSUMED-FIELD-H1KIT", PriorityClass::P1Protected,
                                                       "memory/records/MEM-20260923T115500Z-A1B2C3.md");
@@ -301,7 +302,8 @@ int main()
                 return 3;
             }
         }
-        // identical-task nondeterminism: 0 (double-run equality)
+        // identical-task nondeterminism: 0 (double-run equality over the
+        // FULL protected id sequence, not just its length)
         const auto repeat =
             qiven::runtime::cognition::evaluate_selection(policy, task, budgets);
         if (repeat.protected_included.size() != selection.protected_included.size() ||
@@ -309,6 +311,16 @@ int main()
         {
             std::printf("[FAIL] nondeterminism on %s%s", fixture.fixture, eol.c_str());
             return 4;
+        }
+        for (std::size_t at = 0; at < selection.protected_included.size(); ++at)
+        {
+            if (selection.protected_included[at]->rule_id !=
+                repeat.protected_included[at]->rule_id)
+            {
+                std::printf("[FAIL] protected set content differs on re-run (%s)%s",
+                            fixture.fixture, eol.c_str());
+                return 4;
+            }
         }
     }
     if (protected_misses != 0)
@@ -319,6 +331,43 @@ int main()
     }
     std::printf("[ OK ] protected recall 100%% across the corpus; no superseded-as-current%s",
                 eol.c_str());
+
+    // ---- explicit-ID recall: an envelope carrying a protected rule's ID
+    // includes THAT rule by name through the Applicable channel (the id
+    // trigger outranks the underivable boundary dimension) ----
+    {
+        TaskEnvelope id_envelope;
+        id_envelope.objective     = "Rework the storage lifetime per "
+                                    "MEM-20260924T032100Z-D4E5F6 before touching the pipe";
+        id_envelope.repository    = "qiven-runtime";
+        id_envelope.revision      = "46dabf0";
+        id_envelope.changed_paths = { "src/ipc/pipe.cpp" };
+        id_envelope.phase         = qiven::runtime::cognition::TaskPhase::Design;
+        id_envelope.risk          = qiven::runtime::cognition::TaskRisk::R2;
+        const auto id_task        = qiven::runtime::cognition::normalize_task(id_envelope);
+        const auto id_selection =
+            qiven::runtime::cognition::evaluate_selection(policy, id_task, budgets);
+        if (!rule_present(id_selection, "SCAR-BORROWED-LIFETIME"))
+        {
+            std::printf("[FAIL] explicit-id recall: SCAR-BORROWED-LIFETIME absent%s",
+                        eol.c_str());
+            return 26;
+        }
+        bool applicable_channel = false;
+        for (const auto* rule : id_selection.protected_included)
+        {
+            if (rule->rule_id == "SCAR-BORROWED-LIFETIME")
+            {
+                applicable_channel = true;
+            }
+        }
+        if (!applicable_channel)
+        {
+            std::printf("[FAIL] explicit-id recall did not include the rule%s", eol.c_str());
+            return 27;
+        }
+        std::printf("[ OK ] explicit-id recall by name (Applicable channel)%s", eol.c_str());
+    }
 
     // ---- §6.3 budget pressure: protected survives 100/75/50%% ----
     for (const FixtureCase& fixture : cases)

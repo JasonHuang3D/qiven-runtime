@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -375,9 +376,11 @@ IndexOutcome ActivationIndexBuilder::build(const IndexBuildRequest& request) con
 
     // sources + documents + inverted index over locked bodies.
     u64 source_id = 0;
+    std::map<std::string, u64> source_by_repo_path; // "repo\npath" -> source_id
     for (const LockEntry& entry : request.source_lock.entries)
     {
         ++source_id;
+        source_by_repo_path.emplace(entry.repository + "\n" + entry.path, source_id);
         const std::string kind = entry.path.ends_with(".md")     ? "record"
                                  : entry.path.ends_with(".yaml") ? "policy"
                                                                  : "source";
@@ -479,7 +482,10 @@ IndexOutcome ActivationIndexBuilder::build(const IndexBuildRequest& request) con
                 sqlite3_bind_int(stmt, 4, static_cast<int>(priority));
                 const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
                 sqlite3_finalize(stmt);
-                return ok;
+                if (!ok)
+                {
+                    return false;
+                }
             }
             return true;
         };
@@ -500,6 +506,15 @@ IndexOutcome ActivationIndexBuilder::build(const IndexBuildRequest& request) con
             controls += control;
             controls.push_back('\n');
         }
+        // rule_sources binds the REAL sources row for the rule's declared
+        // source document; a rule whose source is outside the locked closure
+        // fails closed (a dangling reference would misrepresent the closure).
+        const auto source_row = source_by_repo_path.find(rule.source.repository + "\n" +
+                                                         rule.source.path);
+        if (source_row == source_by_repo_path.end())
+        {
+            return IndexOutcome::fail(IndexError::InvalidRequest);
+        }
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(sqlite.db,
                                "INSERT INTO rule_sources(rule_id, source_id, section_ref, "
@@ -509,7 +524,7 @@ IndexOutcome ActivationIndexBuilder::build(const IndexBuildRequest& request) con
             return IndexOutcome::fail(IndexError::BuildFailed);
         }
         sqlite3_bind_text(stmt, 1, rule.rule_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 2, 0); // resolved to the source table in PR-2's join
+        sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(source_row->second));
         sqlite3_bind_text(stmt, 3, rule.source.anchor.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 4, controls.c_str(), -1, SQLITE_TRANSIENT);
         const bool ok = sqlite3_step(stmt) == SQLITE_DONE;

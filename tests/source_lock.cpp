@@ -197,6 +197,18 @@ int main()
     }
     std::printf("[ OK ] file filter exact%s", eol.c_str());
 
+    // ---- missing checkout: typed rejection (the pinned revision cannot
+    // be resolved in a checkout that does not exist) ----
+    SourceLockRequest absent_request        = make_request(repo, runner);
+    absent_request.repositories[0].checkout = repo / "does-not-exist";
+    auto absent                             = builder.build(absent_request);
+    if (absent.is_ok() || absent.reason() != LockError::RevisionUnresolved)
+    {
+        std::printf("[FAIL] missing checkout not typed-rejected%s", eol.c_str());
+        return 13;
+    }
+    std::printf("[ OK ] missing checkout typed-rejected%s", eol.c_str());
+
     std::printf("SOURCE-LOCK PASS%s", eol.c_str());
     return 0;
 }

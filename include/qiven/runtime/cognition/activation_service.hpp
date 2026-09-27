@@ -27,10 +27,11 @@ namespace qiven::runtime::cognition
 {
 enum class ActivationError : u8
 {
-    BundlePublishFailed  = 1,
-    ReceiptPersistFailed = 2,
-    EmptySelection       = 3,
-    BudgetInsufficient   = 4,
+    BundlePublishFailed    = 1,
+    ReceiptPersistFailed   = 2,
+    EmptySelection         = 3,
+    BudgetInsufficient     = 4,
+    UnknownConsumerProfile = 5,
 };
 
 [[nodiscard]] std::string_view activation_error_text(ActivationError error) noexcept;

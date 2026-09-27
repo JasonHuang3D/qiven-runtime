@@ -784,19 +784,27 @@ int cognition_activate(const std::vector<std::string>& args)
         std::cout << "activate: envelope must carry objective and repository\n";
         return exit_fail;
     }
-    const std::string phase = field("phase");
-    envelope.phase          = phase == "specify"  ? qiven::runtime::cognition::TaskPhase::Specify
-                              : phase == "review" ? qiven::runtime::cognition::TaskPhase::Review
-                              : phase == "acceptance"
-                                  ? qiven::runtime::cognition::TaskPhase::Acceptance
-                              : phase == "design"
-                                  ? qiven::runtime::cognition::TaskPhase::Design
-                                  : qiven::runtime::cognition::TaskPhase::Implementation;
-    const std::string risk  = field("risk");
-    envelope.risk           = risk == "R0"   ? qiven::runtime::cognition::TaskRisk::R0
-                              : risk == "R1" ? qiven::runtime::cognition::TaskRisk::R1
-                              : risk == "R3" ? qiven::runtime::cognition::TaskRisk::R3
-                                             : qiven::runtime::cognition::TaskRisk::R2;
+    // Fail-visible vocabulary law on operator-supplied axes: an unknown or
+    // empty phase/risk is rejected with the admissible set, never silently
+    // coerced to a default (a coerced axis silently changes typed selection).
+    const std::string phase_text_field = field("phase");
+    const auto phase                   = qiven::runtime::cognition::parse_task_phase(phase_text_field);
+    if (!phase)
+    {
+        std::cout << "activate: envelope phase '" << phase_text_field
+                  << "' is not vocabulary (specify|design|implementation|review|acceptance)\n";
+        return exit_fail;
+    }
+    envelope.phase                    = *phase;
+    const std::string risk_text_field = field("risk");
+    const auto risk                   = qiven::runtime::cognition::parse_task_risk(risk_text_field);
+    if (!risk)
+    {
+        std::cout << "activate: envelope risk '" << risk_text_field
+                  << "' is not vocabulary (R0|R1|R2|R3)\n";
+        return exit_fail;
+    }
+    envelope.risk = *risk;
     {
         const std::string needle = "\"changed_paths\":[";
         const qiven::usize at    = envelope_text->find(needle);
@@ -998,20 +1006,33 @@ int activation_verify(const std::vector<std::string>& args)
     current.activation_generation = active;
     const auto manifest           = read_file_text(root / ".qiven" / "runtime" / "activation-generations" /
                                                    active / "index-manifest.json");
-    if (manifest)
+    if (!manifest)
+    {
+        // Fail-closed (same class as the activate path): an unreadable
+        // ACTIVE manifest must never let verification fall back to the
+        // receipt's own axes - a broken sidecar cannot verify itself.
+        std::cout << "activation verify-receipt: ACTIVE manifest unreadable (generation "
+                  << active << ")\n";
+        return exit_fail;
+    }
     {
         const std::string needle = "\"external_source_lock_sha256\":\"";
         const auto at            = manifest->find(needle);
-        if (at != std::string::npos)
+        if (at == std::string::npos)
         {
-            const auto begin = at + needle.size();
-            const auto end   = manifest->find('"', begin);
-            if (end != std::string::npos)
-            {
-                current.external_source_lock_sha256 =
-                    manifest->substr(begin, end - begin);
-            }
+            std::cout << "activation verify-receipt: ACTIVE manifest carries no source-lock "
+                         "digest\n";
+            return exit_fail;
         }
+        const auto begin = at + needle.size();
+        const auto end   = manifest->find('"', begin);
+        if (end == std::string::npos)
+        {
+            std::cout << "activation verify-receipt: ACTIVE manifest source-lock digest "
+                         "malformed\n";
+            return exit_fail;
+        }
+        current.external_source_lock_sha256 = manifest->substr(begin, end - begin);
     }
     const auto verdict = qiven::runtime::cognition::verify_receipt(
         receipt, current, now_ms_epoch());

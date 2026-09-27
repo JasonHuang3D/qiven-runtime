@@ -13,13 +13,16 @@ bool contains(const std::vector<std::string>& values, const std::string& value)
 
 bool path_under_prefix(const std::string& path, const std::string& prefix)
 {
-    if (path.size() > prefix.size() && path.compare(0, prefix.size(), prefix) == 0)
+    // Component-boundary match only: a prefix matches whole leading path
+    // components ('src/ipc' matches 'src/ipc/pipe.cpp', never 'src/ipc2/x').
+    // A trailing separator on the prefix is accepted and normalized away.
+    std::size_t bound = prefix.size();
+    if (bound > 0 && prefix.back() == '/')
     {
-        return true;
+        --bound;
     }
-    // component-wise for prefixes written without a trailing slash
-    return path.size() > prefix.size() && path.compare(0, prefix.size(), prefix) == 0 &&
-           path[prefix.size()] == '/';
+    return bound > 0 && path.size() > bound && path.compare(0, bound, prefix) == 0 &&
+           path[bound] == '/';
 }
 
 // Deterministic lexical rank: exact-token overlap with the objective and

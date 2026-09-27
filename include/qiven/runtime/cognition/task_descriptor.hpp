@@ -86,6 +86,12 @@ struct TaskDescriptor
 // The fixed normalizer. Deterministic; never invents judgment fields.
 [[nodiscard]] TaskDescriptor normalize_task(const TaskEnvelope& envelope);
 
+// Vocabulary parsing for operator-supplied envelope axes: an unknown or
+// empty value parses to nullopt and the caller must fail visibly (the
+// fail-visible law for typed inputs; never silently coerce to a default).
+[[nodiscard]] std::optional<TaskPhase> parse_task_phase(std::string_view text) noexcept;
+[[nodiscard]] std::optional<TaskRisk> parse_task_risk(std::string_view text) noexcept;
+
 [[nodiscard]] std::string_view phase_text(TaskPhase phase) noexcept;
 [[nodiscard]] std::string_view risk_text(TaskRisk risk) noexcept;
 } // namespace qiven::runtime::cognition

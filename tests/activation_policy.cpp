@@ -190,6 +190,163 @@ rules:
     }
     std::printf("[ OK ] unknown vocabulary fails visibly%s", eol.c_str());
 
+    // ---- flow syntax on a selector list header: typed rejection ----
+    // (a discarded inline value would silently turn the dimension into an
+    // undeclared wildcard - the strict-block-style law)
+    const std::string flow_list = std::string(R"(schema_version: 1
+rules:
+  - rule_id: R-FLOW
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: memory/records/x.md
+      anchor: body
+    selectors:
+      phases: [design]
+    expected_controls:
+      - control
+    independent_evidence:
+      - mechanical
+)");
+    auto flow                   = parse_activation_policy(flow_list);
+    if (flow.is_ok() || flow.reason().kind != ActivationPolicyError::Malformed)
+    {
+        std::printf("[FAIL] flow-style selector list not typed-rejected%s", eol.c_str());
+        return 20;
+    }
+    std::printf("[ OK ] flow-style selector list typed-rejected%s", eol.c_str());
+
+    // ---- rule with no source anchor: typed rejection ----
+    const std::string no_anchor = std::string(R"(schema_version: 1
+rules:
+  - rule_id: R-NOANCHOR
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: memory/records/x.md
+    expected_controls:
+      - control
+    independent_evidence:
+      - mechanical
+)");
+    auto anchorless             = parse_activation_policy(no_anchor);
+    if (anchorless.is_ok() || anchorless.reason().kind != ActivationPolicyError::MissingField)
+    {
+        std::printf("[FAIL] rule without anchor accepted%s", eol.c_str());
+        return 21;
+    }
+    std::printf("[ OK ] rule without anchor typed-rejected%s", eol.c_str());
+
+    // ---- rule with no expected_controls: typed rejection ----
+    const std::string no_controls = std::string(R"(schema_version: 1
+rules:
+  - rule_id: R-NOCONTROLS
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: memory/records/x.md
+      anchor: body
+    independent_evidence:
+      - mechanical
+)");
+    auto controlless              = parse_activation_policy(no_controls);
+    if (controlless.is_ok() || controlless.reason().kind != ActivationPolicyError::MissingField)
+    {
+        std::printf("[FAIL] rule without expected_controls accepted%s", eol.c_str());
+        return 22;
+    }
+    std::printf("[ OK ] rule without expected_controls typed-rejected%s", eol.c_str());
+
+    // ---- lowercase rule_id charset: typed rejection ----
+    const std::string lower_id = std::string(R"(schema_version: 1
+rules:
+  - rule_id: r-lowercase
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: memory/records/x.md
+      anchor: body
+    expected_controls:
+      - control
+    independent_evidence:
+      - mechanical
+)");
+    auto lowered               = parse_activation_policy(lower_id);
+    if (lowered.is_ok() || lowered.reason().kind != ActivationPolicyError::Malformed)
+    {
+        std::printf("[FAIL] lowercase rule_id accepted%s", eol.c_str());
+        return 23;
+    }
+    std::printf("[ OK ] rule_id charset enforced%s", eol.c_str());
+
+    // ---- core missing a registry key: typed rejection ----
+    const std::string no_registry = std::string(R"(schema_version: 1
+corpus:
+  repositories:
+    - repository: qiven-context
+      path_filters:
+        - memory/records
+budgets:
+  compact_core_max_bytes: 12288
+  task_payload_max_bytes: 65536
+  inlined_body_max_bytes: 8192
+  supporting_share_max_percent: 25
+registry:
+  activation_policy_path: runtime/cognition/cognition-activation-policy.yaml
+consumer_profiles:
+  - zcode-jason
+latency_objectives:
+  cold_rebuild_max_ms: 5000
+  warm_activation_p95_max_ms: 250
+)");
+    auto registryless             = parse_cognition_core(no_registry);
+    if (registryless.is_ok() || registryless.reason().kind != ActivationPolicyError::MissingField)
+    {
+        std::printf("[FAIL] core without registry keys accepted%s", eol.c_str());
+        return 24;
+    }
+    std::printf("[ OK ] core registry keys required%s", eol.c_str());
+
+    // ---- incomplete capability entry: typed rejection (no silent drop) ----
+    const std::string partial_capability = std::string(R"(schema_version: 1
+corpus:
+  repositories:
+    - repository: qiven-context
+      path_filters:
+        - memory/records
+capabilities:
+  - repository: qiven-foundation
+budgets:
+  compact_core_max_bytes: 12288
+  task_payload_max_bytes: 65536
+  inlined_body_max_bytes: 8192
+  supporting_share_max_percent: 25
+registry:
+  selector_schema_version: 1
+  activation_policy_path: runtime/cognition/cognition-activation-policy.yaml
+  task_schema_repository: qiven-devkit
+  task_schema_path: docs/schemas/engineering-task-v1.schema.json
+  fixtures_repository: qiven-context
+  fixtures_path: evidence/cognition/fixtures
+consumer_profiles:
+  - zcode-jason
+latency_objectives:
+  cold_rebuild_max_ms: 5000
+  warm_activation_p95_max_ms: 250
+)");
+    auto capabilityless                  = parse_cognition_core(partial_capability);
+    if (capabilityless.is_ok() ||
+        capabilityless.reason().kind != ActivationPolicyError::MissingField)
+    {
+        std::printf("[FAIL] incomplete capability entry silently dropped%s", eol.c_str());
+        return 25;
+    }
+    std::printf("[ OK ] incomplete capability entry typed-rejected%s", eol.c_str());
+
     // ---- the PUBLISHED instances parse (roadmap work item: validate the
     // canonical cognition-core.yaml and cognition-activation-policy.yaml;
     // digest-bound copies under tests/fixtures/cognition/policy from

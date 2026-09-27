@@ -174,6 +174,52 @@ std::vector<std::string> extract_explicit_ids(std::string_view text)
     return unique;
 }
 
+std::optional<TaskPhase> parse_task_phase(std::string_view text) noexcept
+{
+    if (text == "specify")
+    {
+        return TaskPhase::Specify;
+    }
+    if (text == "design")
+    {
+        return TaskPhase::Design;
+    }
+    if (text == "implementation")
+    {
+        return TaskPhase::Implementation;
+    }
+    if (text == "review")
+    {
+        return TaskPhase::Review;
+    }
+    if (text == "acceptance")
+    {
+        return TaskPhase::Acceptance;
+    }
+    return std::nullopt;
+}
+
+std::optional<TaskRisk> parse_task_risk(std::string_view text) noexcept
+{
+    if (text == "R0")
+    {
+        return TaskRisk::R0;
+    }
+    if (text == "R1")
+    {
+        return TaskRisk::R1;
+    }
+    if (text == "R2")
+    {
+        return TaskRisk::R2;
+    }
+    if (text == "R3")
+    {
+        return TaskRisk::R3;
+    }
+    return std::nullopt;
+}
+
 std::string_view phase_text(TaskPhase phase) noexcept
 {
     switch (phase)

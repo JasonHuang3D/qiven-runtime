@@ -279,10 +279,18 @@ CoreOutcome parse_cognition_core(std::string_view bytes)
             corpus_repo.reset();
         }
     };
-    auto close_capability = [&]() {
+    auto close_capability = [&](usize line) {
         if (capability)
         {
-            if (!capability->repository.empty() && !capability->path.empty())
+            // Fail-closed law (same class as close_repo): a partially
+            // declared capability surface is never silently dropped - a
+            // missing surface silently narrows semantic-owner resolution.
+            if (capability->repository.empty() || capability->path.empty())
+            {
+                close_error = fail(ActivationPolicyError::MissingField, line,
+                                   "capability surface entry needs both repository and path");
+            }
+            else
             {
                 core.capabilities.push_back(std::move(*capability));
             }
@@ -299,7 +307,7 @@ CoreOutcome parse_cognition_core(std::string_view bytes)
             {
                 return CoreOutcome::fail(*close_error);
             }
-            close_capability();
+            close_capability(line.number);
             subsection.clear();
             std::string_view key;
             std::string_view value;
@@ -389,7 +397,7 @@ CoreOutcome parse_cognition_core(std::string_view bytes)
             std::string_view item;
             if (list_item(line.text, item))
             {
-                close_capability();
+                close_capability(line.number);
                 capability = CapabilitySurface {};
                 std::string_view key;
                 std::string_view value;
@@ -491,6 +499,7 @@ CoreOutcome parse_cognition_core(std::string_view bytes)
                     return CoreOutcome::fail(fail(ActivationPolicyError::UnknownVocabulary,
                                                   line.number, "selector schema must be 1"));
                 }
+                core.selector_schema_version = static_cast<u32>(*version);
             }
             else if (key == "activation_policy_path")
             {
@@ -540,13 +549,19 @@ CoreOutcome parse_cognition_core(std::string_view bytes)
     {
         return CoreOutcome::fail(*close_error);
     }
-    close_capability();
+    close_capability(lines.empty() ? 0 : lines.back().number);
+    if (close_error)
+    {
+        return CoreOutcome::fail(*close_error);
+    }
 
     if (core.schema_version != 1 || core.corpus.empty() || core.compact_core_max_bytes == 0 ||
         core.task_payload_max_bytes == 0 || core.inlined_body_max_bytes == 0 ||
         core.supporting_share_max_percent == 0 || core.activation_policy_path.empty() ||
         core.consumer_profiles.empty() || core.cold_rebuild_max_ms == 0 ||
-        core.warm_activation_p95_max_ms == 0)
+        core.warm_activation_p95_max_ms == 0 || core.selector_schema_version != 1 ||
+        core.task_schema_repository.empty() || core.task_schema_path.empty() ||
+        core.fixtures_repository.empty() || core.fixtures_path.empty())
     {
         return CoreOutcome::fail(
             fail(ActivationPolicyError::MissingField, 0, "core is missing required fields"));
@@ -720,10 +735,19 @@ PolicyOutcome parse_activation_policy(std::string_view bytes)
         {
             std::string_view key;
             std::string_view value;
-            if (value.empty() && split_key(line.text, key, value) &&
+            if (split_key(line.text, key, value) &&
                 in(key, { "phases", "risk", "repositories", "path_prefixes", "languages",
                           "boundary_kinds", "explicit_ids" }))
             {
+                if (!value.empty())
+                {
+                    // STRICT BLOCK STYLE: a selector list header with an inline
+                    // value is flow syntax; discarding it would silently turn
+                    // the dimension into an undeclared wildcard.
+                    return PolicyOutcome::fail(
+                        fail(ActivationPolicyError::Malformed, line.number,
+                             "selector list carries an inline value (block style required)"));
+                }
                 list_key    = std::string(key);
                 list_indent = line.indent;
                 continue;
@@ -839,6 +863,29 @@ PolicyOutcome parse_activation_policy(std::string_view bytes)
         {
             return PolicyOutcome::fail(
                 fail(ActivationPolicyError::MissingField, 0, "rule missing id or source"));
+        }
+        // rule_id charset (the registered schema's pattern): uppercase
+        // letters, digits, dashes; anything else fails closed.
+        const bool id_ok = !entry.rule_id.empty() &&
+                           entry.rule_id.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-") ==
+                               std::string::npos;
+        if (!id_ok || entry.rule_id.front() == '-')
+        {
+            return PolicyOutcome::fail(fail(ActivationPolicyError::Malformed, 0,
+                                            "rule_id charset (uppercase/digits/dashes): " +
+                                                entry.rule_id));
+        }
+        if (entry.source.anchor.empty())
+        {
+            return PolicyOutcome::fail(
+                fail(ActivationPolicyError::MissingField, 0,
+                     "rule '" + entry.rule_id + "' has no source anchor"));
+        }
+        if (entry.expected_controls.empty())
+        {
+            return PolicyOutcome::fail(
+                fail(ActivationPolicyError::MissingField, 0,
+                     "rule '" + entry.rule_id + "' declares no expected_controls"));
         }
     }
     return PolicyOutcome(std::move(policy));

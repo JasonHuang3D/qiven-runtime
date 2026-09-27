@@ -189,3 +189,14 @@ general YAML in runtime.
 - The English wording of every typed selector enum value is law (schema
   v1 exact vocabulary); any vocabulary growth is a schema-version bump,
   never a silent extension.
+- Sidecar table set, dated amendment (2026-09-28 review revision): the
+  delivered index.sqlite carries sources/selectors/rule_sources/
+  documents/inverted with v1-adapted columns; the TCA §9.3
+  relations/capabilities/obligations tables are DEFERRED to the first
+  batch that consumes them (CA-2 ingress / the resident worker), with
+  the index schema version as the compatibility axis. Failure signal:
+  a consumer needing cross-source relations or capability rows must
+  bump index_schema_version and rebuild (the full-rebuild-per-generation
+  law already guarantees correctness). rule_sources binds the REAL
+  sources row (out-of-closure rule sources fail closed) — no placeholder
+  joins ship.
