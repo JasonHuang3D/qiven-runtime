@@ -134,6 +134,8 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/source_lock.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/activation_policy.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/activation_index.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/task_descriptor.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/selector_eval.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/host/deployment_profile.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/host/generation_activation.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/host/runtime_host.hpp
@@ -186,6 +188,8 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/source_lock.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/activation_policy.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/activation_index.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/task_descriptor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/selector_eval.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/host/deployment_profile.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/host/generation_activation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/host/runtime_host.cpp
