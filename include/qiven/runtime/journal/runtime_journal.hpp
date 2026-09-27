@@ -317,7 +317,7 @@ private:
     [[nodiscard]] qiven::Result<void> check_clock(u64 now_ms);
     [[nodiscard]] qiven::Result<void> touch_wall_clock(u64 now_ms); // inside the txn
     [[nodiscard]] qiven::Result<void> append_audit(std::string_view kind,
-                                                   const std::vector<std::byte>& payload);
+                                                   std::span<const std::byte> payload);
 
     JournalDb m_db;
     std::string m_install_id;

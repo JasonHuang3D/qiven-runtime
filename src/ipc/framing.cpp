@@ -1,8 +1,10 @@
 #include <qiven/runtime/ipc/framing.hpp>
 
+#include <qiven/endian.hpp>
 #include <qiven/error.hpp>
 #include <qiven/hashing.hpp>
 
+#include <array>
 #include <cstring>
 #include <utility>
 
@@ -10,42 +12,26 @@ namespace qiven::runtime::ipc
 {
 namespace
 {
-void put_u32(std::string& out, u32 value)
-{
-    for (int i = 0; i < 4; ++i)
-    {
-        out.push_back(static_cast<char>((value >> (8 * i)) & 0xFFu));
-    }
-}
-void put_u64(std::string& out, u64 value)
-{
-    for (int i = 0; i < 8; ++i)
-    {
-        out.push_back(static_cast<char>((value >> (8 * i)) & 0xFFu));
-    }
-}
-u32 get_u32(const char* p) noexcept
-{
-    u32 value = 0;
-    for (int i = 0; i < 4; ++i)
-    {
-        value |= static_cast<u32>(static_cast<unsigned char>(p[i])) << (8 * i);
-    }
-    return value;
-}
-u64 get_u64(const char* p) noexcept
-{
-    u64 value = 0;
-    for (int i = 0; i < 8; ++i)
-    {
-        value |= static_cast<u64>(static_cast<unsigned char>(p[i])) << (8 * i);
-    }
-    return value;
-}
-
+// RR-0: the local string-based put/get shift loops are retired; the frame
+// header is encoded/decoded through the foundation codecs (layout and
+// widths unchanged — the golden frame fixture pins them).
 constexpr usize header_len   = 4 + 2 + 2 + 8 + 8 + 8; // fields before the MAC
 constexpr usize mac_len      = 32;
 constexpr usize frame_prefix = header_len + mac_len;
+
+[[nodiscard]] u32 get_u32(const char* p) noexcept
+{
+    const auto value =
+        qiven::decode_le_u32({ reinterpret_cast<const std::byte*>(p), 4 });
+    return value.value_or(0);
+}
+
+[[nodiscard]] u64 get_u64(const char* p) noexcept
+{
+    const auto value =
+        qiven::decode_le_u64({ reinterpret_cast<const std::byte*>(p), 8 });
+    return value.value_or(0);
+}
 
 qiven::Error denial(i32 code, std::string_view detail)
 {
@@ -74,14 +60,19 @@ m_key(key)
 
 std::string FrameCodec::encode(const FrameHeader& header, std::string_view body) const
 {
+    std::array<std::byte, header_len> prefix {};
+    (void)qiven::encode_le_u32(header.magic, { prefix.data(), 4 });
+    (void)qiven::encode_le_u32(
+        static_cast<u32>(header.proto) | (static_cast<u32>(header.flags) << 16),
+        { prefix.data() + 4, 4 });
+    (void)qiven::encode_le_u64(static_cast<u64>(body.size()), { prefix.data() + 8, 8 });
+    (void)qiven::encode_le_u64(header.request_id, { prefix.data() + 16, 8 });
+    (void)qiven::encode_le_u64(header.connection_seq, { prefix.data() + 24, 8 });
+
     std::string out;
     out.reserve(frame_prefix + body.size());
-    put_u32(out, header.magic);
-    put_u32(out, static_cast<u32>(header.proto) | (static_cast<u32>(header.flags) << 16));
-    put_u64(out, static_cast<u64>(body.size())); // the length field ALWAYS
-                                                 // describes the actual body
-    put_u64(out, header.request_id);
-    put_u64(out, header.connection_seq);
+    out.append(reinterpret_cast<const char*>(prefix.data()), prefix.size());
+    // the length field ALWAYS describes the actual body (encoded above)
 
     std::string mac_input = out;
     mac_input.append(body);

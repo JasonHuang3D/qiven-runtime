@@ -1,11 +1,21 @@
 #include <qiven/runtime/scope.hpp>
 
+#include <qiven/byte_builder.hpp>
+#include <qiven/contracts.hpp>
+#include <qiven/memory/allocator.hpp>
+#include <qiven/memory/system_allocator.hpp>
+
 #include <algorithm>
 
 namespace qiven::runtime
 {
 namespace
 {
+// RR-0: preimage accumulation is bounded (the retired vector mechanics
+// grew until OOM-abort). 16 MiB sits far beyond any governed path
+// enumeration; hitting it is an abort-class programming error.
+constexpr usize preimage_capacity_limit = 16 * 1024 * 1024;
+
 // Normalization: backslashes to forward slashes, no trailing slash, no
 // "." or ".." components, non-empty. Returns false for ambiguous input.
 bool normalize_path(std::string& path)
@@ -108,23 +118,22 @@ ScopeCoverage ResourceScope::covers(const std::string& target) const noexcept
 
 ContentDigest ResourceScope::digest() const
 {
-    // canonical little-endian preimage over the sorted explicit paths
-    std::vector<std::byte> preimage;
-    const auto put_u64 = [&preimage](const u64 value) {
-        for (int i = 0; i < 8; ++i)
-        {
-            preimage.push_back(static_cast<std::byte>(value >> (8 * i)));
-        }
-    };
-    put_u64(m_paths.size());
+    // canonical little-endian preimage over the sorted explicit paths,
+    // accumulated through the foundation ByteBuilder (RR-0: the local
+    // shift-loop lambda is retired; representation unchanged)
+    qiven::memory::SystemAllocator allocator;
+    auto preimage = qiven::ByteBuilder::try_create(qiven::memory::AllocatorRef { allocator },
+                                                   preimage_capacity_limit);
+    QIVEN_ASSERT(preimage.has_value());
+    (void)preimage->append_le_u64(m_paths.size());
     for (const std::string& path : m_paths)
     {
-        put_u64(path.size());
-        for (const char ch : path)
-        {
-            preimage.push_back(static_cast<std::byte>(ch));
-        }
+        (void)preimage->append_le_u64(path.size());
+        (void)preimage->append(
+            { reinterpret_cast<const std::byte*>(path.data()), path.size() });
     }
-    return ContentDigest { sha256(preimage.data(), preimage.size()) };
+    QIVEN_ASSERT(preimage->ok()); // bounded far beyond any governed enumeration
+    const auto bytes = preimage->bytes();
+    return ContentDigest { sha256(bytes.data(), bytes.size()) };
 }
 } // namespace qiven::runtime

@@ -1,5 +1,7 @@
 #include <qiven/runtime/identity.hpp>
 
+#include <qiven/endian.hpp>
+
 #include <chrono>
 
 namespace qiven::runtime
@@ -12,12 +14,11 @@ u64 unix_ms_now() noexcept
     return static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
+// The id's 8-byte words are written through the foundation codec (RR-0:
+// the local shift-loop mechanic is retired; layout unchanged).
 void put_u64_le(std::array<std::byte, 16>& out, const usize offset, const u64 value) noexcept
 {
-    for (usize i = 0; i < 8; ++i)
-    {
-        out[offset + i] = static_cast<std::byte>(value >> (8 * i));
-    }
+    (void)qiven::encode_le_u64(value, { out.data() + offset, 8 });
 }
 } // namespace
 
