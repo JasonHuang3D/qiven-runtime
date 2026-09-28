@@ -71,7 +71,7 @@ jobs:
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
         with:
           repository: JasonHuang3D/qiven-workspace
-          ref: c2cb922615860ef008dc7b58346c7006fea53225
+          ref: 59d096fffc55dce8f44e103db5d3fd4f943791a2
           path: qiven-workspace
       - uses: actions/checkout@v6
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
@@ -89,7 +89,7 @@ jobs:
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
         with:
           repository: JasonHuang3D/qiven-context-draft
-          ref: 50288c2ddcf7d3c9cf0fbc2a0a03eff9276bb6ce
+          ref: d801c9ad68b4a6988bed9b2859a27edd9a2acebe
           path: qiven-context-draft
       - uses: actions/checkout@v6
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
@@ -107,7 +107,7 @@ jobs:
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
         with:
           repository: JasonHuang3D/qiven-runtime
-          ref: feb3f8ff9ac933be2b1b9eb0690049111b62148e
+          ref: 3fe50063c528c445a2b08e4e95a094e75e8d13c6
           path: qiven-runtime
       - name: Configure (workspace bootstrap)
         if: ${{ needs.plan.outputs[matrix.id] == 'true' && matrix.id == 'windows' }}
