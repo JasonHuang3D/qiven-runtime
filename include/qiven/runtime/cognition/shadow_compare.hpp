@@ -47,6 +47,19 @@ enum class ShadowDivergence : u8
     ContentConflict   = 4, // tier-1 equal but tier-2 content differs (loud; should be impossible)
 };
 
+// Tier-2 input: the corpus filter sets on both sides of the comparison.
+// The per-file digests of a closure are DETERMINED by (commit, root
+// tree) + the filter set (git content addressing): equal (commit,
+// tree) AND equal filters implies equal per-file digests by
+// construction. Tier 2 therefore verifies the FILTER dimension the
+// tree identity cannot express (spec WR-7: "every path filter,
+// commit/tree, and per-file digest").
+struct ShadowFilterSets
+{
+    std::map<std::string, std::vector<std::string>> filters; // repository -> path filters
+    bool carrier_table_present = false;                      // the corpus table existed at its revision
+};
+
 struct ShadowRepoResult
 {
     std::string repository;
@@ -72,8 +85,19 @@ struct ShadowCompareResult
 
 // Tier-1 comparison: per corpus repository in the lock, the distinct
 // (commit, root tree) pair must equal the workspace node's. Repos in
-// the lock with no workspace node = NodeMissing.
+// the lock with no workspace node = NodeMissing. Filter sets are NOT
+// compared by this overload (call the tier-2 overload for the spec's
+// complete comparison).
 [[nodiscard]] ShadowCompareResult shadow_compare(const SourceLock& lock, const WorkspaceLockState& workspace);
+
+// Tier-2 comparison (the spec's complete form): tier 1 plus the filter
+// dimension — the corpus table's path filters used to build the lock
+// vs the same table re-read at the workspace node's carrier revision.
+// FilterSetMismatch fires per repository whose filters differ (or are
+// uncovered/absent at the node revision).
+[[nodiscard]] ShadowCompareResult shadow_compare(const SourceLock& lock, const WorkspaceLockState& workspace,
+                                                 const ShadowFilterSets& filters_used,
+                                                 const ShadowFilterSets& filters_at_node);
 
 // Receipt serialization (qiven-tca-shadow-compare-v1; deterministic
 // key order; envelope-only fields, never a hashed payload input).

@@ -540,8 +540,6 @@ int index_shadow_compare(const std::vector<std::string>& args)
             {
                 continue;
             }
-            const qiven::runtime::cognition::SourceLockRequest probe_request;
-            (void)probe_request;
             qiven::runtime::cognition::SourceLockRequest one;
             qiven::runtime::cognition::LockRepository single;
             single.repository   = corpus.repository;
@@ -571,8 +569,56 @@ int index_shadow_compare(const std::vector<std::string>& args)
         std::cout << "index shadow-compare: workspace lock unreadable or has no nodes\n";
         return exit_fail;
     }
+
+    // tier 2 (the spec's complete comparison): the corpus table re-read
+    // at the workspace node's CONTEXT (carrier) revision, compared with
+    // the lock-driving table. Per-file digests follow from (commit,
+    // root tree) + filters by construction; the filter dimension is
+    // what the tree identity cannot express.
+    qiven::runtime::cognition::ShadowFilterSets filters_used;
+    filters_used.carrier_table_present = true;
+    for (const auto& corpus : core.value().corpus)
+    {
+        filters_used.filters.emplace(corpus.repository, corpus.path_filters);
+    }
+    qiven::runtime::cognition::ShadowFilterSets filters_at_node;
+    const std::string* carrier_checkout = nullptr;
+    for (const CheckoutBinding& binding : bindings)
+    {
+        if (binding.repository == "qiven-context")
+        {
+            carrier_checkout = &binding.checkout;
+            break;
+        }
+    }
+    auto carrier_node = workspace.nodes.find("qiven-context");
+    if (carrier_checkout != nullptr && carrier_node != workspace.nodes.end() &&
+        carrier_node->second.commit.size() == 40)
+    {
+        qiven::runtime::processx::ProcessSpec show;
+        show.executable  = R"(C:\Program Files\Git\cmd\git.exe)";
+        show.argv        = { "git", "-C", *carrier_checkout, "show",
+                             carrier_node->second.commit + ":runtime/cognition/cognition-core.yaml" };
+        show.deadline_ms = 30'000;
+        auto shown       = runner.run(show);
+        if (shown.is_ok() && shown.value().exit_code == 0)
+        {
+            auto node_core = qiven::runtime::cognition::parse_cognition_core(shown.value().out);
+            if (node_core.is_ok())
+            {
+                filters_at_node.carrier_table_present = true;
+                for (const auto& corpus : node_core.value().corpus)
+                {
+                    filters_at_node.filters.emplace(corpus.repository, corpus.path_filters);
+                }
+            }
+        }
+        // unreadable/absent/malformed at the node revision stays
+        // carrier_table_present=false: FilterSetMismatch, fail-closed
+    }
     qiven::runtime::cognition::ShadowCompareResult compared =
-        qiven::runtime::cognition::shadow_compare(lock.value(), workspace);
+        qiven::runtime::cognition::shadow_compare(lock.value(), workspace, filters_used,
+                                                  filters_at_node);
     compared.workspace_lock_binding = "fresh-build";
     std::cout << qiven::runtime::cognition::shadow_compare_receipt_json(compared) << "\n";
     return compared.all_equal() ? exit_ok : exit_fail;

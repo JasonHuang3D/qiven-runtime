@@ -15,8 +15,10 @@ namespace qiven::runtime::cognition
 namespace
 {
 // --- minimal strict JSON value parser (objects/arrays/strings/numbers/
-// bools/null; duplicate keys rejected; no escapes beyond \" \\ \/ \n \t
-// \r \b \f \uXXXX passthrough as replacement-safe bytes) ---------------
+// bools/null; duplicate keys rejected; \uXXXX escapes are NOT supported
+// and REJECT the document fail-closed — the workspace lock's producer
+// emits ensure_ascii=False (raw UTF-8), so an escape means the document
+// did not come from the producer and must never be mangled silently) ----
 struct Json
 {
     enum class Kind : u8
@@ -170,7 +172,8 @@ std::optional<Json> parse_json(std::string_view bytes)
                     case 'r': out.text.push_back('\r'); break;
                     case 'b': out.text.push_back('\b'); break;
                     case 'f': out.text.push_back('\f'); break;
-                    default: out.text.push_back(escaped); break; // " \ / and passthrough
+                    case 'u': return std::nullopt;               // \uXXXX unsupported: reject fail-closed
+                    default: out.text.push_back(escaped); break; // " \ / passthrough
                     }
                     at += 2;
                     continue;
@@ -334,14 +337,18 @@ bool ShadowCompareResult::cutover_grade() const
                        [](const ShadowRepoResult& repo) { return !repo.shadow_only_node; });
 }
 
-ShadowCompareResult shadow_compare(const SourceLock& lock, const WorkspaceLockState& workspace)
+namespace
 {
-    ShadowCompareResult result;
+void compare_one(const SourceLock& lock, const WorkspaceLockState& workspace,
+                 const ShadowFilterSets* filters_used, const ShadowFilterSets* filters_at_node,
+                 ShadowCompareResult& result)
+{
     result.workspace_generation = workspace.generation;
     result.source_lock_sha256   = lock.digest_hex();
 
     // per repository: the distinct (commit, root tree) recorded in the lock
     std::map<std::string, std::pair<std::string, std::string>> locked;
+    std::set<std::string> conflicted;
     for (const LockEntry& entry : lock.entries)
     {
         auto& slot = locked[entry.repository];
@@ -356,6 +363,7 @@ ShadowCompareResult shadow_compare(const SourceLock& lock, const WorkspaceLockSt
         // comparison silently otherwise)
         if (slot.first != entry.commit || slot.second != entry.tree_oid)
         {
+            conflicted.insert(entry.repository);
             ShadowRepoResult conflict;
             conflict.repository  = entry.repository;
             conflict.lock_commit = slot.first;
@@ -372,6 +380,10 @@ ShadowCompareResult shadow_compare(const SourceLock& lock, const WorkspaceLockSt
 
     for (const auto& [repository, pair] : locked)
     {
+        if (conflicted.count(repository) != 0)
+        {
+            continue; // already reported as ContentConflict (one row per repository)
+        }
         ShadowRepoResult row;
         row.repository  = repository;
         row.lock_commit = pair.first;
@@ -392,8 +404,49 @@ ShadowCompareResult shadow_compare(const SourceLock& lock, const WorkspaceLockSt
             row.divergence = ShadowDivergence::StaleNode;
             row.detail     = "workspace node commit/tree != the locked closure revision";
         }
+        else if (filters_used != nullptr && filters_at_node != nullptr)
+        {
+            // tier 2: the filter dimension (per-file digests follow from
+            // (commit, root tree) + filters by construction)
+            if (!filters_at_node->carrier_table_present)
+            {
+                row.divergence = ShadowDivergence::FilterSetMismatch;
+                row.detail     = "corpus table absent at the workspace node's carrier revision";
+            }
+            else
+            {
+                const auto used_it = filters_used->filters.find(repository);
+                const auto node_it = filters_at_node->filters.find(repository);
+                if (node_it == filters_at_node->filters.end())
+                {
+                    row.divergence = ShadowDivergence::FilterSetMismatch;
+                    row.detail     = "corpus table at the node revision does not cover this repository";
+                }
+                else if (used_it == filters_used->filters.end() || used_it->second != node_it->second)
+                {
+                    row.divergence = ShadowDivergence::FilterSetMismatch;
+                    row.detail     = "path filters differ between the lock-driving table and the node revision";
+                }
+            }
+        }
         result.repositories.push_back(std::move(row));
     }
+}
+} // namespace
+
+ShadowCompareResult shadow_compare(const SourceLock& lock, const WorkspaceLockState& workspace)
+{
+    ShadowCompareResult result;
+    compare_one(lock, workspace, nullptr, nullptr, result);
+    return result;
+}
+
+ShadowCompareResult shadow_compare(const SourceLock& lock, const WorkspaceLockState& workspace,
+                                   const ShadowFilterSets& filters_used,
+                                   const ShadowFilterSets& filters_at_node)
+{
+    ShadowCompareResult result;
+    compare_one(lock, workspace, &filters_used, &filters_at_node, result);
     return result;
 }
 

@@ -60,7 +60,7 @@ struct LockEntry
 {
     std::string repository;
     std::string commit;   // full oid the tree was read at
-    std::string tree_oid; // enclosing tree oid (ls-tree row)
+    std::string tree_oid; // ROOT tree of the pinned commit (commit^{tree}); identical on every entry of that repository
     std::string path;     // repository-root-relative, '/' separators
     std::string sha256;   // lowercase hex over the blob bytes
     u64 size_bytes = 0;

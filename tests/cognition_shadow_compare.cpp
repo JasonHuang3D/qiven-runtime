@@ -193,6 +193,52 @@ int main()
         std::printf("[ OK ] duplicate-key workspace lock rejected%s", eol.c_str());
     }
 
+    // ---- tier 2: filter-set mismatch (tier-1 equal, filters differ) ----
+    {
+        using qiven::runtime::cognition::ShadowFilterSets;
+        SourceLock lock = lock_of({ entry("qiven-devkit", commit_a, tree_a, "docs/schemas/x.json") });
+        const std::string workspace_json =
+            std::string(R"({"generation":"g","nodes":{"qiven-devkit":{"commit":")") + commit_a +
+            R"(","tree":")" + tree_a + R"(","declaration":{"shadow_only":false}}}})";
+        auto workspace = qiven::runtime::cognition::parse_workspace_lock(workspace_json);
+        ShadowFilterSets used;
+        used.carrier_table_present   = true;
+        used.filters["qiven-devkit"] = { "docs/engineering", "docs/schemas" };
+        ShadowFilterSets at_node;
+        at_node.carrier_table_present   = true;
+        at_node.filters["qiven-devkit"] = { "docs/schemas" }; // narrowed at the node revision
+        auto result                     = qiven::runtime::cognition::shadow_compare(lock, workspace, used, at_node);
+        if (result.all_equal() ||
+            result.repositories[0].divergence != ShadowDivergence::FilterSetMismatch)
+        {
+            std::printf("[FAIL] filter mismatch not typed%s", eol.c_str());
+            return 12;
+        }
+        std::printf("[ OK ] filter-set mismatch typed FilterSetMismatch%s", eol.c_str());
+    }
+
+    // ---- tier 2: carrier table absent at the node revision ----
+    {
+        using qiven::runtime::cognition::ShadowFilterSets;
+        SourceLock lock = lock_of({ entry("qiven-context", commit_a, tree_a, "state/x.md") });
+        const std::string workspace_json =
+            std::string(R"({"generation":"g","nodes":{"qiven-context":{"commit":")") + commit_a +
+            R"(","tree":")" + tree_a + R"(","declaration":{"shadow_only":true}}}})";
+        auto workspace = qiven::runtime::cognition::parse_workspace_lock(workspace_json);
+        ShadowFilterSets used;
+        used.carrier_table_present    = true;
+        used.filters["qiven-context"] = { "state" };
+        ShadowFilterSets at_node; // carrier_table_present = false (absent at the node)
+        auto result = qiven::runtime::cognition::shadow_compare(lock, workspace, used, at_node);
+        if (result.all_equal() ||
+            result.repositories[0].divergence != ShadowDivergence::FilterSetMismatch)
+        {
+            std::printf("[FAIL] absent carrier table not typed%s", eol.c_str());
+            return 13;
+        }
+        std::printf("[ OK ] absent carrier table typed FilterSetMismatch%s", eol.c_str());
+    }
+
     std::printf("SHADOW-COMPARE PASS%s", eol.c_str());
     return 0;
 }
