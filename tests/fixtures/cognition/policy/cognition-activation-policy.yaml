@@ -1,0 +1,464 @@
+# qiven-cognition-activation-policy-v1 — protected bootstrap rules
+#
+# CA-1 policy instance (roadmap §4 item 3). Rule table = the CA-0
+# protected bootstrap set (evidence/audits/2026-09-24-ca0-exit-report.md)
+# plus the four TCA documents' section selectors from birth
+# (runtime/cognition-landing-manifest.yaml). Parsed by the bounded
+# fail-closed runtime loader — STRICT BLOCK STYLE, exact keys, no flow
+# syntax; selector vocabulary is selector-schema v1 EXACT (unknown value
+# = unresolved, fails visibly). One canonical owner per rule; companions
+# point here, never paraphrase.
+schema_version: 1
+
+rules:
+  # --- TCA documents (selector metadata from birth) --------------------
+  - rule_id: TCA-GOV-CORE
+    priority_class: P0-core
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: collaboration/cognitive-governance-program.md
+      anchor: '§3 CG-1..CG-12'
+    selectors:
+      phases:
+        - all
+      risk:
+        - R0
+        - R1
+        - R2
+        - R3
+      repositories:
+        - qiven-context
+        - qiven-devkit
+        - qiven-foundation
+        - qiven-runtime
+    expected_controls:
+      - constitutional cognition laws bind every phase
+    independent_evidence:
+      - mechanical
+  - rule_id: TCA-GOV-SCAR-LIFECYCLE
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: collaboration/cognitive-governance-program.md
+      anchor: '§5'
+    selectors:
+      phases:
+        - specify
+        - design
+        - implementation
+        - review
+      risk:
+        - R2
+        - R3
+      repositories:
+        - qiven-context
+        - qiven-devkit
+        - qiven-foundation
+        - qiven-runtime
+    expected_controls:
+      - scar records surface where their incident class recurs
+    independent_evidence:
+      - mechanical
+  - rule_id: TCA-ARCH-PIPELINE
+    priority_class: P0-core
+    lifecycle: active
+    source:
+      repository: qiven-runtime
+      path: docs/architecture/task-cognition-activation.md
+      anchor: '§0/§10'
+    selectors:
+      phases:
+        - design
+        - implementation
+      risk:
+        - R2
+        - R3
+      repositories:
+        - qiven-runtime
+    expected_controls:
+      - activation pipeline order and typed selection only
+    independent_evidence:
+      - mechanical
+  - rule_id: TCA-ARCH-LOCK-GENERATION
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-runtime
+      path: docs/architecture/task-cognition-activation.md
+      anchor: '§9'
+    selectors:
+      phases:
+        - design
+        - implementation
+      risk:
+        - R2
+        - R3
+      repositories:
+        - qiven-runtime
+        - qiven-context
+    expected_controls:
+      - source lock and ActivationGeneration identity law, never conflated with RuntimeGeneration
+    independent_evidence:
+      - mechanical
+  - rule_id: TCA-ACCEPT-PROFILES
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: collaboration/cognitive-effectiveness-acceptance.md
+      anchor: '§2/§5/§6'
+    selectors:
+      phases:
+        - implementation
+        - review
+      risk:
+        - R2
+        - R3
+      repositories:
+        - qiven-runtime
+        - qiven-context
+    expected_controls:
+      - Profile A conformance rows and Profile B recall thresholds are the CA-1 exit
+    independent_evidence:
+      - mechanical
+  - rule_id: TCA-ROADMAP-SEQUENCING
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-runtime
+      path: docs/architecture/runtime-mvp-roadmap-amendment.md
+      anchor: '§0/§4/§8.5'
+    selectors:
+      phases:
+        - specify
+        - design
+      risk:
+        - R1
+        - R2
+        - R3
+      repositories:
+        - qiven-runtime
+        - qiven-context
+    expected_controls:
+      - stall law and batch ceilings govern the CA program
+    independent_evidence:
+      - mechanical
+
+  # --- Scar records (fixture-backed; sealed corpus F-01..F-08) ---------
+  - rule_id: SCAR-BORROWED-LIFETIME
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: memory/records/MEM-20260924T032100Z-D4E5F6.md
+      anchor: body
+    selectors:
+      phases:
+        - design
+        - implementation
+        - review
+      risk:
+        - R1
+        - R2
+        - R3
+      languages:
+        - cpp
+      boundary_kinds:
+        - lifetime
+        - ownership
+        - representation
+    expected_controls:
+      - storage crossing a delayed boundary must be owning and the delayed path is the tested path
+    independent_evidence:
+      - mechanical
+    explicit_ids:
+      - MEM-20260924T032100Z-D4E5F6
+  - rule_id: SCAR-WIRE-CONTRACT-E2E
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: memory/records/MEM-20260924T032000Z-C1D2E3.md
+      anchor: body
+    selectors:
+      phases:
+        - design
+        - implementation
+        - review
+      risk:
+        - R1
+        - R2
+        - R3
+      boundary_kinds:
+        - ipc
+        - serialization
+        - external-contract
+    expected_controls:
+      - a wire contract needs an end-to-end test exercising the real transport, not one-frame coexistence
+    independent_evidence:
+      - mechanical
+      - environmental
+    explicit_ids:
+      - MEM-20260924T032000Z-C1D2E3
+  - rule_id: SCAR-ASSUMED-FIELD-H1KIT
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: memory/records/MEM-20260923T115500Z-A1B2C3.md
+      anchor: body
+    selectors:
+      phases:
+        - specify
+        - design
+        - implementation
+      risk:
+        - R1
+        - R2
+        - R3
+      boundary_kinds:
+        - external-contract
+        - human-interface
+        - tooling
+    expected_controls:
+      - assumed external-contract fields never ship REQUIRED in owner-live paths and kits are tool-built
+    independent_evidence:
+      - mechanical
+      - owner-boundary
+    explicit_ids:
+      - MEM-20260923T115500Z-A1B2C3
+      - ADR-0049
+  - rule_id: SCAR-HEREDOC-LAW
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: memory/records/MEM-20260921T203500Z-D2A7F4.md
+      anchor: body
+    selectors:
+      phases:
+        - implementation
+      risk:
+        - R0
+        - R1
+        - R2
+        - R3
+      boundary_kinds:
+        - tooling
+        - filesystem
+    expected_controls:
+      - files are authored through native file tools, never shell heredocs
+    independent_evidence:
+      - mechanical
+    explicit_ids:
+      - MEM-20260921T203500Z-D2A7F4
+  - rule_id: SCAR-COMPILE-PROBE
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: memory/records/MEM-20260923T042000Z-E9F0A1.md
+      anchor: body
+    selectors:
+      phases:
+        - design
+        - implementation
+        - review
+      risk:
+        - R1
+        - R2
+        - R3
+      boundary_kinds:
+        - external-contract
+        - representation
+        - tooling
+    expected_controls:
+      - a type in a merged contract is not proven until first instantiation; compile-probe new contract surfaces
+    independent_evidence:
+      - mechanical
+    explicit_ids:
+      - MEM-20260923T042000Z-E9F0A1
+  - rule_id: SCAR-PARALLEL-FIXTURE-ROOTS
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: memory/records/MEM-20260923T224200Z-F8A9B0.md
+      anchor: body
+    selectors:
+      phases:
+        - design
+        - implementation
+        - review
+      risk:
+        - R1
+        - R2
+        - R3
+      boundary_kinds:
+        - concurrency
+        - persistence
+    expected_controls:
+      - parallel gate stages need per-configuration fixture workroots (test-debug and test-release never share paths)
+    independent_evidence:
+      - mechanical
+    explicit_ids:
+      - MEM-20260923T224200Z-F8A9B0
+
+  # --- Standing engineering laws ---------------------------------------
+  - rule_id: LAW-PROCESS-CUSTODY
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: decisions/ADR-0048.md
+      anchor: body
+    selectors:
+      phases:
+        - design
+        - implementation
+        - review
+      risk:
+        - R1
+        - R2
+        - R3
+      boundary_kinds:
+        - process-custody
+        - concurrency
+        - platform
+    expected_controls:
+      - every spawned process tree is kernel-bounded with a named custodian and lease
+    independent_evidence:
+      - mechanical
+    explicit_ids:
+      - ADR-0048
+  - rule_id: LAW-SEMANTIC-OWNERSHIP
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: decisions/ADR-0024.md
+      anchor: body
+    selectors:
+      phases:
+        - specify
+        - design
+        - review
+      risk:
+        - R1
+        - R2
+        - R3
+      boundary_kinds:
+        - ownership
+        - governance
+    expected_controls:
+      - primitives land at their semantic owner, not at the loudest consumer
+    independent_evidence:
+      - mechanical
+    explicit_ids:
+      - ADR-0024
+  - rule_id: LAW-HANDOFF-BOUNDARY
+    priority_class: P1-protected
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: collaboration/human-handoff-boundary.md
+      anchor: H1-H4-and-long-running-mode
+    selectors:
+      phases:
+        - specify
+        - design
+        - review
+      risk:
+        - R1
+        - R2
+        - R3
+      boundary_kinds:
+        - governance
+        - human-interface
+    expected_controls:
+      - typed handoffs, no verbal waiver, delegated-H2 receipts
+    independent_evidence:
+      - owner-boundary
+  - rule_id: LAW-OPERATING-CONTRACT
+    priority_class: P2-required
+    lifecycle: active
+    source:
+      repository: qiven-context
+      path: collaboration/operating-contract.md
+      anchor: body
+    selectors:
+      phases:
+        - all
+      risk:
+        - R0
+        - R1
+        - R2
+        - R3
+      repositories:
+        - qiven-context
+        - qiven-devkit
+        - qiven-foundation
+        - qiven-runtime
+    expected_controls:
+      - authoring, exec, timeout, and long-command laws
+    independent_evidence:
+      - mechanical
+
+  # --- P3 supporting (ranked, deterministic) ----------------------------
+  - rule_id: SUP-FOUNDATION-SURFACE
+    priority_class: P3-supporting
+    lifecycle: active
+    source:
+      repository: qiven-foundation
+      path: docs/architecture/capability-surface.yaml
+      anchor: body
+    selectors:
+      languages:
+        - cpp
+      boundary_kinds:
+        - representation
+        - ownership
+        - serialization
+    expected_controls:
+      - admitted foundation primitives before local mechanics
+    independent_evidence:
+      - mechanical
+  - rule_id: SUP-DEVKIT-CONVENTIONS
+    priority_class: P3-supporting
+    lifecycle: active
+    source:
+      repository: qiven-devkit
+      path: docs/conventions/README.md
+      anchor: body
+    selectors:
+      phases:
+        - specify
+        - design
+        - implementation
+        - review
+      repositories:
+        - qiven-devkit
+        - qiven-foundation
+        - qiven-runtime
+    expected_controls:
+      - naming, layout, script, and CMake conventions
+    independent_evidence:
+      - mechanical
+
+  # --- P4 on-demand (deliberation records; fetched only when named) -----
+  - rule_id: ONDEMAND-TCA-DELIBERATION
+    priority_class: P4-on-demand
+    lifecycle: active
+    source:
+      repository: qiven-docs
+      path: accepted
+      anchor: 2026-09-23-PR1-records
+    selectors:
+      explicit_ids:
+        - ADR-0050
+    expected_controls:
+      - cross-LLM deliberation record for the TCA program
+    independent_evidence:
+      - fresh-cognitive

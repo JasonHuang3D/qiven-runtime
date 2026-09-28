@@ -1,0 +1,67 @@
+# qiven-cognition-core-v1 — corpus, capabilities, budgets, registry
+#
+# CA-1 policy instance (roadmap §4 item 3: validate cognition-core.yaml).
+# Consumed by the qiven-runtime activation core (docs/design/
+# ca1-activation-core.md §3); parsed by a bounded fail-closed loader —
+# STRICT BLOCK STYLE, exact keys, no flow syntax, no general YAML. Every
+# value here is law for v1; vocabulary growth is a schema_version bump.
+schema_version: 1
+
+corpus:
+  # The external source closure (TCA-ARCH §9.2; CA-0 declaration):
+  # validated LOCAL checkouts at exact revisions; per-file sha256; no
+  # network; dirty checkouts rejected. qiven-docs deliberation records
+  # enter ONLY when a P4 rule references them (path filter stays closed).
+  repositories:
+    - repository: qiven-context
+      path_filters:
+        - memory/records
+        - decisions
+        - obligations
+        - state
+        - collaboration
+        - runtime/cognition
+    - repository: qiven-devkit
+      path_filters:
+        - docs/engineering
+        - docs/conventions
+        - docs/schemas
+    - repository: qiven-foundation
+      path_filters:
+        - include/qiven
+        - docs/architecture
+    - repository: qiven-runtime
+      path_filters:
+        - docs/architecture
+        - include
+
+capabilities:
+  # Semantic-owner capability surfaces resolved during selection
+  # (TCA-ARCH §5; the foundation row is the ADR-0024 admission surface).
+  - repository: qiven-foundation
+    path: docs/architecture/capability-surface.yaml
+  - repository: qiven-devkit
+    path: docs/conventions/README.md
+
+budgets:
+  # TCA-ARCH §15.1 constants; enforced by the selector evaluator.
+  compact_core_max_bytes: 12288
+  task_payload_max_bytes: 65536
+  inlined_body_max_bytes: 8192
+  supporting_share_max_percent: 25
+
+registry:
+  selector_schema_version: 1
+  activation_policy_path: runtime/cognition/cognition-activation-policy.yaml
+  task_schema_repository: qiven-devkit
+  task_schema_path: docs/schemas/engineering-task-v1.schema.json
+  fixtures_repository: qiven-context
+  fixtures_path: evidence/cognition/fixtures
+
+consumer_profiles:
+  - zcode-jason
+
+latency_objectives:
+  # Reference corpus = the locked closure above (CA-0 scale ≈300 KB).
+  cold_rebuild_max_ms: 5000
+  warm_activation_p95_max_ms: 250

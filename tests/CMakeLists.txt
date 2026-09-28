@@ -99,6 +99,14 @@ add_library(
         headers/cognition_policy.cpp
         headers/cognition_bundle_store.cpp
         headers/cognition_publisher.cpp
+        headers/cognition_source_lock.cpp
+        headers/cognition_activation_policy.cpp
+        headers/cognition_activation_index.cpp
+        headers/cognition_selection.cpp
+        headers/cognition_task_bundle.cpp
+        headers/cognition_activation_receipt.cpp
+        headers/cognition_activation_service.cpp
+        headers/cognition_budget_measurement.cpp
         headers/deployment_profile_file.cpp
         headers/generation_activation.cpp
         headers/ipc_framing.cpp
@@ -343,6 +351,38 @@ add_test(NAME qiven-runtime.rr0-byte-compat COMMAND rr0-byte-compat)
 qiven_runtime_add_journal_test(policy-parse policy_parse.cpp)
 qiven_runtime_add_journal_test(process-runner-bounded process_runner_bounded.cpp)
 qiven_runtime_add_journal_test(bundle-publish-pin bundle_publish_pin.cpp)
+qiven_runtime_add_journal_test(source-lock source_lock.cpp)
+qiven_runtime_add_journal_test(activation-policy activation_policy.cpp)
+# the published-instance parse gate reads digest-bound copies of the
+# canonical context instances; ctest runs from the build tree, so the
+# fixtures root is an absolute compile-time path (same pattern as
+# protected-recall / rr0-byte-compat)
+target_compile_definitions(activation-policy PRIVATE
+    QIVEN_RUNTIME_COGNITION_POLICY_FIXTURES="${CMAKE_SOURCE_DIR}/tests/fixtures/cognition/policy")
+qiven_runtime_add_journal_test(activation-index activation_index.cpp)
+qiven_runtime_add_journal_test(selector-eval selector_eval.cpp)
+qiven_runtime_add_journal_test(task-bundle-receipt task_bundle_receipt.cpp)
+qiven_runtime_add_journal_test(activation-conformance cognition_activation_conformance.cpp)
+
+# Profile B sealed-corpus suite: fixtures live in the source tree (like
+# the rr0 goldens); inline registration carries the fixtures-path define.
+add_executable(protected-recall cognition_protected_recall.cpp)
+target_link_libraries(protected-recall PRIVATE qiven::runtime qiven::tp::sqlite3)
+qiven_enable_test_warnings(protected-recall)
+target_precompile_headers(protected-recall REUSE_FROM qiven-runtime)
+set_target_properties(
+    protected-recall
+    PROPERTIES
+        CXX_EXTENSIONS OFF
+        FOLDER "Tests"
+        VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+target_compile_definitions(protected-recall PRIVATE
+    QIVEN_RUNTIME_TEST_WORKROOT="${QIVEN_RUNTIME_TEST_WORKROOT}/$<CONFIG>"
+    QIVEN_RUNTIME_COGNITION_FIXTURES="${CMAKE_SOURCE_DIR}/tests/fixtures/cognition")
+add_test(NAME qiven-runtime.protected-recall COMMAND protected-recall)
+
+qiven_runtime_add_journal_test(budget-measurement cognition_budget_measurement.cpp)
 qiven_runtime_add_journal_test(profile-accept profile_accept.cpp)
 qiven_runtime_add_journal_test(generation-stale generation_stale.cpp)
 

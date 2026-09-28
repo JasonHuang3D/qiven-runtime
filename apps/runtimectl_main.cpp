@@ -3,6 +3,11 @@
 // client (ARCH section 6.4; MVP-2 local surface + MVP-3 IPC surface)
 //
 //   qiven-runtimectl cognition show [--root <checkout>]
+//   qiven-runtimectl index rebuild --core <cognition-core.yaml>
+//                                 --policy <cognition-activation-policy.yaml>
+//                                 --request <checkout bindings json>
+//                                 --root <workspace root> --generation <id>
+//   qiven-runtimectl index status  [--root <workspace root>]
 //   qiven-runtimectl profile show  [--profile <file>]
 //   qiven-runtimectl status show    [--root <checkout>]   (authenticated IPC)
 //   qiven-runtimectl doctor show    [--root <checkout>]   (authenticated IPC)
@@ -13,11 +18,18 @@
 // ============================================================================
 
 #include <qiven/crt_failure.hpp>
+#include <qiven/hashing_sha256.hpp>
+#include <qiven/runtime/cognition/activation_index.hpp>
+#include <qiven/runtime/cognition/activation_policy.hpp>
+#include <qiven/runtime/cognition/activation_receipt.hpp>
+#include <qiven/runtime/cognition/activation_service.hpp>
 #include <qiven/runtime/cognition/bundle.hpp>
+#include <qiven/runtime/cognition/source_lock.hpp>
 #include <qiven/runtime/host/deployment_profile.hpp>
 #include <qiven/runtime/ipc/framing.hpp>
 #include <qiven/runtime/ipc/named_pipe_server.hpp>
 #include <qiven/runtime/ipc/protocol.hpp>
+#include <qiven/runtime/processx/process_runner.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -39,6 +51,12 @@ constexpr int exit_usage = 2;
 int usage()
 {
     std::cerr << "usage: qiven-runtimectl cognition show [--root <qiven-context checkout>]\n"
+              << "       qiven-runtimectl cognition activate --core <yaml> --policy <yaml>"
+                 " --envelope <json> --root <dir> --generation <id>"
+                 " --runtime-generation <id> --source-lock <sha256> [--profile <name>]\n"
+              << "       qiven-runtimectl index rebuild --core <yaml> --policy <yaml>"
+                 " --request <json> --root <dir> --generation <id>\n"
+              << "       qiven-runtimectl index status [--root <dir>]\n"
               << "       qiven-runtimectl profile show [--profile <profile file>]\n"
               << "       qiven-runtimectl status show [--root <qiven-context checkout>]\n"
               << "       qiven-runtimectl doctor show [--root <qiven-context checkout>]\n"
@@ -360,6 +378,670 @@ int host_refresh(const std::vector<std::string>& args)
 }
 } // namespace
 
+// ---- CA-1: activation index verbs -----------------------------------------
+// The lock request binds each corpus repository (cognition-core.yaml) to
+// a LOCAL checkout + exact ref: [{"repository": "...", "checkout": "...",
+// "ref": "..."}]. Minimal strict JSON extraction — exact key order is
+// not required, unknown keys are ignored (the SOURCE LOCK validates the
+// real constraints; this only locates the checkouts).
+namespace
+{
+struct CheckoutBinding
+{
+    std::string repository;
+    std::string checkout;
+    std::string ref;
+};
+
+std::vector<CheckoutBinding> parse_bindings(const std::string& text)
+{
+    std::vector<CheckoutBinding> bindings;
+    qiven::usize position = 0;
+    while (true)
+    {
+        const qiven::usize object_begin = text.find('{', position);
+        if (object_begin == std::string::npos)
+        {
+            break;
+        }
+        const qiven::usize object_end = text.find('}', object_begin);
+        if (object_end == std::string::npos)
+        {
+            break;
+        }
+        const std::string object = text.substr(object_begin, object_end - object_begin);
+        auto field               = [&](const char* key) {
+            const std::string needle = std::string("\"") + key + "\":\"";
+            const qiven::usize at    = object.find(needle);
+            if (at == std::string::npos)
+            {
+                return std::string();
+            }
+            const qiven::usize start = at + needle.size();
+            const qiven::usize end   = object.find('"', start);
+            return end == std::string::npos ? std::string() : object.substr(start, end - start);
+        };
+        CheckoutBinding binding;
+        binding.repository = field("repository");
+        binding.checkout   = field("checkout");
+        binding.ref        = field("ref");
+        if (!binding.repository.empty() && !binding.checkout.empty() && !binding.ref.empty())
+        {
+            bindings.push_back(std::move(binding));
+        }
+        position = object_end + 1;
+    }
+    return bindings;
+}
+
+qiven::u64 now_ms_epoch()
+{
+    return static_cast<qiven::u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::system_clock::now().time_since_epoch())
+                                       .count());
+}
+
+std::optional<std::string> read_file_text(const std::filesystem::path& file)
+{
+    std::ifstream in(file, std::ios::binary);
+    if (!in)
+    {
+        return std::nullopt;
+    }
+    in.seekg(0, std::ios::end);
+    const auto size = in.tellg();
+    if (size < 0)
+    {
+        return std::nullopt;
+    }
+    std::string text;
+    text.resize(static_cast<std::size_t>(size));
+    in.seekg(0, std::ios::beg);
+    if (!text.empty())
+    {
+        in.read(text.data(), static_cast<std::streamsize>(text.size()));
+    }
+    if (!in)
+    {
+        return std::nullopt;
+    }
+    return text;
+}
+
+int index_rebuild(const std::vector<std::string>& args)
+{
+    std::filesystem::path core_path;
+    std::filesystem::path policy_path;
+    std::filesystem::path request_path;
+    std::filesystem::path root;
+    std::string generation_id;
+    if (const auto given = flag_value(args, "--core"); !given.empty())
+    {
+        core_path = given;
+    }
+    if (const auto given = flag_value(args, "--policy"); !given.empty())
+    {
+        policy_path = given;
+    }
+    if (const auto given = flag_value(args, "--request"); !given.empty())
+    {
+        request_path = given;
+    }
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        root = given;
+    }
+    if (const auto given = flag_value(args, "--generation"); !given.empty())
+    {
+        generation_id = given.string();
+    }
+    if (core_path.empty() || policy_path.empty() || request_path.empty() || root.empty() ||
+        generation_id.empty())
+    {
+        std::cout << "index rebuild: --core, --policy, --request, --root and --generation"
+                     " are required\n";
+        return exit_usage;
+    }
+    const auto core_text    = read_file_text(core_path);
+    const auto policy_text  = read_file_text(policy_path);
+    const auto request_text = read_file_text(request_path);
+    if (!core_text || !policy_text || !request_text)
+    {
+        std::cout << "index rebuild: unreadable core/policy/request file\n";
+        return exit_fail;
+    }
+    auto core   = qiven::runtime::cognition::parse_cognition_core(*core_text);
+    auto policy = qiven::runtime::cognition::parse_activation_policy(*policy_text);
+    if (!core.is_ok() || !policy.is_ok())
+    {
+        std::cout << "index rebuild: policy instance rejected ("
+                  << (!core.is_ok() ? core.reason().detail : policy.reason().detail) << ")\n";
+        return exit_fail;
+    }
+
+    // The pinned canonical bundle + execution generation come from the
+    // ACTIVE verified bundle at the runtime root.
+    const qiven::runtime::cognition::BundleStore store(root);
+    auto bundle = store.load_active();
+    if (!bundle.is_ok())
+    {
+        std::cout << "index rebuild: no verified ACTIVE bundle (" << bundle.reason().detail
+                  << ")\n";
+        return exit_fail;
+    }
+
+    const auto bindings = parse_bindings(*request_text);
+    qiven::runtime::cognition::SourceLockRequest lock_request;
+    for (const auto& corpus : core.value().corpus)
+    {
+        const CheckoutBinding* bound = nullptr;
+        for (const CheckoutBinding& binding : bindings)
+        {
+            if (binding.repository == corpus.repository)
+            {
+                bound = &binding;
+                break;
+            }
+        }
+        if (bound == nullptr)
+        {
+            std::cout << "index rebuild: corpus repository " << corpus.repository
+                      << " has no checkout binding in the request\n";
+            return exit_fail;
+        }
+        qiven::runtime::cognition::LockRepository locked;
+        locked.repository   = corpus.repository;
+        locked.path_filters = corpus.path_filters;
+        locked.checkout     = bound->checkout;
+        locked.ref          = bound->ref;
+        lock_request.repositories.push_back(std::move(locked));
+    }
+    lock_request.git_executable = "git";
+    const qiven::runtime::processx::ProcessRunner runner;
+    lock_request.runner = &runner;
+
+    const qiven::runtime::cognition::SourceLockBuilder lock_builder;
+    auto lock = lock_builder.build(lock_request);
+    if (!lock.is_ok())
+    {
+        std::cout << "index rebuild: source lock failed ("
+                  << qiven::runtime::cognition::lock_error_text(lock.reason()) << ")\n";
+        return exit_fail;
+    }
+
+    // canonical bundle digest = sha256 over the verified bundle's
+    // manifest.json bytes (the publisher's content-address identity)
+    const auto manifest_text = read_file_text(bundle.value().dir / "manifest.json");
+    if (!manifest_text)
+    {
+        std::cout << "index rebuild: ACTIVE bundle manifest unreadable\n";
+        return exit_fail;
+    }
+    qiven::SHA256Hasher manifest_hasher;
+    manifest_hasher.update(reinterpret_cast<const std::byte*>(manifest_text->data()),
+                           manifest_text->size());
+    const qiven::SHA256Digest manifest_digest = manifest_hasher.finish();
+    static constexpr char manifest_hex[]      = "0123456789abcdef";
+    std::string bundle_digest;
+    bundle_digest.resize(manifest_digest.size() * 2);
+    for (std::size_t i = 0; i < manifest_digest.size(); ++i)
+    {
+        const auto b             = static_cast<unsigned char>(manifest_digest[i]);
+        bundle_digest[2 * i]     = manifest_hex[b >> 4];
+        bundle_digest[2 * i + 1] = manifest_hex[b & 0x0Fu];
+    }
+
+    qiven::runtime::cognition::IndexBuildRequest build;
+    build.runtime_root            = root / ".qiven" / "runtime";
+    build.source_lock             = std::move(lock.value());
+    build.policy                  = std::move(policy.value());
+    build.canonical_bundle_digest = bundle_digest;
+    build.runtime_generation_id   = generation_id; // execution generation, its own identity axis
+    build.publisher_build         = "qiven-runtime-ca1";
+
+    const qiven::runtime::cognition::ActivationIndexBuilder index_builder;
+    auto built = index_builder.build(build);
+    if (!built.is_ok())
+    {
+        std::cout << "index rebuild: build failed ("
+                  << qiven::runtime::cognition::index_error_text(built.reason()) << ")\n";
+        return exit_fail;
+    }
+    std::cout << "index rebuild: generation " << built.value().activation_generation << " ("
+              << built.value().source_count << " sources, " << built.value().rule_count
+              << " rules)\n";
+    return exit_ok;
+}
+
+int index_status(const std::vector<std::string>& args)
+{
+    std::filesystem::path root;
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        root = given;
+    }
+    if (root.empty())
+    {
+        std::cout << "index status: --root is required\n";
+        return exit_usage;
+    }
+    const qiven::runtime::cognition::ActivationIndexBuilder builder;
+    const auto generation =
+        builder.active_generation(root / ".qiven" / "runtime");
+    if (generation.empty())
+    {
+        std::cout << "index status: NO ACTIVE GENERATION\n";
+        return exit_ok; // absence is a state, not a failure
+    }
+    std::cout << "index status: ACTIVE generation " << generation << "\n";
+    return exit_ok;
+}
+
+// cognition activate: envelope json → shared-core activation. The envelope
+// file carries the neutral task facts (condition-blind normalizer input):
+// {"objective": "...", "repository": "...", "revision": "...",
+//  "changed_paths": ["a", "b"], "phase": "implementation", "risk": "R2"}
+int cognition_activate(const std::vector<std::string>& args)
+{
+    std::filesystem::path core_path;
+    std::filesystem::path policy_path;
+    std::filesystem::path envelope_path;
+    std::filesystem::path root;
+    std::string generation;
+    std::string runtime_generation;
+    std::string lock_digest;
+    std::string profile = "zcode-jason";
+    if (const auto given = flag_value(args, "--core"); !given.empty())
+    {
+        core_path = given;
+    }
+    if (const auto given = flag_value(args, "--policy"); !given.empty())
+    {
+        policy_path = given;
+    }
+    if (const auto given = flag_value(args, "--envelope"); !given.empty())
+    {
+        envelope_path = given;
+    }
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        root = given;
+    }
+    if (const auto given = flag_value(args, "--generation"); !given.empty())
+    {
+        generation = given.string();
+    }
+    if (const auto given = flag_value(args, "--runtime-generation"); !given.empty())
+    {
+        runtime_generation = given.string();
+    }
+    if (const auto given = flag_value(args, "--source-lock"); !given.empty())
+    {
+        lock_digest = given.string();
+    }
+    if (const auto given = flag_value(args, "--profile"); !given.empty())
+    {
+        profile = given.string();
+    }
+    if (core_path.empty() || policy_path.empty() || envelope_path.empty() || root.empty() ||
+        generation.empty() || runtime_generation.empty() || lock_digest.empty())
+    {
+        std::cout << "activate: --core, --policy, --envelope, --root, --generation,"
+                     " --runtime-generation and --source-lock are required\n";
+        return exit_usage;
+    }
+
+    // ---- validate the operator-supplied facts against the SIDE CAR ----
+    // (TCA section 10 step 1 / section 13.2: the one-shot path must bind
+    // the LIVE activated state, never free strings. Every axis is checked
+    // against the ACTIVE generation's index manifest; mismatch = typed
+    // rejection, no receipt is minted.)
+    const auto sidecar_root = root / ".qiven" / "runtime" / "activation-generations";
+    const qiven::runtime::cognition::ActivationIndexBuilder index_builder;
+    const std::string active = index_builder.active_generation(root / ".qiven" / "runtime");
+    if (active.empty())
+    {
+        std::cout << "activate: NO ACTIVE activation generation - run `cognition index"
+                     " rebuild` first\n";
+        return exit_fail;
+    }
+    if (active != generation)
+    {
+        std::cout << "activate: --generation " << generation
+                  << " does not match the ACTIVE generation " << active
+                  << " - stale or fabricated axis rejected\n";
+        return exit_fail;
+    }
+    const auto manifest_text = read_file_text(sidecar_root / active / "index-manifest.json");
+    if (!manifest_text)
+    {
+        std::cout << "activate: ACTIVE index manifest unreadable\n";
+        return exit_fail;
+    }
+    const auto manifest_field = [&](const char* key) {
+        const std::string needle = std::string("\"") + key + "\":\"";
+        const auto at            = manifest_text->find(needle);
+        if (at == std::string::npos)
+        {
+            return std::string();
+        }
+        const auto begin = at + needle.size();
+        const auto end   = manifest_text->find('"', begin);
+        return end == std::string::npos ? std::string()
+                                        : manifest_text->substr(begin, end - begin);
+    };
+    const std::string manifest_lock    = manifest_field("external_source_lock_sha256");
+    const std::string manifest_runtime = manifest_field("runtime_generation");
+    const std::string manifest_policy  = manifest_field("activation_policy_sha256");
+    if (manifest_lock != lock_digest)
+    {
+        std::cout << "activate: --source-lock does not match the ACTIVE index manifest ("
+                  << manifest_lock << ") - stale or fabricated axis rejected\n";
+        return exit_fail;
+    }
+    if (manifest_runtime != runtime_generation)
+    {
+        std::cout << "activate: --runtime-generation does not match the ACTIVE index manifest ("
+                  << manifest_runtime << ") - stale or fabricated axis rejected\n";
+        return exit_fail;
+    }
+
+    const auto core_text     = read_file_text(core_path);
+    const auto policy_text   = read_file_text(policy_path);
+    const auto envelope_text = read_file_text(envelope_path);
+    if (!core_text || !policy_text || !envelope_text)
+    {
+        std::cout << "activate: unreadable core/policy/envelope file\n";
+        return exit_fail;
+    }
+    auto core   = qiven::runtime::cognition::parse_cognition_core(*core_text);
+    auto policy = qiven::runtime::cognition::parse_activation_policy(*policy_text);
+    if (!core.is_ok() || !policy.is_ok())
+    {
+        std::cout << "activate: policy rejected ("
+                  << (!core.is_ok() ? core.reason().detail : policy.reason().detail) << ")\n";
+        return exit_fail;
+    }
+
+    // envelope extraction (exact fields; unknown keys ignored)
+    auto field = [&](const char* key) {
+        const std::string needle = std::string("\"") + key + "\":\"";
+        const qiven::usize at    = envelope_text->find(needle);
+        if (at == std::string::npos)
+        {
+            return std::string();
+        }
+        const qiven::usize begin = at + needle.size();
+        const qiven::usize end   = envelope_text->find('"', begin);
+        return end == std::string::npos ? std::string() : envelope_text->substr(begin, end - begin);
+    };
+    qiven::runtime::cognition::TaskEnvelope envelope;
+    envelope.objective  = field("objective");
+    envelope.repository = field("repository");
+    envelope.revision   = field("revision");
+    if (envelope.objective.empty() || envelope.repository.empty())
+    {
+        std::cout << "activate: envelope must carry objective and repository\n";
+        return exit_fail;
+    }
+    // Fail-visible vocabulary law on operator-supplied axes: an unknown or
+    // empty phase/risk is rejected with the admissible set, never silently
+    // coerced to a default (a coerced axis silently changes typed selection).
+    const std::string phase_text_field = field("phase");
+    const auto phase                   = qiven::runtime::cognition::parse_task_phase(phase_text_field);
+    if (!phase)
+    {
+        std::cout << "activate: envelope phase '" << phase_text_field
+                  << "' is not vocabulary (specify|design|implementation|review|acceptance)\n";
+        return exit_fail;
+    }
+    envelope.phase                    = *phase;
+    const std::string risk_text_field = field("risk");
+    const auto risk                   = qiven::runtime::cognition::parse_task_risk(risk_text_field);
+    if (!risk)
+    {
+        std::cout << "activate: envelope risk '" << risk_text_field
+                  << "' is not vocabulary (R0|R1|R2|R3)\n";
+        return exit_fail;
+    }
+    envelope.risk = *risk;
+    {
+        const std::string needle = "\"changed_paths\":[";
+        const qiven::usize at    = envelope_text->find(needle);
+        if (at != std::string::npos)
+        {
+            const qiven::usize end = envelope_text->find(']', at);
+            if (end != std::string::npos)
+            {
+                const std::string list = envelope_text->substr(at + needle.size(), end - at - needle.size());
+                qiven::usize position  = 0;
+                while (position < list.size())
+                {
+                    const qiven::usize quote_begin = list.find('"', position);
+                    if (quote_begin == std::string::npos)
+                    {
+                        break;
+                    }
+                    const qiven::usize quote_end = list.find('"', quote_begin + 1);
+                    if (quote_end == std::string::npos)
+                    {
+                        break;
+                    }
+                    envelope.changed_paths.push_back(
+                        list.substr(quote_begin + 1, quote_end - quote_begin - 1));
+                    position = quote_end + 1;
+                }
+            }
+        }
+    }
+
+    // the policy digest recomputed over the parsed rule table (the same
+    // canonical serialization the index binds)
+    qiven::runtime::cognition::ActivationRequest request;
+    request.envelope                    = envelope;
+    request.core                        = std::move(core.value());
+    request.policy                      = std::move(policy.value());
+    request.activation_generation       = generation;
+    request.runtime_generation_id       = runtime_generation;
+    request.external_source_lock_sha256 = lock_digest;
+    request.activation_policy_sha256 =
+        qiven::runtime::cognition::activation_policy_digest(request.policy);
+    // the parsed policy must BE the policy the ACTIVE index bound
+    if (request.activation_policy_sha256 != manifest_policy)
+    {
+        std::cout << "activate: the parsed policy's digest does not match the ACTIVE index"
+                     " manifest ("
+                  << manifest_policy << ") - policy/axis drift rejected\n";
+        return exit_fail;
+    }
+    request.consumer_profile = profile;
+    request.runtime_root     = root / ".qiven" / "runtime";
+    request.now_ms           = now_ms_epoch();
+
+    const qiven::runtime::cognition::ActivationService service;
+    auto outcome = service.activate(request);
+    if (!outcome.is_ok())
+    {
+        std::cout << "activate: " << qiven::runtime::cognition::activation_error_text(outcome.reason())
+                  << "\n";
+        return exit_fail;
+    }
+    std::cout << "activate: readiness "
+              << qiven::runtime::cognition::readiness_text(outcome.value().selection.readiness)
+              << "\n  bundle " << outcome.value().bundle.bundle_id << " ("
+              << outcome.value().bundle.protected_count << " protected, "
+              << outcome.value().bundle.candidate_count << " candidates, "
+              << outcome.value().bundle.payload_bytes << " bytes)\n"
+              << "  receipt " << outcome.value().receipt.receipt_id << "\n";
+    return exit_ok;
+}
+
+// cognition activation show|explain|verify-receipt: the receipt surfaces
+// (roadmap CA-1: issue, persist, EXPLAIN, INVALIDATE, verify — v1 CLI
+// carries show/explain/verify-receipt; invalidation is implicit by
+// generation movement (receipts fail verify on any bound-axis change)
+// and by deleting the sidecar journal entry at re-key time).
+int activation_show(const std::vector<std::string>& args)
+{
+    std::filesystem::path root;
+    std::string receipt_id;
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        root = given;
+    }
+    if (const auto given = flag_value(args, "--id"); !given.empty())
+    {
+        receipt_id = given.string();
+    }
+    if (root.empty())
+    {
+        std::cout << "activation show: --root is required ([--id <receipt>])\n";
+        return exit_usage;
+    }
+    const qiven::runtime::cognition::ActivationIndexBuilder index_builder;
+    const std::string active =
+        index_builder.active_generation(root / ".qiven" / "runtime");
+    std::cout << "activation show: ACTIVE generation "
+              << (active.empty() ? "<none>" : active) << "\n";
+    if (!receipt_id.empty())
+    {
+        const qiven::runtime::cognition::ActivationReceiptJournal journal(
+            root / ".qiven" / "runtime" / "receipts");
+        auto loaded = journal.load(receipt_id);
+        if (!loaded.is_ok())
+        {
+            std::cout << "activation show: journal error ("
+                      << qiven::runtime::cognition::receipt_error_text(loaded.reason())
+                      << ")\n";
+            return exit_fail;
+        }
+        if (!loaded.value().has_value())
+        {
+            std::cout << "activation show: receipt " << receipt_id << " UNKNOWN\n";
+            return exit_fail;
+        }
+        const auto& receipt = *loaded.value();
+        std::cout << "  receipt " << receipt.receipt_id << "\n"
+                  << "    issued_at_ms " << receipt.issued_at_ms << "\n"
+                  << "    bundle " << receipt.facts.bundle_id << "\n"
+                  << "    runtime_generation " << receipt.facts.runtime_generation_id << "\n"
+                  << "    activation_generation " << receipt.facts.activation_generation << "\n"
+                  << "    budget " << receipt.facts.budget_bytes << "\n";
+    }
+    return exit_ok;
+}
+
+int activation_explain(const std::vector<std::string>& args)
+{
+    std::filesystem::path root;
+    std::string receipt_id;
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        root = given;
+    }
+    if (const auto given = flag_value(args, "--id"); !given.empty())
+    {
+        receipt_id = given.string();
+    }
+    if (root.empty() || receipt_id.empty())
+    {
+        std::cout << "activation explain: --root and --id are required\n";
+        return exit_usage;
+    }
+    const qiven::runtime::cognition::ActivationReceiptJournal journal(
+        root / ".qiven" / "runtime" / "receipts");
+    auto loaded = journal.load(receipt_id);
+    if (!loaded.is_ok() || !loaded.value().has_value())
+    {
+        std::cout << "activation explain: receipt " << receipt_id << " unavailable\n";
+        return exit_fail;
+    }
+    const auto& receipt = *loaded.value();
+    // the canonical facts ARE the explanation (every axis an activation
+    // bound; the receipt explains itself deterministically)
+    std::cout << "activation explain: " << receipt.receipt_id << "\n"
+              << receipt.canonical_json() << "\n";
+    return exit_ok;
+}
+
+int activation_verify(const std::vector<std::string>& args)
+{
+    std::filesystem::path root;
+    std::string receipt_id;
+    if (const auto given = flag_value(args, "--root"); !given.empty())
+    {
+        root = given;
+    }
+    if (const auto given = flag_value(args, "--id"); !given.empty())
+    {
+        receipt_id = given.string();
+    }
+    if (root.empty() || receipt_id.empty())
+    {
+        std::cout << "activation verify-receipt: --root and --id are required\n";
+        return exit_usage;
+    }
+    const qiven::runtime::cognition::ActivationReceiptJournal journal(
+        root / ".qiven" / "runtime" / "receipts");
+    auto loaded = journal.load(receipt_id);
+    if (!loaded.is_ok() || !loaded.value().has_value())
+    {
+        std::cout << "activation verify-receipt: receipt " << receipt_id << " unavailable\n";
+        return exit_fail;
+    }
+    const auto& receipt = *loaded.value();
+
+    // verify against the LIVE activated state: the ACTIVE generation and
+    // its manifest are the current facts (task/bundle axes verified at
+    // consume time by the service; this is the state-axis check).
+    qiven::runtime::cognition::ReceiptFacts current = receipt.facts;
+    const qiven::runtime::cognition::ActivationIndexBuilder index_builder;
+    const std::string active =
+        index_builder.active_generation(root / ".qiven" / "runtime");
+    if (active.empty())
+    {
+        std::cout << "activation verify-receipt: NO ACTIVE generation\n";
+        return exit_fail;
+    }
+    current.activation_generation = active;
+    const auto manifest           = read_file_text(root / ".qiven" / "runtime" / "activation-generations" /
+                                                   active / "index-manifest.json");
+    if (!manifest)
+    {
+        // Fail-closed (same class as the activate path): an unreadable
+        // ACTIVE manifest must never let verification fall back to the
+        // receipt's own axes - a broken sidecar cannot verify itself.
+        std::cout << "activation verify-receipt: ACTIVE manifest unreadable (generation "
+                  << active << ")\n";
+        return exit_fail;
+    }
+    {
+        const std::string needle = "\"external_source_lock_sha256\":\"";
+        const auto at            = manifest->find(needle);
+        if (at == std::string::npos)
+        {
+            std::cout << "activation verify-receipt: ACTIVE manifest carries no source-lock "
+                         "digest\n";
+            return exit_fail;
+        }
+        const auto begin = at + needle.size();
+        const auto end   = manifest->find('"', begin);
+        if (end == std::string::npos)
+        {
+            std::cout << "activation verify-receipt: ACTIVE manifest source-lock digest "
+                         "malformed\n";
+            return exit_fail;
+        }
+        current.external_source_lock_sha256 = manifest->substr(begin, end - begin);
+    }
+    const auto verdict = qiven::runtime::cognition::verify_receipt(
+        receipt, current, now_ms_epoch());
+    std::cout << "activation verify-receipt: "
+              << qiven::runtime::cognition::receipt_verify_text(verdict) << "\n";
+    return verdict == qiven::runtime::cognition::ReceiptVerify::Valid ? exit_ok : exit_fail;
+}
+} // namespace
+
 int main(int argc, char** argv)
 {
     // Headless CRT failure behavior (the 2026-09-19 modal-abort law): a CRT
@@ -376,6 +1058,30 @@ int main(int argc, char** argv)
     if (object == "cognition" && verb == "show")
     {
         return cognition_show(args);
+    }
+    if (object == "cognition" && verb == "activate")
+    {
+        return cognition_activate(args);
+    }
+    if (object == "activation" && verb == "show")
+    {
+        return activation_show(args);
+    }
+    if (object == "activation" && verb == "explain")
+    {
+        return activation_explain(args);
+    }
+    if (object == "activation" && verb == "verify-receipt")
+    {
+        return activation_verify(args);
+    }
+    if (object == "index" && verb == "rebuild")
+    {
+        return index_rebuild(args);
+    }
+    if (object == "index" && verb == "status")
+    {
+        return index_status(args);
     }
     if (object == "profile" && verb == "show")
     {
