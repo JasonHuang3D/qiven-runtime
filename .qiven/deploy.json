@@ -11,9 +11,13 @@
   },
   "products": [
     { "from": "build/vs2022-x64/Release/qiven-runtime-host.exe", "to": "bin/qiven-runtime-host.exe" },
+    { "from": "build/vs2022-x64/Release/qiven-runtime-host.pdb", "to": "bin/qiven-runtime-host.pdb" },
     { "from": "build/vs2022-x64/Release/qiven-adapter-bridge.exe", "to": "bin/qiven-adapter-bridge.exe" },
+    { "from": "build/vs2022-x64/Release/qiven-adapter-bridge.pdb", "to": "bin/qiven-adapter-bridge.pdb" },
     { "from": "build/vs2022-x64/Release/qiven-runtimectl.exe", "to": "bin/qiven-runtimectl.exe" },
+    { "from": "build/vs2022-x64/Release/qiven-runtimectl.pdb", "to": "bin/qiven-runtimectl.pdb" },
     { "from": "build/vs2022-x64/Release/qiven-zcode-hook.exe", "to": "bin/qiven-zcode-hook.exe" },
+    { "from": "build/vs2022-x64/Release/qiven-zcode-hook.pdb", "to": "bin/qiven-zcode-hook.pdb" },
     { "from": "build/vs2022-x64/Release/qiven-runtime.lib", "to": "lib/qiven-runtime.lib" },
     { "from": "include/qiven", "to": "include/qiven" },
     { "from": "config", "to": "config" }
