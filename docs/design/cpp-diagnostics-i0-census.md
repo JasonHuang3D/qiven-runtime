@@ -50,11 +50,11 @@ Windows. Entry form for all four: `int main(int argc, char** argv)`.
 
 Additional terminate paths (not handler installs): Foundation
 `qiven::detail::contract_fail` (`QIVEN_ASSERT`/`QIVEN_VERIFY`/
-`QIVEN_UNREACHABLE`, foundation src/contracts.cpp:75-108) — snprintf on
+`QIVEN_UNREACHABLE`, foundation src/contracts.cpp:76-117) — snprintf on
 the fault path, stderr-handle `WriteFile`, `OutputDebugStringA`,
 `DebugBreak` if debugger attached, then `std::_Exit(3)` on Windows
-(avoiding the abort modal; contracts.cpp comment records the 2026-09-19
-incident). `QIVEN_ASSERT` compiles to nothing in Release;
+(contracts.cpp:113; the 2026-09-19 modal-incident comment at
+contracts.cpp:109-111). `QIVEN_ASSERT` compiles to nothing in Release;
 `QIVEN_VERIFY`/`QIVEN_UNREACHABLE` are active in both. Runtime production
 sources contain ~20 QIVEN_ASSERT/VERIFY sites. Test-only
 `TerminateProcess` crash injection exists solely behind
@@ -102,7 +102,10 @@ claim rests on the declared build configuration.
 qiven-runtime tests/CMakeLists.txt at `339d27d`: **52 test executables**
 (30 direct `add_executable` + 22 via the `qiven_runtime_add_journal_test`
 helper) and **52 ctest registrations**, plus 1 OBJECT header-check library
-(`qiven-runtime-header-check`, 57 header-inclusion TUs). Classes relevant
+(`qiven-runtime-header-check`, 56 listed source references = 55 unique
+header-inclusion TUs — `headers/claims.cpp` is listed twice, at
+tests/CMakeLists.txt:65 and :89; `tests/headers/cognition_shadow_compare.cpp`
+on disk is not compiled into the target). Classes relevant
 to diagnostics: (a) all link `qiven::runtime` statically and inherit the
 Foundation callback surface; (b) `qiven-runtime-journal-crash-recovery`
 compiles the journal sources directly with `QIVEN_RUNTIME_TEST_CRASH_POINTS`
@@ -169,7 +172,8 @@ class the incident corrupts; fixed-code-only termination
 `TerminateProcess(3143)` (lines 43, 57) with no fault-context capture, no
 dump, no inspector handoff, and one exit code doubling as both
 "CRT-fault evidence" and generic termination. Present and correct:
-`InterlockedExchange` reentrancy guard (line 29), no stdio-stream use,
+re-entrancy guard (`g_entered_fault_handler` declared at line 29, the
+`InterlockedExchange` check at line 41), no stdio-stream use,
 no return from the callback.
 
 ## 4. Pinned third-party mechanism study
