@@ -112,6 +112,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/bundle.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/publisher.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/source_lock.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/shadow_compare.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/activation_policy.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/activation_index.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qiven/runtime/cognition/task_descriptor.hpp
@@ -169,6 +170,7 @@ set(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/bundle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/publisher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/source_lock.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/shadow_compare.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/activation_policy.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/activation_index.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cognition/task_descriptor.cpp

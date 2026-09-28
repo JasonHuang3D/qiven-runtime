@@ -363,6 +363,7 @@ qiven_runtime_add_journal_test(activation-index activation_index.cpp)
 qiven_runtime_add_journal_test(selector-eval selector_eval.cpp)
 qiven_runtime_add_journal_test(task-bundle-receipt task_bundle_receipt.cpp)
 qiven_runtime_add_journal_test(activation-conformance cognition_activation_conformance.cpp)
+qiven_runtime_add_journal_test(shadow-compare cognition_shadow_compare.cpp)
 
 # Profile B sealed-corpus suite: fixtures live in the source tree (like
 # the rr0 goldens); inline registration carries the fixtures-path define.

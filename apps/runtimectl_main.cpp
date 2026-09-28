@@ -24,6 +24,7 @@
 #include <qiven/runtime/cognition/activation_receipt.hpp>
 #include <qiven/runtime/cognition/activation_service.hpp>
 #include <qiven/runtime/cognition/bundle.hpp>
+#include <qiven/runtime/cognition/shadow_compare.hpp>
 #include <qiven/runtime/cognition/source_lock.hpp>
 #include <qiven/runtime/host/deployment_profile.hpp>
 #include <qiven/runtime/ipc/framing.hpp>
@@ -56,6 +57,8 @@ int usage()
                  " --runtime-generation <id> --source-lock <sha256> [--profile <name>]\n"
               << "       qiven-runtimectl index rebuild --core <yaml> --policy <yaml>"
                  " --request <json> --root <dir> --generation <id>\n"
+              << "       qiven-runtimectl index shadow-compare --core <yaml>"
+                 " --request <json> --workspace-lock <json>\n"
               << "       qiven-runtimectl index status [--root <dir>]\n"
               << "       qiven-runtimectl profile show [--profile <profile file>]\n"
               << "       qiven-runtimectl status show [--root <qiven-context checkout>]\n"
@@ -441,6 +444,140 @@ qiven::u64 now_ms_epoch()
                                        .count());
 }
 
+std::optional<std::string> read_file_text(const std::filesystem::path& file);
+
+int index_shadow_compare(const std::vector<std::string>& args)
+{
+    // WR-7 engineering leg: shadow-compare the TCA source closure against
+    // the WorkspaceGeneration. PURE + NON-MUTATING (no index build, no
+    // ACTIVE pointer, no digest into the lock/ActivationGeneration);
+    // divergence fails the WR-7 migration gate only.
+    std::filesystem::path core_path;
+    std::filesystem::path request_path;
+    std::filesystem::path workspace_lock_path;
+    if (const auto given = flag_value(args, "--core"); !given.empty())
+    {
+        core_path = given;
+    }
+    if (const auto given = flag_value(args, "--request"); !given.empty())
+    {
+        request_path = given;
+    }
+    if (const auto given = flag_value(args, "--workspace-lock"); !given.empty())
+    {
+        workspace_lock_path = given;
+    }
+    if (core_path.empty() || request_path.empty() || workspace_lock_path.empty())
+    {
+        std::cout << "index shadow-compare: --core, --request and --workspace-lock are required\n";
+        return exit_usage;
+    }
+    const auto core_text      = read_file_text(core_path);
+    const auto request_text   = read_file_text(request_path);
+    const auto workspace_text = read_file_text(workspace_lock_path);
+    if (!core_text || !request_text || !workspace_text)
+    {
+        std::cout << "index shadow-compare: unreadable core/request/workspace-lock file\n";
+        return exit_usage;
+    }
+    auto core = qiven::runtime::cognition::parse_cognition_core(*core_text);
+    if (!core.is_ok())
+    {
+        std::cout << "index shadow-compare: core rejected at line "
+                  << core.reason().line << ": " << core.reason().detail << "\n";
+        return exit_fail;
+    }
+    const std::vector<CheckoutBinding> bindings = parse_bindings(*request_text);
+
+    qiven::runtime::cognition::SourceLockRequest lock_request;
+    for (const auto& corpus : core.value().corpus)
+    {
+        const CheckoutBinding* bound = nullptr;
+        for (const CheckoutBinding& binding : bindings)
+        {
+            if (binding.repository == corpus.repository)
+            {
+                bound = &binding;
+                break;
+            }
+        }
+        if (bound == nullptr)
+        {
+            std::cout << "index shadow-compare: corpus repository " << corpus.repository
+                      << " has no checkout binding in the request\n";
+            return exit_fail;
+        }
+        qiven::runtime::cognition::LockRepository locked;
+        locked.repository   = corpus.repository;
+        locked.path_filters = corpus.path_filters;
+        locked.checkout     = bound->checkout;
+        locked.ref          = bound->ref;
+        lock_request.repositories.push_back(std::move(locked));
+    }
+    lock_request.git_executable = R"(C:\Program Files\Git\cmd\git.exe)";
+    const qiven::runtime::processx::ProcessRunner runner;
+    lock_request.runner = &runner;
+
+    const qiven::runtime::cognition::SourceLockBuilder lock_builder;
+    auto lock = lock_builder.build(lock_request);
+    if (!lock.is_ok())
+    {
+        // name the failing repository: the builder fails on the first
+        // typed fault without saying which closure member produced it
+        std::string failing = "<unknown>";
+        for (const auto& corpus : core.value().corpus)
+        {
+            const CheckoutBinding* bound = nullptr;
+            for (const CheckoutBinding& binding : bindings)
+            {
+                if (binding.repository == corpus.repository)
+                {
+                    bound = &binding;
+                    break;
+                }
+            }
+            if (bound == nullptr)
+            {
+                continue;
+            }
+            const qiven::runtime::cognition::SourceLockRequest probe_request;
+            (void)probe_request;
+            qiven::runtime::cognition::SourceLockRequest one;
+            qiven::runtime::cognition::LockRepository single;
+            single.repository   = corpus.repository;
+            single.path_filters = corpus.path_filters;
+            single.checkout     = bound->checkout;
+            single.ref          = bound->ref;
+            one.repositories.push_back(std::move(single));
+            one.git_executable = R"(C:\Program Files\Git\cmd\git.exe)";
+            one.runner         = &runner;
+            auto single_lock   = lock_builder.build(one);
+            if (!single_lock.is_ok())
+            {
+                failing = corpus.repository;
+                break;
+            }
+        }
+        std::cout << "index shadow-compare: source lock failed at [" << failing << "] ("
+                  << qiven::runtime::cognition::lock_error_text(lock.reason())
+                  << ") - observed CA-1 builder state, not an equivalence verdict\n";
+        return exit_fail;
+    }
+
+    qiven::runtime::cognition::WorkspaceLockState workspace =
+        qiven::runtime::cognition::parse_workspace_lock(*workspace_text);
+    if (workspace.nodes.empty() || workspace.generation.empty())
+    {
+        std::cout << "index shadow-compare: workspace lock unreadable or has no nodes\n";
+        return exit_fail;
+    }
+    qiven::runtime::cognition::ShadowCompareResult compared =
+        qiven::runtime::cognition::shadow_compare(lock.value(), workspace);
+    compared.workspace_lock_binding = "fresh-build";
+    std::cout << qiven::runtime::cognition::shadow_compare_receipt_json(compared) << "\n";
+    return compared.all_equal() ? exit_ok : exit_fail;
+}
+
 std::optional<std::string> read_file_text(const std::filesystem::path& file)
 {
     std::ifstream in(file, std::ios::binary);
@@ -556,7 +693,7 @@ int index_rebuild(const std::vector<std::string>& args)
         locked.ref          = bound->ref;
         lock_request.repositories.push_back(std::move(locked));
     }
-    lock_request.git_executable = "git";
+    lock_request.git_executable = R"(C:\Program Files\Git\cmd\git.exe)";
     const qiven::runtime::processx::ProcessRunner runner;
     lock_request.runner = &runner;
 
@@ -1078,6 +1215,10 @@ int main(int argc, char** argv)
     if (object == "index" && verb == "rebuild")
     {
         return index_rebuild(args);
+    }
+    if (object == "index" && verb == "shadow-compare")
+    {
+        return index_shadow_compare(args);
     }
     if (object == "index" && verb == "status")
     {
