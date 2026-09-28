@@ -278,6 +278,66 @@ int main()
     }
     std::printf("[ OK ] invalid request typed-rejected%s", eol.c_str());
 
+    // ---- WR-7 cutover provenance (ADR-0058 d6): the workspace
+    // generation is PROVENANCE ONLY — a different workspace generation
+    // with identical content must NOT change ActivationGeneration, and
+    // the sidecar records it + refreshes on exact-key reuse ----
+    {
+        IndexBuildRequest provenance       = request;
+        provenance.workspace_generation    = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const std::string with_provenance  = qiven::runtime::cognition::activation_generation_of(
+            provenance);
+        if (with_provenance != generation)
+        {
+            std::printf("[FAIL] workspace provenance changed ActivationGeneration%s", eol.c_str());
+            return 30;
+        }
+        auto built = builder.build(provenance);
+        if (!built.is_ok() || built.value().activation_generation != generation ||
+            built.value().index_dir != first.value().index_dir)
+        {
+            std::printf("[FAIL] provenance build failed%s", eol.c_str());
+            return 31;
+        }
+        const auto sidecar =
+            read_text(built.value().index_dir / "workspace-provenance.json").value_or("");
+        if (sidecar.find("\"workspace_generation\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"") ==
+                std::string::npos ||
+            sidecar.find("\"binding\":\"provenance-only-never-content\"") == std::string::npos)
+        {
+            std::printf("[FAIL] provenance sidecar wrong: %s%s", sidecar.c_str(), eol.c_str());
+            return 32;
+        }
+        // content finality: the manifest does NOT carry the provenance
+        if (read_text(built.value().index_dir / "index-manifest.json")
+                ->find("workspace_generation") != std::string::npos)
+        {
+            std::printf("[FAIL] provenance leaked into the content manifest%s", eol.c_str());
+            return 33;
+        }
+        // reuse drift refreshes ONLY the provenance sidecar
+        IndexBuildRequest moved_provenance    = provenance;
+        moved_provenance.workspace_generation = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        auto refreshed                       = builder.build(moved_provenance);
+        if (!refreshed.is_ok() ||
+            refreshed.value().activation_generation != generation ||
+            refreshed.value().index_dir != first.value().index_dir)
+        {
+            std::printf("[FAIL] provenance-drift reuse failed%s", eol.c_str());
+            return 34;
+        }
+        const auto refreshed_sidecar =
+            read_text(refreshed.value().index_dir / "workspace-provenance.json").value_or("");
+        if (refreshed_sidecar.find("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") ==
+            std::string::npos)
+        {
+            std::printf("[FAIL] provenance sidecar not refreshed on reuse%s", eol.c_str());
+            return 35;
+        }
+        std::printf("[ OK ] workspace provenance recorded, digest-neutral, refresh-on-reuse%s",
+                    eol.c_str());
+    }
+
     // ---- corruption of an existing generation is NEVER silently reused:
     // a tampered manifest mismatches the re-derived bytes → typed fault
     // (Profile A.8; rebuild happens only from a clean state) ----

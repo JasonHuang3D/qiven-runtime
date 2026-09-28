@@ -219,10 +219,41 @@ qiven::Result<void, ReceiptError> ActivationReceiptJournal::persist(
         sqlite3_close_v2(db);
         return qiven::Result<void, ReceiptError>::fail(ReceiptError::Persistence);
     }
+    // WR-7 cutover (ADR-0058 decision 6): the envelope provenance column,
+    // added lazily to pre-cutover journals (idempotent migration).
+    bool has_provenance_column = false;
+    sqlite3_stmt* columns       = nullptr;
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(receipts)", -1, &columns, nullptr) == SQLITE_OK)
+    {
+        while (sqlite3_step(columns) == SQLITE_ROW)
+        {
+            const char* name = reinterpret_cast<const char*>(sqlite3_column_text(columns, 1));
+            if (name != nullptr && std::string(name) == "workspace_generation")
+            {
+                has_provenance_column = true;
+                break;
+            }
+        }
+        sqlite3_finalize(columns);
+    }
+    if (!has_provenance_column)
+    {
+        char* alter_error  = nullptr;
+        const bool altered = sqlite3_exec(db,
+                                          "ALTER TABLE receipts ADD COLUMN workspace_generation "
+                                          "TEXT NOT NULL DEFAULT '';",
+                                          nullptr, nullptr, &alter_error) == SQLITE_OK;
+        sqlite3_free(alter_error);
+        if (!altered)
+        {
+            sqlite3_close_v2(db);
+            return qiven::Result<void, ReceiptError>::fail(ReceiptError::Persistence);
+        }
+    }
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db,
                            "INSERT OR IGNORE INTO receipts(receipt_id, facts_json, issued_at_ms, "
-                           "nonce_hex) VALUES(?,?,?,?)",
+                           "nonce_hex, workspace_generation) VALUES(?,?,?,?,?)",
                            -1, &stmt, nullptr) != SQLITE_OK)
     {
         sqlite3_close_v2(db);
@@ -232,6 +263,7 @@ qiven::Result<void, ReceiptError> ActivationReceiptJournal::persist(
     sqlite3_bind_text(stmt, 2, receipt.canonical_json().c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(receipt.issued_at_ms));
     sqlite3_bind_text(stmt, 4, receipt.nonce_hex.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, receipt.workspace_generation.c_str(), -1, SQLITE_TRANSIENT);
     const bool step = sqlite3_step(stmt) == SQLITE_DONE;
     sqlite3_finalize(stmt);
     sqlite3_close_v2(db);
@@ -259,14 +291,25 @@ ActivationReceiptJournal::load(const std::string& receipt_id) const
             ReceiptError::Persistence);
     }
     sqlite3_stmt* stmt = nullptr;
+    bool provenance_column = true;
     if (sqlite3_prepare_v2(db,
-                           "SELECT facts_json, issued_at_ms, nonce_hex FROM receipts WHERE "
-                           "receipt_id = ?",
+                           "SELECT facts_json, issued_at_ms, nonce_hex, workspace_generation "
+                           "FROM receipts WHERE receipt_id = ?",
                            -1, &stmt, nullptr) != SQLITE_OK)
     {
-        sqlite3_close_v2(db);
-        return qiven::Result<std::optional<ContextActivationReceipt>, ReceiptError>::fail(
-            ReceiptError::Persistence);
+        // pre-cutover journal without the provenance column: fall back to
+        // the legacy 4-column read (provenance honestly empty — those
+        // receipts were issued before the WR-7 cutover recorded one)
+        provenance_column = false;
+        if (sqlite3_prepare_v2(db,
+                               "SELECT facts_json, issued_at_ms, nonce_hex FROM receipts WHERE "
+                               "receipt_id = ?",
+                               -1, &stmt, nullptr) != SQLITE_OK)
+        {
+            sqlite3_close_v2(db);
+            return qiven::Result<std::optional<ContextActivationReceipt>, ReceiptError>::fail(
+                ReceiptError::Persistence);
+        }
     }
     sqlite3_bind_text(stmt, 1, receipt_id.c_str(), -1, SQLITE_TRANSIENT);
     const int step = sqlite3_step(stmt);
@@ -289,6 +332,14 @@ ActivationReceiptJournal::load(const std::string& receipt_id) const
     ContextActivationReceipt receipt;
     receipt.issued_at_ms = static_cast<u64>(sqlite3_column_int64(stmt, 1));
     receipt.nonce_hex    = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+    if (provenance_column && sqlite3_column_type(stmt, 3) != SQLITE_NULL)
+    {
+        const char* provenance = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        if (provenance != nullptr)
+        {
+            receipt.workspace_generation = provenance;
+        }
+    }
     sqlite3_finalize(stmt);
     sqlite3_close_v2(db);
 

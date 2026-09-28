@@ -56,7 +56,7 @@ int usage()
                  " --envelope <json> --root <dir> --generation <id>"
                  " --runtime-generation <id> --source-lock <sha256> [--profile <name>]\n"
               << "       qiven-runtimectl index rebuild --core <yaml> --policy <yaml>"
-                 " --request <json> --root <dir> --generation <id>\n"
+                 " --request <json> --workspace-lock <json> --root <dir> --generation <id>\n"
               << "       qiven-runtimectl index shadow-compare --core <yaml>"
                  " --request <json> --workspace-lock <json>\n"
               << "       qiven-runtimectl index status [--root <dir>]\n"
@@ -446,6 +446,52 @@ qiven::u64 now_ms_epoch()
 
 std::optional<std::string> read_file_text(const std::filesystem::path& file);
 
+// WR-7 cutover shared helper: tier-2 filter sets read at the workspace
+// lock's context (carrier) node revision — the corpus table that exists at
+// the LOCKED revision, compared against the lock-driving table.
+qiven::runtime::cognition::ShadowFilterSets filters_at_carrier_node(
+    const qiven::runtime::processx::ProcessRunner& runner,
+    const std::vector<CheckoutBinding>& bindings,
+    const qiven::runtime::cognition::WorkspaceLockState& workspace)
+{
+    qiven::runtime::cognition::ShadowFilterSets at_node;
+    const std::string* carrier_checkout = nullptr;
+    for (const CheckoutBinding& binding : bindings)
+    {
+        if (binding.repository == "qiven-context")
+        {
+            carrier_checkout = &binding.checkout;
+            break;
+        }
+    }
+    auto carrier_node = workspace.nodes.find("qiven-context");
+    if (carrier_checkout != nullptr && carrier_node != workspace.nodes.end() &&
+        carrier_node->second.commit.size() == 40)
+    {
+        qiven::runtime::processx::ProcessSpec show;
+        show.executable  = R"(C:\Program Files\Git\cmd\git.exe)";
+        show.argv        = { "git", "-C", *carrier_checkout, "show",
+                             carrier_node->second.commit + ":runtime/cognition/cognition-core.yaml" };
+        show.deadline_ms = 30'000;
+        auto shown       = runner.run(show);
+        if (shown.is_ok() && shown.value().exit_code == 0)
+        {
+            auto node_core = qiven::runtime::cognition::parse_cognition_core(shown.value().out);
+            if (node_core.is_ok())
+            {
+                at_node.carrier_table_present = true;
+                for (const auto& corpus : node_core.value().corpus)
+                {
+                    at_node.filters.emplace(corpus.repository, corpus.path_filters);
+                }
+            }
+        }
+        // unreadable/absent/malformed at the node revision stays
+        // carrier_table_present=false: FilterSetMismatch, fail-closed
+    }
+    return at_node;
+}
+
 int index_shadow_compare(const std::vector<std::string>& args)
 {
     // WR-7 engineering leg: shadow-compare the TCA source closure against
@@ -581,41 +627,8 @@ int index_shadow_compare(const std::vector<std::string>& args)
     {
         filters_used.filters.emplace(corpus.repository, corpus.path_filters);
     }
-    qiven::runtime::cognition::ShadowFilterSets filters_at_node;
-    const std::string* carrier_checkout = nullptr;
-    for (const CheckoutBinding& binding : bindings)
-    {
-        if (binding.repository == "qiven-context")
-        {
-            carrier_checkout = &binding.checkout;
-            break;
-        }
-    }
-    auto carrier_node = workspace.nodes.find("qiven-context");
-    if (carrier_checkout != nullptr && carrier_node != workspace.nodes.end() &&
-        carrier_node->second.commit.size() == 40)
-    {
-        qiven::runtime::processx::ProcessSpec show;
-        show.executable  = R"(C:\Program Files\Git\cmd\git.exe)";
-        show.argv        = { "git", "-C", *carrier_checkout, "show",
-                             carrier_node->second.commit + ":runtime/cognition/cognition-core.yaml" };
-        show.deadline_ms = 30'000;
-        auto shown       = runner.run(show);
-        if (shown.is_ok() && shown.value().exit_code == 0)
-        {
-            auto node_core = qiven::runtime::cognition::parse_cognition_core(shown.value().out);
-            if (node_core.is_ok())
-            {
-                filters_at_node.carrier_table_present = true;
-                for (const auto& corpus : node_core.value().corpus)
-                {
-                    filters_at_node.filters.emplace(corpus.repository, corpus.path_filters);
-                }
-            }
-        }
-        // unreadable/absent/malformed at the node revision stays
-        // carrier_table_present=false: FilterSetMismatch, fail-closed
-    }
+    qiven::runtime::cognition::ShadowFilterSets filters_at_node =
+        filters_at_carrier_node(runner, bindings, workspace);
     qiven::runtime::cognition::ShadowCompareResult compared =
         qiven::runtime::cognition::shadow_compare(lock.value(), workspace, filters_used,
                                                   filters_at_node);
@@ -656,6 +669,7 @@ int index_rebuild(const std::vector<std::string>& args)
     std::filesystem::path core_path;
     std::filesystem::path policy_path;
     std::filesystem::path request_path;
+    std::filesystem::path workspace_lock_path;
     std::filesystem::path root;
     std::string generation_id;
     if (const auto given = flag_value(args, "--core"); !given.empty())
@@ -670,6 +684,10 @@ int index_rebuild(const std::vector<std::string>& args)
     {
         request_path = given;
     }
+    if (const auto given = flag_value(args, "--workspace-lock"); !given.empty())
+    {
+        workspace_lock_path = given;
+    }
     if (const auto given = flag_value(args, "--root"); !given.empty())
     {
         root = given;
@@ -678,11 +696,11 @@ int index_rebuild(const std::vector<std::string>& args)
     {
         generation_id = given.string();
     }
-    if (core_path.empty() || policy_path.empty() || request_path.empty() || root.empty() ||
-        generation_id.empty())
+    if (core_path.empty() || policy_path.empty() || request_path.empty() ||
+        workspace_lock_path.empty() || root.empty() || generation_id.empty())
     {
-        std::cout << "index rebuild: --core, --policy, --request, --root and --generation"
-                     " are required\n";
+        std::cout << "index rebuild: --core, --policy, --request, --workspace-lock, --root and"
+                     " --generation are required\n";
         return exit_usage;
     }
     const auto core_text    = read_file_text(core_path);
@@ -752,6 +770,52 @@ int index_rebuild(const std::vector<std::string>& args)
         return exit_fail;
     }
 
+    // ---- WR-7 CUTOVER GATE (ADR-0058; H1#2 accepted 2026-09-28): the
+    // repository selection is bound to the WorkspaceGeneration. The
+    // freshly built closure must be EQUAL to the workspace lock nodes
+    // (tier-1 commit/tree + tier-2 corpus filters) and every compared
+    // node must be repository-manifest (non-shadow). Divergence is a
+    // typed build failure — the v42 StaleNode class (49-behind) is
+    // structurally impossible to activate from, never a silent stale
+    // read. E7.1: same-window lock-entry means the checkouts are at the
+    // CURRENT admitted lock; a stale lock fails here.
+    const auto workspace_text = read_file_text(workspace_lock_path);
+    if (!workspace_text)
+    {
+        std::cout << "index rebuild: workspace lock unreadable\n";
+        return exit_fail;
+    }
+    qiven::runtime::cognition::WorkspaceLockState workspace =
+        qiven::runtime::cognition::parse_workspace_lock(*workspace_text);
+    if (workspace.nodes.empty() || workspace.generation.empty())
+    {
+        std::cout << "index rebuild: workspace lock unreadable or has no nodes\n";
+        return exit_fail;
+    }
+    {
+        qiven::runtime::cognition::ShadowFilterSets filters_used;
+        filters_used.carrier_table_present = true;
+        for (const auto& corpus : core.value().corpus)
+        {
+            filters_used.filters.emplace(corpus.repository, corpus.path_filters);
+        }
+        const qiven::runtime::cognition::ShadowFilterSets filters_at_node =
+            filters_at_carrier_node(runner, bindings, workspace);
+        const qiven::runtime::cognition::ShadowCompareResult compared =
+            qiven::runtime::cognition::shadow_compare(lock.value(), workspace, filters_used,
+                                                      filters_at_node);
+        if (!compared.cutover_grade())
+        {
+            std::cout << "index rebuild: WR-7 cutover gate FAILED - the closure does not"
+                         " match the workspace selection (divergence or shadow-only node):\n";
+            std::cout << qiven::runtime::cognition::shadow_compare_receipt_json(compared)
+                      << "\n";
+            return exit_fail;
+        }
+        std::cout << "index rebuild: WR-7 cutover gate PASS (workspace generation "
+                  << workspace.generation << ")\n";
+    }
+
     // canonical bundle digest = sha256 over the verified bundle's
     // manifest.json bytes (the publisher's content-address identity)
     const auto manifest_text = read_file_text(bundle.value().dir / "manifest.json");
@@ -781,6 +845,7 @@ int index_rebuild(const std::vector<std::string>& args)
     build.canonical_bundle_digest = bundle_digest;
     build.runtime_generation_id   = generation_id; // execution generation, its own identity axis
     build.publisher_build         = "qiven-runtime-ca1";
+    build.workspace_generation    = workspace.generation; // provenance only (ADR-0058 d6)
 
     const qiven::runtime::cognition::ActivationIndexBuilder index_builder;
     auto built = index_builder.build(build);
@@ -1041,6 +1106,35 @@ int cognition_activate(const std::vector<std::string>& args)
     request.runtime_root     = root / ".qiven" / "runtime";
     request.now_ms           = now_ms_epoch();
 
+    // WR-7 cutover (ADR-0058 d6): the parent WorkspaceGeneration is a
+    // validated axis, never a free string — checked against the ACTIVE
+    // index's provenance sidecar (written by the gated rebuild).
+    {
+        const auto provenance_text =
+            read_file_text(sidecar_root / active / "workspace-provenance.json");
+        if (!provenance_text)
+        {
+            std::cout << "activate: ACTIVE index carries no workspace provenance record"
+                         " (pre-cutover index - rerun `cognition index rebuild`)\n";
+            return exit_fail;
+        }
+        const std::string needle = "\"workspace_generation\":\"";
+        const auto at            = provenance_text->find(needle);
+        if (at == std::string::npos)
+        {
+            std::cout << "activate: workspace provenance record malformed\n";
+            return exit_fail;
+        }
+        const auto begin = at + needle.size();
+        const auto end   = provenance_text->find('"', begin);
+        if (end == std::string::npos)
+        {
+            std::cout << "activate: workspace provenance record malformed\n";
+            return exit_fail;
+        }
+        request.workspace_generation = provenance_text->substr(begin, end - begin);
+    }
+
     const qiven::runtime::cognition::ActivationService service;
     auto outcome = service.activate(request);
     if (!outcome.is_ok())
@@ -1055,7 +1149,8 @@ int cognition_activate(const std::vector<std::string>& args)
               << outcome.value().bundle.protected_count << " protected, "
               << outcome.value().bundle.candidate_count << " candidates, "
               << outcome.value().bundle.payload_bytes << " bytes)\n"
-              << "  receipt " << outcome.value().receipt.receipt_id << "\n";
+              << "  receipt " << outcome.value().receipt.receipt_id << "\n"
+              << "  workspace " << outcome.value().receipt.workspace_generation << "\n";
     return exit_ok;
 }
 

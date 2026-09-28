@@ -94,7 +94,10 @@ ActivationOutcomeResult ActivationService::activate(const ActivationRequest& req
                                                  : budgets.task_payload_max_bytes;
     facts.consumer_profile                 = request.consumer_profile;
     facts.evidence_expires_ms              = 0; // v1: no external live-evidence binding (declared)
-    const ContextActivationReceipt receipt = issue_receipt(facts, request.now_ms);
+    ContextActivationReceipt receipt = issue_receipt(facts, request.now_ms);
+    // WR-7 cutover: the parent WorkspaceGeneration rides the receipt
+    // envelope (provenance-only; never in canonical_json/compute_id).
+    receipt.workspace_generation = request.workspace_generation;
 
     const ActivationReceiptJournal journal(request.runtime_root / "receipts");
     if (!journal.persist(receipt).is_ok())
