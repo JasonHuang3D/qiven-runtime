@@ -299,6 +299,18 @@ WorkspaceLockState parse_workspace_lock(std::string_view bytes)
             {
                 node_state.shadow_only = shadow->boolean;
             }
+            else
+            {
+                // fail-closed on the evidence-grade channel: a malformed
+                // shadow_only field means the node's authority class is
+                // UNKNOWN - treat it as shadow (cutover-grade stays
+                // blocked) rather than silently authoritative
+                node_state.shadow_only = true;
+            }
+        }
+        else
+        {
+            node_state.shadow_only = true; // no declaration object: unknown authority class
         }
         state.nodes.emplace(repository, std::move(node_state));
     }

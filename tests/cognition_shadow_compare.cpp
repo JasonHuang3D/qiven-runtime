@@ -239,6 +239,53 @@ int main()
         std::printf("[ OK ] absent carrier table typed FilterSetMismatch%s", eol.c_str());
     }
 
+    // ---- tier 2: uncovering table (carrier present, repository not covered) ----
+    {
+        using qiven::runtime::cognition::ShadowFilterSets;
+        SourceLock lock = lock_of({ entry("qiven-devkit", commit_a, tree_a, "docs/x.md") });
+        const std::string workspace_json =
+            std::string(R"({"generation":"g","nodes":{"qiven-devkit":{"commit":")") + commit_a +
+            R"(","tree":")" + tree_a + R"(","declaration":{"shadow_only":false}}}})";
+        auto workspace = qiven::runtime::cognition::parse_workspace_lock(workspace_json);
+        ShadowFilterSets used;
+        used.carrier_table_present   = true;
+        used.filters["qiven-devkit"] = { "docs" };
+        ShadowFilterSets at_node; // present but covers nothing
+        at_node.carrier_table_present = true;
+        auto result                   = qiven::runtime::cognition::shadow_compare(lock, workspace, used, at_node);
+        if (result.all_equal() ||
+            result.repositories[0].divergence != ShadowDivergence::FilterSetMismatch)
+        {
+            std::printf("[FAIL] uncovering table not typed%s", eol.c_str());
+            return 14;
+        }
+        std::printf("[ OK ] uncovering table typed FilterSetMismatch%s", eol.c_str());
+    }
+
+    // ---- parser guards: \\uXXXX rejected; malformed declaration blocks cutover ----
+    {
+        auto escaped = qiven::runtime::cognition::parse_workspace_lock(
+            R"({"generation":"sha256:gen\u0031","nodes":{"r":{"commit":"c","tree":"t"}}})");
+        if (!escaped.generation.empty() || !escaped.nodes.empty())
+        {
+            std::printf("[FAIL] \\uXXXX escape not rejected%s", eol.c_str());
+            return 15;
+        }
+        SourceLock lock = lock_of({ entry("qiven-devkit", commit_a, tree_a, "docs/x.md") });
+        auto malformed  = qiven::runtime::cognition::parse_workspace_lock(
+            std::string(R"({"generation":"g","nodes":{"qiven-devkit":{"commit":")") + commit_a +
+            R"(","tree":")" + tree_a + R"(","declaration":{}}}})"); // no shadow_only field
+        auto result = qiven::runtime::cognition::shadow_compare(lock, malformed);
+        if (!result.all_equal() || result.cutover_grade())
+        {
+            std::printf("[FAIL] malformed declaration not fail-closed on cutover grade%s",
+                        eol.c_str());
+            return 16;
+        }
+        std::printf("[ OK ] \\uXXXX rejected; malformed declaration blocks cutover grade%s",
+                    eol.c_str());
+    }
+
     std::printf("SHADOW-COMPARE PASS%s", eol.c_str());
     return 0;
 }
