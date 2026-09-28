@@ -864,11 +864,15 @@ int index_rebuild(const std::vector<std::string>& args)
             {
                 std::cout << "index rebuild: duplicate rule_id " << rule.rule_id << "\n";
             }
-            if (closure.count(rule.source.repository + "\n" + rule.source.path) == 0)
+            // P4-on-demand sources are out-of-closure references by design
+            // (the CA-1 P4 law) - only P0-P3 containment is a defect
+            if (rule.priority_class !=
+                    qiven::runtime::cognition::PriorityClass::P4OnDemand &&
+                closure.count(rule.source.repository + "\n" + rule.source.path) == 0)
             {
-                std::cout << "index rebuild: rule " << rule.rule_id << " source outside the"
-                                                                       " locked closure: "
-                          << rule.source.repository << " " << rule.source.path << "\n";
+                std::cout << "index rebuild: rule " << rule.rule_id
+                          << " source outside the locked closure: " << rule.source.repository
+                          << " " << rule.source.path << "\n";
             }
         }
     }

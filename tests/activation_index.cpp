@@ -51,6 +51,16 @@ ActivationPolicy sample_policy()
     rule.expected_controls    = { "semantic owner law" };
     rule.independent_evidence = { "mechanical" };
     policy.rules.push_back(rule);
+    // P4-on-demand with an OUT-of-closure source: the designed shape (the
+    // CA-1 P4 law - deliberation references ride the policy table, never
+    // a fabricated closure row). The build must accept it.
+    ActivationRule on_demand;
+    on_demand.rule_id                = "ONDEMAND-TEST";
+    on_demand.priority_class         = qiven::runtime::cognition::PriorityClass::P4OnDemand;
+    on_demand.source                 = { "qiven-docs", "accepted", "records" };
+    on_demand.selectors.explicit_ids = { "ADR-0050" };
+    on_demand.expected_controls      = { "on-demand reference" };
+    policy.rules.push_back(on_demand);
     return policy;
 }
 
@@ -103,7 +113,7 @@ int main()
         return 1;
     }
     if (first.value().activation_generation != generation ||
-        first.value().source_count != 2 || first.value().rule_count != 1)
+        first.value().source_count != 2 || first.value().rule_count != 2)
     {
         std::printf("[FAIL] build result wrong%s", eol.c_str());
         return 2;

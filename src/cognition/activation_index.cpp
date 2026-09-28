@@ -537,13 +537,23 @@ IndexOutcome ActivationIndexBuilder::build(const IndexBuildRequest& request) con
             controls.push_back('\n');
         }
         // rule_sources binds the REAL sources row for the rule's declared
-        // source document; a rule whose source is outside the locked closure
-        // fails closed (a dangling reference would misrepresent the closure).
+        // source document; a P0-P3 rule whose source is outside the locked
+        // closure fails closed (a dangling reference would misrepresent the
+        // closure). P4-on-demand is the designed exception (CA-1 design §2/
+        // §3: deliberation records "enter ONLY when a P4 rule references
+        // them; the path filter stays closed") — an out-of-closure P4 source
+        // is an on-demand REFERENCE that rides the digest-bound policy
+        // table, never a fabricated closure row; when the named material
+        // IS in the closure the row is still bound.
         const auto source_row = source_by_repo_path.find(rule.source.repository + "\n" +
                                                          rule.source.path);
         if (source_row == source_by_repo_path.end())
         {
-            return IndexOutcome::fail(IndexError::InvalidRequest);
+            if (rule.priority_class != PriorityClass::P4OnDemand)
+            {
+                return IndexOutcome::fail(IndexError::InvalidRequest);
+            }
+            continue;
         }
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(sqlite.db,
