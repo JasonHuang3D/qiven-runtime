@@ -11,6 +11,18 @@ endif()
 
 option(QIVEN_RUNTIME_BUILD_TESTS "Build qiven-runtime tests" ${PROJECT_IS_TOP_LEVEL})
 
+# Release symbol retention (PR6 C++ diagnostics; I0 census section 2.3):
+# plain Release builds produce full PDBs so deployed Release binaries are
+# diagnosable and crash dumps symbolize against matching PDBs (doc 01
+# section 5: matching PDBs in Release as well as Debug). /FS serializes
+# the shared PDB write under /MP. Directory-scoped BEFORE the test
+# subdirectory so every target inherits; the deploy manifest binds the
+# exe PDBs (bin/*.pdb) per file.
+if(MSVC)
+    add_compile_options("$<$<CONFIG:Release>:/Zi;/FS>")
+    add_link_options("$<$<CONFIG:Release>:/DEBUG;/INCREMENTAL:NO>")
+endif()
+
 # --- workspace resolution (ADR-0052, WR-3/WR-4/WR-5 cutovers) -------------
 # CMake receives the resolved Foundation, context-draft and third-party
 # singleton roots from the workspace adapter (QIVEN_RESOLUTION_FILE,
