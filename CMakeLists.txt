@@ -43,7 +43,7 @@ qiven_workspace_materialize(qiven-context-draft)
 # level EXCLUDE_FROM_ALL on consumed externals drops ProjectReferences in
 # the VS generator (LNK1104); per-package add_subdirectory into the
 # CONSUMER build tree is the law.
-if(NOT DEFINED QIVEN_WORKSPACE_PROVIDER_ROOT_qiven_third_party_win)
+if(NOT QIVEN_WORKSPACE_PROVIDER_ROOT_qiven_third_party_win)
     message(FATAL_ERROR
         "the workspace adapter did not resolve qiven-third-party-win - declare the third-party-singleton edge and configure through the bootstrap")
 endif()

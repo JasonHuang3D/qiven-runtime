@@ -128,6 +128,14 @@ def main() -> int:
 
     failures: list[str] = []
     checked = 0
+    # the CONSUMED package's provenance record must exist and verify: a
+    # vacuous glob pass (no PROVENANCE.yaml anywhere, e.g. a deleted
+    # record on an otherwise matching worktree) is a failure, never a pass
+    consumed_record = singleton / "packages" / "sqlite3" / "PROVENANCE.yaml"
+    if not consumed_record.is_file():
+        print(f"[FAIL] third-party-verify: consumed package has no provenance record "
+              f"({consumed_record})")
+        return 1
     for provenance_path in sorted((singleton / "packages").glob("*/PROVENANCE.yaml")):
         package = provenance_path.parent
         try:
@@ -149,6 +157,9 @@ def main() -> int:
     if failures:
         for failure in failures:
             print(f"[FAIL] third-party-verify: {failure}")
+        return 1
+    if checked == 0:
+        print("[FAIL] third-party-verify: zero file digests verified (vacuous pass is a failure)")
         return 1
     print(f"[ OK ] third-party-verify: singleton {head[:12]} (== locked node); "
           f"{checked} file digest(s) verified")
