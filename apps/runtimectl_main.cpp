@@ -867,7 +867,7 @@ int index_rebuild(const std::vector<std::string>& args)
             if (closure.count(rule.source.repository + "\n" + rule.source.path) == 0)
             {
                 std::cout << "index rebuild: rule " << rule.rule_id << " source outside the"
-                             " locked closure: "
+                                                                       " locked closure: "
                           << rule.source.repository << " " << rule.source.path << "\n";
             }
         }
