@@ -42,6 +42,13 @@ struct IndexBuildRequest
     std::string canonical_bundle_digest; // hex sha256 of the pinned bundle manifest
     std::string runtime_generation_id;   // the EXECUTION generation (never conflated)
     std::string publisher_build;         // runtime build identity
+    // WR-7 cutover (ADR-0058 decision 6): the parent WorkspaceGeneration
+    // this index was selected under — PROVENANCE ONLY. It never enters
+    // activation_generation_of and never feeds any content digest; it is
+    // recorded in the sidecar workspace-provenance.json (written on build,
+    // refreshed on exact-key reuse) which the activation verbs validate
+    // against. Empty = no workspace binding recorded (pre-cutover shape).
+    std::string workspace_generation;
     u32 index_schema_version = 1;
 };
 

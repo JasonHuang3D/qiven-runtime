@@ -46,6 +46,10 @@ struct ActivationRequest
     std::string external_source_lock_sha256;
     std::string activation_policy_sha256;
     std::string consumer_profile;
+    // WR-7 cutover (ADR-0058 decision 6): the parent WorkspaceGeneration,
+    // validated by the caller against the index sidecar's provenance
+    // record — copied into the receipt ENVELOPE only (never canonical).
+    std::string workspace_generation;
     std::filesystem::path runtime_root; // sidecar home (task-bundles/, receipts)
     u64 requested_budget_bytes = 0;     // ≤0 → policy default
     u64 now_ms                 = 0;     // injected clock (envelope only)

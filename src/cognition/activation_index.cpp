@@ -182,6 +182,30 @@ bool replace_file(const std::filesystem::path& from, const std::filesystem::path
     return MoveFileExW(wide_from.c_str(), wide_to.c_str(), MOVEFILE_REPLACE_EXISTING) != FALSE;
 }
 
+// workspace-provenance.json writer (WR-7 cutover, ADR-0058 decision 6):
+// records the parent WorkspaceGeneration the index was selected under.
+// PROVENANCE ONLY — deliberately outside index-manifest.json so content
+// finality (byte-equal manifest reuse) is untouched; an empty generation
+// writes an honest unbound marker so the file's absence can never be
+// mistaken for "no workspace state existed".
+void write_provenance(const std::filesystem::path& dir, const std::string& workspace_generation)
+{
+    std::string escaped;
+    for (const char ch : workspace_generation)
+    {
+        if (ch == '"' || ch == '\\')
+        {
+            escaped.push_back('\\');
+        }
+        escaped.push_back(ch);
+    }
+    const std::string json = "{\"schema\":\"qiven-workspace-provenance-v1\","
+                             "\"workspace_generation\":\"" +
+                             escaped +
+                             "\",\"binding\":\"provenance-only-never-content\"}";
+    write_text(dir / "workspace-provenance.json", json);
+}
+
 // Deterministic token stream for the inverted index: lowercase, split on
 // non-alphanumeric (keeping '-' inside tokens for ids like ADR-0048).
 std::vector<std::string> tokenize(std::string_view text)
@@ -326,6 +350,12 @@ IndexOutcome ActivationIndexBuilder::build(const IndexBuildRequest& request) con
         {
             return IndexOutcome::fail(IndexError::ManifestMismatch);
         }
+        // WR-7 cutover (ADR-0058 decision 6): content-identical reuse with
+        // a moved workspace generation refreshes ONLY the provenance
+        // sidecar — content finality is untouched and the refresh is the
+        // deliberate, bounded exception (an idempotent rebuild at a
+        // content-identical lock must not fault).
+        write_provenance(index_dir, request.workspace_generation);
         return IndexOutcome(IndexBuildResult { generation, index_dir,
                                                request.source_lock.entries.size(),
                                                request.policy.rules.size() });
@@ -543,6 +573,11 @@ IndexOutcome ActivationIndexBuilder::build(const IndexBuildRequest& request) con
     {
         return IndexOutcome::fail(IndexError::StagingFault);
     }
+
+    // workspace-provenance.json — the WR-7 cutover's provenance-of-record
+    // (ADR-0058 decision 6): the parent WorkspaceGeneration this index was
+    // selected under. NEVER in the manifest, NEVER in any content digest.
+    write_provenance(staging_dir, request.workspace_generation);
 
     // Atomic switch: rename staging into place, then swap the ACTIVE
     // pointer (rename-over — a crash between the two leaves a complete

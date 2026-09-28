@@ -52,6 +52,10 @@ struct ContextActivationReceipt
     std::string receipt_id; // sha256 over the canonical facts JSON
     u64 issued_at_ms = 0;   // envelope only — never in the digest
     std::string nonce_hex;  // envelope only (CSPRNG per issuance)
+    // WR-7 cutover (ADR-0058 decision 6): the parent WorkspaceGeneration
+    // the activation was selected under — envelope ONLY, never in
+    // canonical_json/compute_id (provenance, never a content input).
+    std::string workspace_generation;
 
     // Deterministic canonical identity over the bound facts.
     [[nodiscard]] std::string canonical_json() const;
