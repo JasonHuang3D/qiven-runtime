@@ -39,6 +39,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -848,6 +849,29 @@ int index_rebuild(const std::vector<std::string>& args)
     build.workspace_generation    = workspace.generation; // provenance only (ADR-0058 d6)
 
     const qiven::runtime::cognition::ActivationIndexBuilder index_builder;
+    // name the failing rule source before the typed fault (the same
+    // diagnostics law as the lock-update failing-repository probe)
+    {
+        std::set<std::string> closure;
+        for (const auto& entry : build.source_lock.entries)
+        {
+            closure.insert(entry.repository + "\n" + entry.path);
+        }
+        std::set<std::string> rule_ids;
+        for (const auto& rule : build.policy.rules)
+        {
+            if (!rule_ids.insert(rule.rule_id).second)
+            {
+                std::cout << "index rebuild: duplicate rule_id " << rule.rule_id << "\n";
+            }
+            if (closure.count(rule.source.repository + "\n" + rule.source.path) == 0)
+            {
+                std::cout << "index rebuild: rule " << rule.rule_id << " source outside the"
+                             " locked closure: "
+                          << rule.source.repository << " " << rule.source.path << "\n";
+            }
+        }
+    }
     auto built = index_builder.build(build);
     if (!built.is_ok())
     {
