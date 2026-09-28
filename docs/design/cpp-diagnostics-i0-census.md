@@ -43,7 +43,7 @@ Windows. Entry form for all four: `int main(int argc, char** argv)`.
 
 | Executable | Source | Process-wide handlers installed at startup | stdio redirection | Logging/output practice | Loader-order / duplicate-global risk |
 | --- | --- | --- | --- | --- | --- |
-| qiven-runtime-host | apps/runtime_host_main.cpp | `qiven::install_headless_crt_failure_behavior()` first statement (line 87; installs UCRT invalid-parameter handler, `_set_abort_behavior`, Debug-only `_CrtSetReportMode/_CrtSetReportFile`); `SetConsoleCtrlHandler(console_handler, TRUE)` (line 247, before serving) | ONE site: `--log <file>` mode `_open` + `_dup2` onto stdout and stderr fds (lines 183-194; the 2026-09-27 incident fix — comment block lines 160-182 records the mechanism) | `std::printf`+`std::fflush(stdout)` staged markers, per-request `[conn]` lines, 30 s `[beat]` heartbeat; appends unboundedly to one `--log` file (no rotation, no size cap); durable audit surface is SQLite journal (`journal.sqlite3`, WAL) | threads: serve pool (thread-per-connection, typed 125 cap), refresh worker, heartbeat thread; ends `std::exit(0)` (line 477) skipping local destructors by design |
+| qiven-runtime-host | apps/runtime_host_main.cpp | `qiven::install_headless_crt_failure_behavior()` first statement (line 87; installs UCRT invalid-parameter handler, `_set_abort_behavior`, Debug-only `_CrtSetReportMode/_CrtSetReportFile`); `SetConsoleCtrlHandler(console_handler, TRUE)` (line 247, before serving) | ONE site: `--log <file>` mode `_open` + `_dup2` onto stdout and stderr fds (lines 183-194; the 2026-09-27 incident fix — comment block lines 163-182 records the mechanism) | `std::printf`+`std::fflush(stdout)` staged markers, per-request `[conn]` lines, 30 s `[beat]` heartbeat; appends unboundedly to one `--log` file (no rotation, no size cap); durable audit surface is SQLite journal (`journal.sqlite3`, WAL) | threads: serve pool (thread-per-connection, typed 125 cap), refresh worker, heartbeat thread; ends `std::exit(0)` (line 477) skipping local destructors by design |
 | qiven-adapter-bridge | apps/adapter_bridge_main.cpp | `install_headless_crt_failure_behavior()` (line 87) | none | `printf`/`fprintf(stderr)`/`cout`; state file `.generated-temp/.../state.log` atomic temp+rename | one-shot CLI; no threads |
 | qiven-runtimectl | apps/runtimectl_main.cpp | `install_headless_crt_failure_behavior()` (line 1355) | none | `std::cout` human text; exit 0/1/2 | one-shot CLI; spawns nothing |
 | qiven-zcode-hook | apps/zcode_hook_main.cpp | `install_headless_crt_failure_behavior()` (line 56) | none | stderr notes only (verdict mapping); optional `--dump-stdin` payload probe file (append) | one-shot per harness hook invocation; 15 s/10 s harness budgets |
@@ -138,12 +138,19 @@ Complete handler/redirect census over tracked `*.cpp`/`*.hpp` at
   mode. An uncaught C++ exception or an access violation therefore still
   follows the CRT/OS default path today.
 - stdio redirection: exactly ONE site (host `--log`, section 2.1).
-- **Unknown process-global handler sites: 0** in first-party tracked
-  sources. Explicit gap (not zero-knowledge): the vendored
-  `qiven-third-party-win` sqlite3 amalgamation was NOT line-audited — that
-  repository is outside this census's admissible read set. The I1 Devkit
-  static forbidden-pattern check must therefore cover vendored sources as
-  an explicit step before "zero" can be claimed for linked images.
+- **Unknown process-global handler sites: 0** in the qiven-runtime
+  repository's tracked sources. Explicit gaps (not zero-knowledge):
+  (a) the vendored `qiven-third-party-win` sqlite3 amalgamation was NOT
+  line-audited (repository outside this census's admissible read set);
+  (b) `qiven-context-draft` — linked as compiled first-party object code
+  into every governed executable via `target_link_libraries(qiven-runtime
+  PUBLIC qiven::foundation qiven::context_draft)` (root CMakeLists.txt
+  :200) — was NOT line-audited either; its handler surface is outside
+  the runtime-repo grep scope of this census. The I1 Devkit static
+  forbidden-pattern check must therefore cover BOTH the vendored
+  sources and the context-draft tree as explicit steps before "zero"
+  can be claimed for linked images. (qiven-foundation is covered: the
+  F0 baseline §4 process-global census, cross-referenced in §2.2.)
 
 ## 3. The two CRT incident classes
 
@@ -217,9 +224,17 @@ Key pinned-doc invariants feeding Qiven contracts (mapping rows, doc 00
 where supported, else a fast-fail exception catchable by an ATTACHED
 DEBUGGER, else `TerminateProcess(STATUS_INVALID_CRUNTIME_PARAMETER)`; the
 thread-local invalid-parameter handler takes precedence over the global
-one; user handlers "may terminate or return", MS recommends terminating →
-Qiven contract: nonreturning callback (discriminating test: a returning
-handler must fail the I2 probe). `RaiseFailFastException` "bypasses all
+one → Qiven contract: the crash client's global handler must not be
+silently shadowed — a thread-local `_set_invalid_parameter_handler`
+install after diagnostics installation is enumerated and reported, and
+the capsule publication path must remain effective for faults on
+threads that installed a thread-local override (discriminating test:
+a worker thread installing a thread-local handler mid-run, then
+faulting, must still produce the Class-B evidence grade; a silently
+shadowed capsule publication fails the I2 probe). User handlers "may
+terminate or return", MS recommends terminating → Qiven contract:
+nonreturning callback (discriminating test: a returning handler must
+fail the I2 probe). `RaiseFailFastException` "bypasses all
 exception handlers (frame or vector based)" → direct fail-fast cannot be
 claimed by any in-process filter (external-evidence class). DbgHelp is
 single-threaded; `MiniDumpWriteDump` "should be called from a separate
@@ -394,6 +409,9 @@ and are not charged to it.
   learn.microsoft.com only.
 - NOT-VERIFIED (with reasons): vendored sqlite3 handler-surface line
   audit (repository outside the admissible read set — section 2.5 gap);
+  qiven-context-draft handler-surface line audit (compiled first-party
+  code linked into every governed executable, outside the runtime-repo
+  grep scope — section 2.5 gap (b); the I1 static gate closes both);
   MSVC runtime linkage of built images (no build ran — declared from
   CMake defaults, section 2.2); Release PDB absence on disk (declared
   from build configuration, no build ran — section 2.3); Crashpad commit
