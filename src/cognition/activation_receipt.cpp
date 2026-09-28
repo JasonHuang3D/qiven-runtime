@@ -222,7 +222,7 @@ qiven::Result<void, ReceiptError> ActivationReceiptJournal::persist(
     // WR-7 cutover (ADR-0058 decision 6): the envelope provenance column,
     // added lazily to pre-cutover journals (idempotent migration).
     bool has_provenance_column = false;
-    sqlite3_stmt* columns       = nullptr;
+    sqlite3_stmt* columns      = nullptr;
     if (sqlite3_prepare_v2(db, "PRAGMA table_info(receipts)", -1, &columns, nullptr) == SQLITE_OK)
     {
         while (sqlite3_step(columns) == SQLITE_ROW)
@@ -290,7 +290,7 @@ ActivationReceiptJournal::load(const std::string& receipt_id) const
         return qiven::Result<std::optional<ContextActivationReceipt>, ReceiptError>::fail(
             ReceiptError::Persistence);
     }
-    sqlite3_stmt* stmt = nullptr;
+    sqlite3_stmt* stmt     = nullptr;
     bool provenance_column = true;
     if (sqlite3_prepare_v2(db,
                            "SELECT facts_json, issued_at_ms, nonce_hex, workspace_generation "

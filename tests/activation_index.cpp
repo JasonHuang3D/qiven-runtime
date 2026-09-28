@@ -283,9 +283,9 @@ int main()
     // with identical content must NOT change ActivationGeneration, and
     // the sidecar records it + refreshes on exact-key reuse ----
     {
-        IndexBuildRequest provenance       = request;
-        provenance.workspace_generation    = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        const std::string with_provenance  = qiven::runtime::cognition::activation_generation_of(
+        IndexBuildRequest provenance      = request;
+        provenance.workspace_generation   = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const std::string with_provenance = qiven::runtime::cognition::activation_generation_of(
             provenance);
         if (with_provenance != generation)
         {
@@ -318,7 +318,7 @@ int main()
         // reuse drift refreshes ONLY the provenance sidecar
         IndexBuildRequest moved_provenance    = provenance;
         moved_provenance.workspace_generation = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        auto refreshed                       = builder.build(moved_provenance);
+        auto refreshed                        = builder.build(moved_provenance);
         if (!refreshed.is_ok() ||
             refreshed.value().activation_generation != generation ||
             refreshed.value().index_dir != first.value().index_dir)

@@ -80,21 +80,21 @@ ActivationOutcomeResult ActivationService::activate(const ActivationRequest& req
 
     // 4. receipt issuance + persistence (envelope-only time/nonce)
     ReceiptFacts facts;
-    facts.task_digest                      = task.digest_hex();
-    facts.bundle_id                        = bundle.value().bundle_id;
-    facts.runtime_generation_id            = request.runtime_generation_id;
-    facts.activation_generation            = request.activation_generation;
-    facts.external_source_lock_sha256      = request.external_source_lock_sha256;
-    facts.activation_policy_sha256         = request.activation_policy_sha256;
-    facts.budget_bytes                     = request.requested_budget_bytes > 0
-                                                 ? (request.requested_budget_bytes <
+    facts.task_digest                 = task.digest_hex();
+    facts.bundle_id                   = bundle.value().bundle_id;
+    facts.runtime_generation_id       = request.runtime_generation_id;
+    facts.activation_generation       = request.activation_generation;
+    facts.external_source_lock_sha256 = request.external_source_lock_sha256;
+    facts.activation_policy_sha256    = request.activation_policy_sha256;
+    facts.budget_bytes                = request.requested_budget_bytes > 0
+                                            ? (request.requested_budget_bytes <
                                         budgets.task_payload_max_bytes
-                                                        ? request.requested_budget_bytes
-                                                        : budgets.task_payload_max_bytes)
-                                                 : budgets.task_payload_max_bytes;
-    facts.consumer_profile                 = request.consumer_profile;
-    facts.evidence_expires_ms              = 0; // v1: no external live-evidence binding (declared)
-    ContextActivationReceipt receipt = issue_receipt(facts, request.now_ms);
+                                                   ? request.requested_budget_bytes
+                                                   : budgets.task_payload_max_bytes)
+                                            : budgets.task_payload_max_bytes;
+    facts.consumer_profile            = request.consumer_profile;
+    facts.evidence_expires_ms         = 0; // v1: no external live-evidence binding (declared)
+    ContextActivationReceipt receipt  = issue_receipt(facts, request.now_ms);
     // WR-7 cutover: the parent WorkspaceGeneration rides the receipt
     // envelope (provenance-only; never in canonical_json/compute_id).
     receipt.workspace_generation = request.workspace_generation;
