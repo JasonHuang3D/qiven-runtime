@@ -11,12 +11,14 @@ endif()
 
 option(QIVEN_RUNTIME_BUILD_TESTS "Build qiven-runtime tests" ${PROJECT_IS_TOP_LEVEL})
 
-# --- workspace resolution (ADR-0052, WR-3/WR-4 cutovers) ------------------
-# CMake receives the resolved Foundation and context-draft roots from the
-# workspace adapter (QIVEN_RESOLUTION_FILE, supplied by the gate-configure
-# bootstrap); it materializes the locked providers once per build graph
-# and never resolves siblings or checks a consumer-local pin. Only the
-# third-party edge remains legacy root+pin until its cutover (WR-5).
+# --- workspace resolution (ADR-0052, WR-3/WR-4/WR-5 cutovers) -------------
+# CMake receives the resolved Foundation, context-draft and third-party
+# singleton roots from the workspace adapter (QIVEN_RESOLUTION_FILE,
+# supplied by the gate-configure bootstrap); it materializes the locked
+# providers once per build graph and never resolves siblings or checks a
+# consumer-local pin. WR-5 selected the third-party singleton once in the
+# workspace lock; the consumer-local root resolution and exact-SHA pin are
+# retired with that cutover.
 if(NOT DEFINED ENV{QIVEN_RESOLUTION_FILE} OR "$ENV{QIVEN_RESOLUTION_FILE}" STREQUAL "")
     message(FATAL_ERROR
         "QIVEN_RESOLUTION_FILE is not set - configure through the workspace bootstrap "
@@ -34,40 +36,18 @@ qiven_workspace_materialize(qiven-foundation)
 qiven_workspace_materialize(qiven-context-draft)
 
 # --- third-party singleton (Devkit standard v2; cross-repo-cmake.md) ----
-# One workspace copy: qiven-third-party-win. Root resolution: env override
-# -> sibling default -> fail. Exact-SHA pin, validated at configure (same
-# discipline as the draft pin); moving the pin is an explicit re-pin batch.
-set(QIVEN_THIRD_PARTY_ROOT "" CACHE PATH "Path to the qiven-third-party-win checkout")
-if(NOT QIVEN_THIRD_PARTY_ROOT)
-    set(QIVEN_THIRD_PARTY_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/../qiven-third-party-win")
-    if(EXISTS "${QIVEN_THIRD_PARTY_DEFAULT}/CMakeLists.txt")
-        set(QIVEN_THIRD_PARTY_ROOT "${QIVEN_THIRD_PARTY_DEFAULT}")
-    endif()
+# One workspace copy: qiven-third-party-win, selected once in the lock
+# (WR-5). The adapter emits its identity-checked root; the consumer keeps
+# per-package consumption. The qiven_workspace_materialize() helper's
+# EXCLUDE_FROM_ALL provider shape is deliberately NOT used here: directory-
+# level EXCLUDE_FROM_ALL on consumed externals drops ProjectReferences in
+# the VS generator (LNK1104); per-package add_subdirectory into the
+# CONSUMER build tree is the law.
+if(NOT QIVEN_WORKSPACE_PROVIDER_ROOT_qiven_third_party_win)
+    message(FATAL_ERROR
+        "the workspace adapter did not resolve qiven-third-party-win - declare the third-party-singleton edge and configure through the bootstrap")
 endif()
-if(NOT EXISTS "${QIVEN_THIRD_PARTY_ROOT}/packages/sqlite3/CMakeLists.txt")
-    message(FATAL_ERROR "qiven-third-party-win checkout not found; set QIVEN_THIRD_PARTY_ROOT to its path")
-endif()
-
-set(QIVEN_THIRD_PARTY_PIN "318453834315a68fa85374dffa9a77ff73d6e71c")
-find_package(Git REQUIRED)
-execute_process(
-    COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
-    WORKING_DIRECTORY "${QIVEN_THIRD_PARTY_ROOT}"
-    RESULT_VARIABLE QIVEN_TP_SHA_RESULT
-    OUTPUT_VARIABLE QIVEN_TP_SHA
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
-)
-if(NOT QIVEN_TP_SHA_RESULT EQUAL 0)
-    message(FATAL_ERROR "cannot read the qiven-third-party-win revision at ${QIVEN_THIRD_PARTY_ROOT}")
-endif()
-if(NOT QIVEN_TP_SHA STREQUAL QIVEN_THIRD_PARTY_PIN)
-    message(FATAL_ERROR "qiven-third-party-win is pinned at ${QIVEN_THIRD_PARTY_PIN} but the checkout is at ${QIVEN_TP_SHA}; re-pin explicitly in CMakeLists.txt and re-run the third-party-verify gate")
-endif()
-
-# Consumption law (standard section 5; conventions cross-repo-cmake.md):
-# per-package add_subdirectory into the CONSUMER build tree; NO directory-
-# level EXCLUDE_FROM_ALL (VS generator drops ProjectReferences -> LNK1104).
+set(QIVEN_THIRD_PARTY_ROOT "${QIVEN_WORKSPACE_PROVIDER_ROOT_qiven_third_party_win}")
 add_subdirectory("${QIVEN_THIRD_PARTY_ROOT}/packages/sqlite3" "${CMAKE_BINARY_DIR}/tp/sqlite3")
 
 # --- control-plane library (design §2) ------------------------------------

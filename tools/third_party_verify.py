@@ -2,23 +2,24 @@
 
 Law: qiven-devkit docs/engineering/third-party-dependencies.md v2
 (section 5.4 — defense in depth; the singleton's own gate is the
-authority). Resolves the singleton checkout (QIVEN_THIRD_PARTY_ROOT ->
-sibling default), verifies EVERY package provenance there against the
-consumer's recorded pin expectation, and fails closed on mismatch.
-Zero-dependency by design.
+authority). WR-5 (ADR-0052 doc 02): the singleton revision is SELECTED
+ONCE in the workspace lock — this spot-verification resolves the
+singleton checkout (locator only), verifies it against the LOCKED node
+commit, and verifies EVERY package provenance digest there, failing
+closed on mismatch. Zero-dependency by design.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import pathlib
 import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-PIN_FILE = ROOT / "CMakeLists.txt"
-PIN_MARKER = "QIVEN_THIRD_PARTY_PIN \""
+LOCK_NODE = "qiven-third-party-win"
 EXPECTED_SCHEMA = "qiven-third-party-provenance-v2"
 
 
@@ -35,13 +36,20 @@ def resolve_singleton() -> pathlib.Path:
     raise SystemExit("qiven-third-party-win not found (env QIVEN_THIRD_PARTY_ROOT or sibling layout); refusing")
 
 
-def recorded_pin() -> str:
-    for line in PIN_FILE.read_text(encoding="utf-8").splitlines():
-        if line.strip().startswith(PIN_MARKER.replace(" \"", " \"")) or PIN_MARKER in line:
-            start = line.index(PIN_MARKER) + len(PIN_MARKER)
-            end = line.index('"', start)
-            return line[start:end]
-    raise SystemExit("no QIVEN_THIRD_PARTY_PIN found in CMakeLists.txt")
+def locked_node_commit() -> str:
+    control = pathlib.Path(
+        os.environ.get("QIVEN_WORKSPACE_CONTROL", str(ROOT.parent / "qiven-workspace"))
+    ).resolve()
+    lock_path = control / "workspace.lock.json"
+    try:
+        lock = json.loads(lock_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"workspace lock unreadable at {lock_path}: {error}")
+    node = lock.get("nodes", {}).get(LOCK_NODE)
+    commit = node.get("commit") if isinstance(node, dict) else None
+    if not isinstance(commit, str) or len(commit) != 40:
+        raise SystemExit(f"workspace lock has no {LOCK_NODE} node commit")
+    return commit
 
 
 def singleton_head(singleton: pathlib.Path) -> str:
@@ -111,14 +119,23 @@ def sha256_file(path: pathlib.Path) -> str:
 
 def main() -> int:
     singleton = resolve_singleton()
-    pin = recorded_pin()
+    locked = locked_node_commit()
     head = singleton_head(singleton)
-    if head != pin:
-        print(f"[FAIL] third-party-verify: singleton at {head[:12]} != recorded pin {pin[:12]}; re-pin deliberately")
+    if head != locked:
+        print(f"[FAIL] third-party-verify: singleton at {head[:12]} != locked node {locked[:12]}; "
+              "advance the workspace lock deliberately")
         return 1
 
     failures: list[str] = []
     checked = 0
+    # the CONSUMED package's provenance record must exist and verify: a
+    # vacuous glob pass (no PROVENANCE.yaml anywhere, e.g. a deleted
+    # record on an otherwise matching worktree) is a failure, never a pass
+    consumed_record = singleton / "packages" / "sqlite3" / "PROVENANCE.yaml"
+    if not consumed_record.is_file():
+        print(f"[FAIL] third-party-verify: consumed package has no provenance record "
+              f"({consumed_record})")
+        return 1
     for provenance_path in sorted((singleton / "packages").glob("*/PROVENANCE.yaml")):
         package = provenance_path.parent
         try:
@@ -141,7 +158,11 @@ def main() -> int:
         for failure in failures:
             print(f"[FAIL] third-party-verify: {failure}")
         return 1
-    print(f"[ OK ] third-party-verify: singleton {head[:12]} (== pin); {checked} file digest(s) verified")
+    if checked == 0:
+        print("[FAIL] third-party-verify: zero file digests verified (vacuous pass is a failure)")
+        return 1
+    print(f"[ OK ] third-party-verify: singleton {head[:12]} (== locked node); "
+          f"{checked} file digest(s) verified")
     return 0
 
 

@@ -71,37 +71,43 @@ jobs:
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
         with:
           repository: JasonHuang3D/qiven-workspace
-          ref: 423082d428602abc7c21fd1af35652242d4e3cbd
+          ref: 59d096fffc55dce8f44e103db5d3fd4f943791a2
           path: qiven-workspace
       - uses: actions/checkout@v6
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
         with:
           repository: JasonHuang3D/qiven-devkit
-          ref: 945fdd2b399d6701ba2eab79688a730c009e835f
+          ref: bfdb4c1db6c95b57bfcd8d70adfde54940603ac8
           path: qiven-devkit
       - uses: actions/checkout@v6
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
         with:
           repository: JasonHuang3D/qiven-foundation
-          ref: 9045feee0c81fa247dec49407e51e891fe427744
+          ref: dcabe78d62a7485a0f6835632c413caf51af8aa4
           path: qiven-foundation
       - uses: actions/checkout@v6
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
         with:
           repository: JasonHuang3D/qiven-context-draft
-          ref: 50288c2ddcf7d3c9cf0fbc2a0a03eff9276bb6ce
+          ref: d801c9ad68b4a6988bed9b2859a27edd9a2acebe
           path: qiven-context-draft
       - uses: actions/checkout@v6
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
         with:
           repository: JasonHuang3D/qiven-third-party-win
-          ref: 318453834315a68fa85374dffa9a77ff73d6e71c
+          ref: e45361a23e8f1e98c37e291ad2de82f5e64bfeff
           path: qiven-third-party-win
       - uses: actions/checkout@v6
         if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
         with:
+          repository: JasonHuang3D/qiven-toolchain-win
+          ref: a62f7b92f55c40800ddba178327d5c2340da613e
+          path: qiven-toolchain-win
+      - uses: actions/checkout@v6
+        if: ${{ needs.plan.outputs[matrix.id] == 'true' }}
+        with:
           repository: JasonHuang3D/qiven-runtime
-          ref: ba2a959ba3fdf069ae11367e3de39904eedeac51
+          ref: 3fe50063c528c445a2b08e4e95a094e75e8d13c6
           path: qiven-runtime
       - name: Configure (workspace bootstrap)
         if: ${{ needs.plan.outputs[matrix.id] == 'true' && matrix.id == 'windows' }}
@@ -109,13 +115,14 @@ jobs:
           python qiven-workspace/bootstrap/qiven-bootstrap.py gate-configure
           --control qiven-workspace --devkit qiven-devkit
           --repo qiven-runtime --repo-root qiven-runtime
-          --preset vs2022-x64 --cmake cmake
+          --preset vs2022-x64
+          --cmake qiven-toolchain-win/cmake/bin/cmake.exe
       - name: Build (Debug)
         if: ${{ needs.plan.outputs[matrix.id] == 'true' && matrix.id == 'windows' }}
-        run: cmake --build qiven-runtime/build/vs2022-x64 --config Debug --parallel
+        run: qiven-toolchain-win/cmake/bin/cmake.exe --build qiven-runtime/build/vs2022-x64 --config Debug --parallel
       - name: Test (Debug)
         if: ${{ needs.plan.outputs[matrix.id] == 'true' && matrix.id == 'windows' }}
-        run: ctest --test-dir qiven-runtime/build/vs2022-x64 -C Debug --output-on-failure
+        run: qiven-toolchain-win/cmake/bin/ctest.exe --test-dir qiven-runtime/build/vs2022-x64 -C Debug --output-on-failure
       - name: Workspace path status (non-windows units)
         if: ${{ needs.plan.outputs[matrix.id] == 'true' && matrix.id != 'windows' }}
         run: >
