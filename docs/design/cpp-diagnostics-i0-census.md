@@ -348,8 +348,12 @@ cross-process artifact format boundary (amended foundation.md §10).
 
 ## 9. Platform capability + coverage matrices (declared, not claimed)
 
-Windows-first fault-class coverage follows doc 01 §8 verbatim as the
-declared minimum-evidence matrix (UCRT invalid parameter/original H1 →
+Windows-first fault-class coverage follows doc 01 §8 as the declared
+minimum-evidence matrix — the parenthetical below is a CONDENSED grade
+mapping, not a verbatim rendering; each doc 01 row's full qualifiers
+(matching Release symbols, symbolized call chain, labeled
+non-native-context, no-invented-success) bind as written there (UCRT
+invalid parameter/original H1 →
 grade B; terminate → B; unhandled AV → A; abort/assert/purecall →
 non-modal reason + measured B; supervisor TerminateProcess → E; direct
 fail-fast / stack-cookie → E+D-if-proven; pre-main/loader → E+D-if-proven;
