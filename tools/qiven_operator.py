@@ -16,9 +16,13 @@ import time
 from typing import Any
 
 
-# ADR-0046 shim mode: an external repo may delegate to this operator by
-# setting QIVEN_TARGET_ROOT to its own repository root (workspace shim +
-# pin consumption); unset means this checkout is the target itself.
+# WR-6 consumption model (2026-09-28; supersedes the ADR-0046 Decision-3
+# shim+pin wording, which is historical record): QIVEN_TARGET_ROOT
+# identifies the repository this operator serves; unset means this
+# checkout is the target itself. This checkout is a GRANDFATHERED
+# repository-owned operator instance (drifted from the devkit canonical;
+# the wr6-report consolidation residual) - the managed-template class no
+# longer materializes vendored operators.
 ROOT = Path(os.environ.get("QIVEN_TARGET_ROOT", Path(__file__).resolve().parents[1])).resolve()
 CONFIG_PATH = ROOT / ".qiven" / "operator.json"
 HEARTBEAT_SECONDS = 5.0
