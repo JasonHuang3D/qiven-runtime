@@ -69,6 +69,9 @@
     },
     "b7b-carrier-tests": {
       "argv": ["{python}", "tools/b7b_carrier_test.py"]
+    },
+    "b5-carrier-tests": {
+      "argv": ["{python}", "tools/b5_carrier_test.py"]
     }
   },
   "gates": {
@@ -78,6 +81,7 @@
       "b3-deploy-tests",
       "b4-retirement-tests",
       "b7b-carrier-tests",
+      "b5-carrier-tests",
       "third-party-verify",
       "format-check",
       "configure",
