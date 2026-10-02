@@ -11,6 +11,10 @@ its mission and current status.
   are ALSO canonical in the Devkit: `docs/engineering/README.md` there
   (ADR-0046 — repositories carry no copies; this pointer is the entry).
 - Architecture documents, where present: `docs/architecture/`.
+- Operator discovery surface (B6): `tools/qiven.py` (`--help` first);
+  `qiven surface` lists gates/tasks, `qiven records` reads back records.
+  Canonical usage incl. workspace mechanisms (lock-update, resolver,
+  bootstrap): qiven-devkit `docs/conventions/operator-usage.md`.
 
 Roles, typed handoffs, execution authority and workflow are canonical in
 `JasonHuang3D/qiven-context` (collaboration contracts, loaded at cold boot).
