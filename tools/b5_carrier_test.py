@@ -122,6 +122,15 @@ def twin_basis_checks() -> None:
     launcher = (ROOT / "tools" / "qiven.py").read_text(encoding="utf-8")
     check("WR-6 launcher" in launcher, "B5-0.launcher-wr6",
           "tools/qiven.py must stay the WR-6 launcher (the twin basis)")
+    # WR-6 identity law: the launcher runs the workspace bootstrap
+    # identity-check BEFORE any operator import - the same law that
+    # governs this suite's direct canonical-operator drive (identity is
+    # the launcher's job; the suite drives the identity-checked devkit)
+    check("_bootstrap_identity" in launcher, "B5-0.launcher-bootstrap-identity",
+          "the launcher must run the workspace bootstrap identity-check")
+    check(launcher.index("_bootstrap_identity()") < launcher.index("qiven_operator"),
+          "B5-0.identity-before-operator-import",
+          "the bootstrap identity-check must precede the operator import")
     check("qiven_operator" in launcher, "B5-0.launcher-imports-operator",
           "the launcher imports the canonical operator by module name")
     real = json.loads((ROOT / ".qiven" / "operator.json").read_text(encoding="utf-8"))
