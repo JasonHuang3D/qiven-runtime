@@ -2371,6 +2371,14 @@ def _old_fail_i4_body(bin_dir: Path) -> int:
                   f"(registered={registered}, later deny 114={denied_114}). Either "
                   f"the binaries are not the defective revision or the defect was "
                   f"fixed: {err} | {err2}")
+            print("[FAIL] old-fail-i4: WHY: the archaeology leg must reproduce "
+                  "the RECORDED defect mechanism against the pre-fix binaries "
+                  "(rule: runtime/h1-sim-old-fail-i4)")
+            print("       NEXT action: DIAGNOSE - verify --bin-dir points at "
+                  "the historical defective revision (regenerate it from git "
+                  "history if needed); if current binaries show the same "
+                  "behavior, re-read the recorded mechanism before changing "
+                  "anything")
             return EXIT_FAIL
         print(f"[ OK ] old-fail reproduced on the pre-fix revision: registration "
               f"failed as recorded (advisory: {err[:120]}...; later probe: "
@@ -2434,13 +2442,17 @@ def main(argv=None) -> int:
         rig = Rig(bin_dir=Path(args.bin_dir) if args.bin_dir else None)
         if not args.dev and not rig.source_graph()["tree_clean"]:
             print("[FAIL] working tree is not clean - commit first (the receipt binds "
-                  "an exact validated head) or pass --dev for a development receipt")
+                  "an exact validated head) or pass --dev for a development receipt "
+                  "- NEXT action: FIX - commit the tree, or consciously pass --dev "
+                  "(a dev receipt is rejected by verify-receipt)")
             return EXIT_FAIL
         for name in ("qiven-runtime-host.exe", "qiven-zcode-hook.exe"):
             if not (rig.bin / name).exists():
                 print(f"[NOT_VALIDATED] candidate executable missing: {rig.bin / name} "
                       "(build first; a missing binary is acceptance-fatal, never a "
                       "skip)")
+                print("[NOT_VALIDATED] NEXT action: FIX - build the Release "
+                      "preset, then re-run h1-sim")
                 return EXIT_FAIL
         # N5's mixed-fleet leg drives the PRESERVED pre-fix hook binary (an
         # untracked artifact); its absence is a typed precondition rejection,
@@ -2451,6 +2463,9 @@ def main(argv=None) -> int:
             print(f"[NOT_VALIDATED] pre-fix reference hook missing: {prefix_hook} "
                   "(the old-fail evidence pair; regenerate from git history per "
                   "the standing residual)")
+            print("[NOT_VALIDATED] NEXT action: FIX - regenerate the pre-fix "
+                  "reference hook from git history (the standing residual), "
+                  "then re-run h1-sim")
             return EXIT_FAIL
         outcome = rig.execute()
         receipt_path = rig.write_receipt(outcome, argv, dev=args.dev)
@@ -2464,6 +2479,12 @@ def main(argv=None) -> int:
     print(f"[FAIL] h1-sim {outcome['verdict']}: {outcome['failed']} failed, "
           f"{outcome['skipped']} skipped of {outcome['total']} - receipt "
           f"{receipt_path}")
+    print("[FAIL] h1-sim: WHY: a simulated scenario did not meet its recorded "
+          "expectation (rule: runtime/h1-sim - the receipt above is the "
+          "bounded evidence; the per-case rows name each miss)")
+    print("       NEXT action: DIAGNOSE - read the failing case rows above and "
+          "the receipt; classify before changing anything; "
+          "a re-run is not a fix")
     return EXIT_FAIL
 
 
