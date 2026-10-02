@@ -39,10 +39,10 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parent
 REPO = TOOLS.parent
 CANONICAL_OPERATOR = TOOLS.parent.parent / "qiven-devkit" / "tools" / "qiven_operator.py"
-# Template 0.1.11 strict-R6b render (the exact bytes qiven-context-draft
-# and qiven-math adopted at B3; sha256 over the whole file).
+# Template 0.1.13 strict-R6b render (v61 integral-review roll; the
+# receipt-shape refusal NEXT lines; sha256 over the whole file).
 TEMPLATE_LAUNCHER_SHA256 = (
-    "42359fa2e0f02c1972c63a7f6cf19e4b5b846cf23565b45ae7720aa510e6ffff"
+    "21b4cb072b70ee5d8d015d7f88906c5cb4b85464baa7ea2aee1db803e70cbe05"
 )
 CHECKS = 0
 
