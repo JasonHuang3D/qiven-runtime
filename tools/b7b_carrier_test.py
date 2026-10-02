@@ -17,7 +17,9 @@ runtime-third-party-verify, runtime-ci-full):
   B7b-R4  third_party_verify digest/singleton FAILs carry the rule +
           FIX route block (source pin)
   B7b-R5  .github/workflows/ci.yml plan admission and ci-gate carry
-          WHY/NEXT teaching (source pins; gh is the transport)
+          the four-element law - WHAT/WHY/EVIDENCE/NEXT (2026-10-03
+          extension outside the resolve job) (source pins; gh is the
+          transport)
   B7b-R6  the FAIL additions stay within the D3 control budget per
           block (< 2048 serialized bytes)
 
@@ -98,8 +100,12 @@ def case_r4() -> None:
 
 def case_r5() -> None:
     source = _source(".github/workflows/ci.yml")
-    check("Unknown validation unit: $REQUESTED" in source, "B7b-R5",
-          "typed admission kept")
+    check('error: WHAT: unknown validation unit: \\"$REQUESTED\\"' in source,
+          "B7b-R5", "typed admission kept (labeled WHAT)")
+    check('EVIDENCE: received jobs input string: \\"$REQUESTED\\"' in source,
+          "B7b-R5", "plan FAIL carries labeled EVIDENCE")
+    check("EVIDENCE: resolve=${RESOLVE}, plan=${PLAN}, validate=${VALIDATE}"
+          in source, "B7b-R5", "ci-gate FAIL carries labeled EVIDENCE")
     check("rule: runtime/ci-plan" in source, "B7b-R5", "plan rule token")
     check("NEXT action: FIX - re-dispatch with jobs=full" in source, "B7b-R5",
           "plan FIX route")

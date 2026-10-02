@@ -194,9 +194,11 @@ jobs:
             full) selected="windows linux macos" ;;
             windows|linux|macos) selected="$REQUESTED" ;;
             *)
-              echo "Unknown validation unit: $REQUESTED" >&2
+              echo "error: WHAT: unknown validation unit: \"$REQUESTED\" (allowed:" >&2
+              echo "  windows, linux, macos)" >&2
               echo "  WHY: the plan is the typed admission surface - an unknown unit" >&2
               echo "  would validate nothing while appearing to run CI (rule: runtime/ci-plan)" >&2
+              echo "  EVIDENCE: received jobs input string: \"$REQUESTED\"" >&2
               echo "  NEXT action: FIX - re-dispatch with jobs=full or one of:" >&2
               echo "  windows, linux, macos" >&2
               exit 1 ;;
@@ -310,10 +312,10 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$RESOLVE" != success || "$PLAN" != success || ( "$VALIDATE" != success && "$VALIDATE" != skipped ) ]]; then
-            echo "[FAIL] CI Gate: WHY: a requested validation unit did not succeed"
-            echo "  (resolve=${RESOLVE}, plan=${PLAN}, validate=${VALIDATE}; rule: runtime/ci-gate -"
-            echo "  the conclusion is the enforcement; a [SKIP] unit validates"
-            echo "  nothing and is never a pass)"
+            echo "[FAIL] CI Gate: WHAT: a requested validation unit did not succeed"
+            echo "  WHY: the conclusion is the enforcement; a [SKIP] unit validates"
+            echo "  nothing and is never a pass (rule: runtime/ci-gate)"
+            echo "  EVIDENCE: resolve=${RESOLVE}, plan=${PLAN}, validate=${VALIDATE}"
             echo "  NEXT action: DIAGNOSE - open the failed unit's step logs,"
             echo "  classify the failure (resolve/plan, configure/build/test), fix"
             echo "  it at the stated revisions, then re-dispatch; a re-dispatch"
