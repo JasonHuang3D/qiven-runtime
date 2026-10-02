@@ -101,30 +101,43 @@ jobs:
           except Exception as error:
               print(f"error: WHAT: cannot read the workspace lock at {lock_path}:"
                     f" {error}", file=sys.stderr)
+              print("error: WHY: the dispatch graph is resolved from the lock;"
+                    " an unreadable lock has no fallback (rule: runtime/ci-resolve)",
+                    file=sys.stderr)
+              print(f"error: EVIDENCE: {type(error).__name__}: {error}", file=sys.stderr)
               print("error: NEXT action: DIAGNOSE - inspect the dispatched"
                     " workspace ref (rule: runtime/ci-resolve)", file=sys.stderr)
               sys.exit(1)
           if lock.get("schema") != "qiven-workspace-lock-v1":
-              print("error: WHAT: unsupported lock schema: "
-                    + repr(lock.get("schema")), file=sys.stderr)
+              print("error: WHAT: unsupported lock schema", file=sys.stderr)
+              print("error: WHY: the resolver reads only the admitted"
+                    " qiven-workspace-lock-v1 shape; schema drift is a typed"
+                    " stop, never a best-effort parse (rule: runtime/ci-resolve)",
+                    file=sys.stderr)
+              print("error: EVIDENCE: schema=" + repr(lock.get("schema")),
+                    file=sys.stderr)
               print("error: NEXT action: DIAGNOSE - inspect the dispatched"
                     " workspace ref (rule: runtime/ci-resolve)", file=sys.stderr)
               sys.exit(1)
           pairs = [item.split("=", 1) for item in os.environ["LOCK_NODE_MAP"].split()]
           resolved = {}
           unresolved = []
+          evidence = []
           for node, key in pairs:
               commit = lock.get("nodes", {}).get(node, {}).get("commit")
               if commit and re.fullmatch(r"[0-9a-f]{40}", commit):
                   resolved[key] = commit
               else:
                   unresolved.append(node)
+                  evidence.append(f"{node}={commit!r}")
           if unresolved:
               print("error: WHAT: the lock does not resolve node(s): "
-                    + ", ".join(sorted(unresolved)), file=sys.stderr)
+                  + ", ".join(sorted(unresolved)), file=sys.stderr)
               print("error: WHY: the dispatch graph must be fully stated by the"
-                    " lock; an unresolved node has no fallback"
-                    " (rule: runtime/ci-resolve)", file=sys.stderr)
+                  " lock; an unresolved node has no fallback"
+                  " (rule: runtime/ci-resolve)", file=sys.stderr)
+              print("error: EVIDENCE: workspace.lock.json node entries: "
+                  + ", ".join(sorted(evidence)), file=sys.stderr)
               print("error: NEXT action: DIAGNOSE - inspect workspace.lock.json"
                   " at the dispatched workspace ref", file=sys.stderr)
               sys.exit(1)
