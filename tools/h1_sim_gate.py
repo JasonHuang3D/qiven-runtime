@@ -2471,6 +2471,10 @@ def main(argv=None) -> int:
         receipt_path = rig.write_receipt(outcome, argv, dev=args.dev)
     except Exception as failure:  # noqa: BLE001 - typed containment, no traceback
         print(f"[FAIL] h1-sim gate error: {type(failure).__name__}: {failure}")
+        print("[FAIL] h1-sim: NEXT action: DIAGNOSE - the gate contained the "
+              "error typed (no traceback by law); re-run with the harness "
+              "background capture to keep full stdout, then localize from "
+              "the last [ RUN] case row before it")
         return EXIT_FAIL
     if outcome["verdict"] == "SIMULATED_HOOK_HOST_PASS":
         print(f"[ OK ] h1-sim PASS: {outcome['total']} cases, 0 failed, 0 skipped "

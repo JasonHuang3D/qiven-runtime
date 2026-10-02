@@ -62,12 +62,18 @@ def _bootstrap_identity() -> None:
         # straight into `importlib.import_module("qiven_operator")`.
         raise SystemExit(
             "[FAIL] preflight receipt unreadable (required WR-6 identity "
-            f"evidence); refusing Operator import: {exc}"
+            f"evidence); refusing Operator import: {exc} - NEXT action: "
+            "DIAGNOSE - run the bootstrap preflight printed above directly "
+            "to see its raw output; fix what makes it non-JSON, then retry "
+            "the launcher"
         )
     if not isinstance(receipt, dict):
         raise SystemExit(
             "[FAIL] preflight receipt is not an object (required WR-6 "
             f"identity evidence); refusing Operator import: {type(receipt).__name__}"
+            " - NEXT action: DIAGNOSE - the bootstrap must print exactly one "
+            "JSON receipt on stdout; run it directly to see the stray output, "
+            "then retry the launcher"
         )
     for note in receipt.get("bootstrap_notes", []):
         print(f"[wr6] devkit identity note: {note}", file=sys.stderr)

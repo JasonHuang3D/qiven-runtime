@@ -40,8 +40,13 @@ def toolchain_root() -> Path:
         candidate = Path(__file__).resolve().parent.parent.parent / "qiven-toolchain-win"
     root = Path(candidate).resolve()
     locked = _locked_toolchain_commit()
-    head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
-                          capture_output=True, text=True, check=False).stdout.strip()
+    try:
+        head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                              capture_output=True, text=True,
+                              check=False).stdout.strip()
+    except OSError as error:
+        raise SystemExit(
+            f"[FAIL] git unavailable for the toolchain identity check: {error}") from error
     if head != locked:
         found = head[:12] if head else "<unreadable>"
         raise SystemExit(f"[FAIL] toolchain checkout at {found} != locked node {locked[:12]}; "
