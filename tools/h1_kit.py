@@ -78,7 +78,12 @@ def git_head() -> str:
         ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
         capture_output=True, text=True, check=False)
     if out.returncode != 0:
-        raise SystemExit(f"[FAIL] git rev-parse HEAD failed: {out.stderr.strip()}")
+        raise SystemExit(
+            f"[FAIL] git rev-parse HEAD failed in {REPO_ROOT}: "
+            f"{out.stderr.strip()} - NEXT action: DIAGNOSE - run "
+            f"`git -C {REPO_ROOT} rev-parse HEAD` by hand; a repo without "
+            "a resolvable HEAD (detached unborn branch, corrupted .git) "
+            "must be repaired before the kit can pin a head")
     return out.stdout.strip()
 
 
