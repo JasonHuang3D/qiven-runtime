@@ -39,8 +39,10 @@ path around RuntimeHost remains a safety defect.
   dependency).
 - Engineering conventions AND standards: canonical in the Devkit
   (`JasonHuang3D/qiven-devkit`: `docs/conventions/README.md` and
-  `docs/engineering/README.md` there, ADR-0046 — this repository carries
-  no local `docs/engineering/` copy; earlier pointer wording to one is
+  `docs/engineering/README.md` there, ADR-0046 — this repository
+  intentionally carries no local copy of the engineering standards; the
+  existing `docs/engineering/` directory holds repository working kits,
+  not the standards; earlier pointer wording to such a copy is
   superseded).
 - Historical: `docs/architecture/legacy/` (including the superseded
   process-execution architecture, `runtime-process-execution.md`).
