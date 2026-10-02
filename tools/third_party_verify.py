@@ -124,6 +124,9 @@ def main() -> int:
     if head != locked:
         print(f"[FAIL] third-party-verify: singleton at {head[:12]} != locked node {locked[:12]}; "
               "advance the workspace lock deliberately")
+        print("[FAIL] NEXT action: FIX - advance the workspace lock through its "
+              "own transaction (the singleton must sit exactly at the locked "
+              "node); never force this check green")
         return 1
 
     failures: list[str] = []
@@ -157,6 +160,18 @@ def main() -> int:
     if failures:
         for failure in failures:
             print(f"[FAIL] third-party-verify: {failure}")
+        # B7b (four-element law, ADR-0060 D3): the FAIL summary teaches its
+        # rule and the mechanical route; the per-finding lines above are
+        # the bounded evidence.
+        print("[FAIL] third-party-verify: WHY: the consumed third-party tree "
+              "diverged from its PROVENANCE record (rule: "
+              "runtime/third-party-verify - third-party law section 7: "
+              "per-file digests, no unlisted files, singleton at the "
+              "locked node)")
+        print("       NEXT action: FIX - reconcile the listed path/digest (restore "
+              "the recorded file or re-record the deliberate change through "
+              "the provenance workflow), then re-run; "
+              "never delete the record to pass")
         return 1
     if checked == 0:
         print("[FAIL] third-party-verify: zero file digests verified (vacuous pass is a failure)")

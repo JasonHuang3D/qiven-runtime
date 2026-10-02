@@ -88,12 +88,15 @@ def require_clean_tree_with_receipt(gate: str) -> tuple[str, Path]:
         capture_output=True, text=True, check=False)
     if status.stdout.strip():
         raise SystemExit("[FAIL] working tree is not clean - commit first "
-                         "(a kit binds an exact, validated head)")
+                         "(a kit binds an exact, validated head) - "
+                         "NEXT action: FIX - commit or stash, then re-run")
     head = git_head()
     receipt = REPO_ROOT / ".generated-temp" / "operator" / "receipts" / f"{gate}-{head}.json"
     if not receipt.exists():
         raise SystemExit(f"[FAIL] no gate receipt for head {head[:12]} ({gate}) - "
-                         "run the gate at this exact head first")
+                         "run the gate at this exact head first - "
+                         "NEXT action: FIX - `qiven gate {gate}` at this head, "
+                         "then re-run the kit build")
     return head, receipt
 
 
@@ -280,7 +283,9 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
     for name in exes:
         if not (build_dir / name).exists():
             raise SystemExit(f"[FAIL] Release binary missing: {build_dir / name} "
-                             "- run build-release first")
+                             "- run build-release first - "
+                             "NEXT action: FIX - build the Release preset "
+                             "(task build-release), then re-run the kit build")
 
     kit_dir = out_root / "qiven-runtime" / "mvp4-h1" / f"0.1.0-g{head[:8]}"
     if kit_dir.exists():
@@ -297,7 +302,10 @@ def assemble_kit(out_root: Path, head: str, receipt: Path, gate: str,
     profile_src = REPO_ROOT / "config" / "profiles" / PROFILE_NAME
     if not profile_src.exists():
         raise SystemExit(f"[FAIL] deployment profile missing from the runtime "
-                         f"checkout: {profile_src}")
+                         f"checkout: {profile_src} - "
+                         "NEXT action: FIX - restore config/profiles/"
+                         f"{PROFILE_NAME} (ADR-0049 self-containment), then "
+                         "re-run the kit build")
     profile_dst = kit_profile(kit_dir)
     profile_dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(profile_src, profile_dst)
@@ -550,11 +558,15 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
     kit_bin = kit_dir / "bin"
     for exe in (host_exe, hook_exe, ctl_exe):
         if not exe.exists():
-            print(f"[FAIL] release binary missing: {exe} - run build-release first")
+            print(f"[FAIL] release binary missing: {exe} - run build-release first "
+                  "- NEXT action: FIX - build the Release preset (task "
+                  "build-release), then re-run the preflight")
             return EXIT_FAIL
     for name in ("qiven-runtime-host.exe", "qiven-zcode-hook.exe", "qiven-runtimectl.exe"):
         if not (kit_bin / name).exists():
-            print(f"[FAIL] kit reference copy missing: {kit_bin / name}")
+            print(f"[FAIL] kit reference copy missing: {kit_bin / name} "
+                  "- NEXT action: FIX - rebuild the kit with the current "
+                  "h1_kit.py (the kit must stay self-contained)")
             return EXIT_FAIL
     # ADR-0049 self-containment (2026-09-24 preflight incident): the host
     # below runs the KIT-INTERNAL deployment profile, passed EXPLICITLY --
@@ -563,7 +575,9 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
     profile_file = kit_profile(kit_dir)
     if not profile_file.exists():
         print(f"[FAIL] kit is not self-contained: deployment profile missing: "
-              f"{profile_file} - rebuild the kit with the current h1_kit.py")
+              f"{profile_file} - rebuild the kit with the current h1_kit.py "
+              "- NEXT action: FIX - re-run the kit build so the profile ships "
+              "inside the kit (ADR-0049)")
         return EXIT_FAIL
 
     probe_payload = json.dumps({
@@ -648,7 +662,9 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
         else:
             print("[ RUN] no server answering - starting it via the normal path")
             if not start_server():
-                print(f"[FAIL] server did not answer within 20 s; log: {log_path}")
+                print(f"[FAIL] server did not answer within 20 s; log: {log_path} "
+                      "- NEXT action: DIAGNOSE - read the log for the boot "
+                      "failure class; do not re-run blind")
                 return EXIT_FAIL
             started_here = True
             print("[ OK ] server started with the kit-internal profile")
@@ -742,7 +758,9 @@ def cmd_preflight(kit_dir: Path, token: str) -> int:
                 return EXIT_FAIL
             print("[ RUN] preflight: restart brings it back with no residue")
             if not start_server():
-                print(f"[FAIL] restart did not answer within 20 s; log: {log_path}")
+                print(f"[FAIL] restart did not answer within 20 s; log: {log_path} "
+                      "- NEXT action: DIAGNOSE - read the log (the restart leg "
+                      "follows an authenticated shutdown; residue class)")
                 return EXIT_FAIL
             code, _out, err = run_probe()
             residue_ok = code == 0
@@ -781,6 +799,9 @@ def main(argv=None) -> int:
             return cmd_preflight(Path(pre.kit), pre.session_token)
         except Exception as failure:  # bounded custody: no traceback escape (M4)
             print(f"[FAIL] preflight: {type(failure).__name__}: {failure}", file=sys.stderr)
+            print("[FAIL] NEXT action: DIAGNOSE - the exception class names the "
+                  "boundary; fix the environment cause, then re-run the "
+                  "preflight", file=sys.stderr)
             return EXIT_FAIL
 
     parser = argparse.ArgumentParser(description="build the H1 acceptance kit package")

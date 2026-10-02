@@ -35,7 +35,13 @@ jobs:
           case "$REQUESTED" in
             full) selected="windows linux macos" ;;
             windows|linux|macos) selected="$REQUESTED" ;;
-            *) echo "Unknown validation unit: $REQUESTED" >&2; exit 1 ;;
+            *)
+              echo "Unknown validation unit: $REQUESTED" >&2
+              echo "  WHY: the plan is the typed admission surface - an unknown unit" >&2
+              echo "  would validate nothing while appearing to run CI (rule: runtime/ci-plan)" >&2
+              echo "  NEXT action: FIX - re-dispatch with jobs=full or one of:" >&2
+              echo "  windows, linux, macos" >&2
+              exit 1 ;;
           esac
           for unit in windows linux macos; do
             if [[ " $selected " == *" $unit "* ]]; then value=true; else value=false; fi
@@ -142,5 +148,16 @@ jobs:
           PLAN: ${{ needs.plan.result }}
           VALIDATE: ${{ needs.validate.result }}
         run: |
-          [[ "$PLAN" == success ]]
-          [[ "$VALIDATE" == success || "$VALIDATE" == skipped ]]
+          set -euo pipefail
+          if [[ "$PLAN" != success || ( "$VALIDATE" != success && "$VALIDATE" != skipped ) ]]; then
+            echo "[FAIL] CI Gate: WHY: a requested validation unit did not succeed"
+            echo "  (plan=${PLAN}, validate=${VALIDATE}; rule: runtime/ci-gate -"
+            echo "  the conclusion is the enforcement; a [SKIP] unit validates"
+            echo "  nothing and is never a pass)"
+            echo "  NEXT action: DIAGNOSE - open the failed unit's step logs,"
+            echo "  classify the failure (configure/build/test), fix it at the"
+            echo "  pinned workspace revisions, then re-dispatch; a re-dispatch"
+            echo "  without a fix is not a retry."
+            exit 1
+          fi
+          echo "CI Gate: requested validation passed"

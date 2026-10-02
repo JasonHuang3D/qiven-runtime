@@ -177,7 +177,16 @@ def main() -> int:
     if ok:
         print("[ OK ] h1_kit_test")
         return EXIT_OK
-    print("[FAIL] h1_kit_test")
+    # B7b (four-element law, ADR-0060 D3): the FAIL teaches its rule and
+    # the mechanical route; [NOT_RUN] rows are acceptance-fatal (ADR-0055
+    # decision 5), never a skip-success.
+    print("[FAIL] h1_kit_test: WHY: a corrective-lane regression check FAILED "
+          "(rule: runtime/h1-kit-test - the kit builder and host profile "
+          "resolution laws; a [NOT_RUN] row means build-release has not run "
+          "and the regression was NOT exercised)")
+    print("       NEXT action: FIX - the [FAIL]/[NOT_RUN] rows above name the "
+          "broken law; fix the code (or run build-release for NOT_RUN), "
+          "never the check")
     return EXIT_FAIL
 
 
