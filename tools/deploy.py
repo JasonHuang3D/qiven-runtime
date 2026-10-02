@@ -4,9 +4,10 @@ from __future__ import annotations
 through the WORKSPACE BOOTSTRAP identity-check BEFORE any Devkit code runs -
 no QIVEN_DEVKIT_ROOT variable and no consumer-local pin; the lock's
 qiven-devkit node is the only admitted source (deployment law: qiven-devkit
-docs/engineering/deployment.md; launcher shape per qiven-math tools/qiven.py).
-A wrong local Devkit revision (or an unreadable workspace lock) fails typed
-here, before deploy_bundle.py executes."""
+docs/engineering/deployment.md; launcher shape per the strict R6b WR-6
+launcher, converged in repair batch B3). A wrong local Devkit revision (or
+an unreadable workspace lock) fails typed here, before deploy_bundle.py
+executes."""
 
 import json
 import os
@@ -21,6 +22,10 @@ DEVKIT_CHECKOUT = Path(os.environ.get("QIVEN_DEVKIT_CHECKOUT", TARGET_ROOT.paren
 
 
 def _bootstrap_identity() -> None:
+    """Run the workspace bootstrap's Devkit identity-check (its own
+    preflight path) and fail typed on any mismatch. The receipt's notes
+    (e.g. a dirty devkit checkout label in shadow mode) are SURFACED - a
+    swallowed label would let uncommitted deploy code execute silently."""
     control = Path(os.environ.get("QIVEN_WORKSPACE_CONTROL",
                                   TARGET_ROOT.parent / "qiven-workspace")).resolve()
     bootstrap = control / "bootstrap" / "qiven-bootstrap.py"
@@ -44,11 +49,22 @@ def _bootstrap_identity() -> None:
         )
     try:
         receipt = json.loads(completed.stdout)
-        for note in receipt.get("bootstrap_notes", []):
-            print(f"[wr6] devkit identity note: {note}", file=sys.stderr)
-    except json.JSONDecodeError:
-        print("[wr6] preflight receipt unreadable (notes not surfaced)",
-              file=sys.stderr)
+    except json.JSONDecodeError as exc:
+        # P0 repair R6b (B3): the receipt IS the WR-6 identity evidence. An
+        # unreadable receipt must fail typed BEFORE any deploy code runs -
+        # the former warn-and-continue let an unverified identity ride
+        # straight into deploy_bundle.py.
+        raise SystemExit(
+            "[FAIL] preflight receipt unreadable (required WR-6 identity "
+            f"evidence); refusing deploy execution: {exc}"
+        )
+    if not isinstance(receipt, dict):
+        raise SystemExit(
+            "[FAIL] preflight receipt is not an object (required WR-6 "
+            f"identity evidence); refusing deploy execution: {type(receipt).__name__}"
+        )
+    for note in receipt.get("bootstrap_notes", []):
+        print(f"[wr6] devkit identity note: {note}", file=sys.stderr)
 
 
 if __name__ == "__main__":

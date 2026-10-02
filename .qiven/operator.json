@@ -57,11 +57,19 @@
     },
     "h1-sim": {
       "argv": ["{python}", "tools/h1_sim_gate.py", "run"]
+    },
+    "b3-carrier-tests": {
+      "argv": ["{python}", "tools/b3_carrier_test.py"]
+    },
+    "b3-deploy-tests": {
+      "argv": ["{python}", "tools/b3_deploy_test.py"]
     }
   },
   "gates": {
     "local": [
       "check-toolchain",
+      "b3-carrier-tests",
+      "b3-deploy-tests",
       "third-party-verify",
       "format-check",
       "configure",
