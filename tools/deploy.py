@@ -56,12 +56,18 @@ def _bootstrap_identity() -> None:
         # straight into deploy_bundle.py.
         raise SystemExit(
             "[FAIL] preflight receipt unreadable (required WR-6 identity "
-            f"evidence); refusing deploy execution: {exc}"
+            f"evidence); refusing deploy execution: {exc} - NEXT action: "
+            "DIAGNOSE - run the bootstrap preflight printed above directly "
+            "to see its raw output; fix what makes it non-JSON, then retry "
+            "the deploy"
         )
     if not isinstance(receipt, dict):
         raise SystemExit(
             "[FAIL] preflight receipt is not an object (required WR-6 "
             f"identity evidence); refusing deploy execution: {type(receipt).__name__}"
+            " - NEXT action: DIAGNOSE - the bootstrap must print exactly one "
+            "JSON receipt on stdout; run it directly to see the stray output, "
+            "then retry the deploy"
         )
     for note in receipt.get("bootstrap_notes", []):
         print(f"[wr6] devkit identity note: {note}", file=sys.stderr)
@@ -74,6 +80,8 @@ if __name__ == "__main__":
         raise SystemExit(
             f"[FAIL] deploy_bundle.py not found at {script} - the bootstrap "
             "preflight passed but the Devkit checkout lacks the deploy tool"
+            " - NEXT action: FIX - the checkout at the locked devkit node is"
+            " incomplete; re-clone/re-checkout the node, then retry the deploy"
         )
     raise SystemExit(subprocess.call(
         [sys.executable, str(script), "--repo", str(TARGET_ROOT), *sys.argv[1:]]
