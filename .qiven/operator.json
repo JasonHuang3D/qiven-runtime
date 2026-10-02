@@ -63,6 +63,9 @@
     },
     "b3-deploy-tests": {
       "argv": ["{python}", "tools/b3_deploy_test.py"]
+    },
+    "b4-retirement-tests": {
+      "argv": ["{python}", "tools/b4_retirement_test.py"]
     }
   },
   "gates": {
@@ -70,6 +73,7 @@
       "check-toolchain",
       "b3-carrier-tests",
       "b3-deploy-tests",
+      "b4-retirement-tests",
       "third-party-verify",
       "format-check",
       "configure",
