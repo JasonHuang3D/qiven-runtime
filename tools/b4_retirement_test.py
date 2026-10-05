@@ -41,8 +41,9 @@ REPO = TOOLS.parent
 CANONICAL_OPERATOR = TOOLS.parent.parent / "qiven-devkit" / "tools" / "qiven_operator.py"
 # Template strict-R6b render (P3-21 twin roll: the two tokenless
 # refusal sites carry NEXT FIX lines, mirroring the published
-# qiven-context twin - the local devkit checkout's template has not
-# rolled this render yet; sha256 over the whole file).
+# qiven-context twin - the render is carried by devkit revision
+# aae433e, branch jason-extended-cognition/pr15-p321-template;
+# sha256 over the whole file).
 TEMPLATE_LAUNCHER_SHA256 = (
     "01d6636b2b1bc255c87652e0c76e5861ab474a911db7aeff7ebf0dfed35f4dd5"
 )
