@@ -39,13 +39,12 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parent
 REPO = TOOLS.parent
 CANONICAL_OPERATOR = TOOLS.parent.parent / "qiven-devkit" / "tools" / "qiven_operator.py"
-# Template strict-R6b render (P3-21 twin roll: the two tokenless
-# refusal sites carry NEXT FIX lines, mirroring the published
-# qiven-context twin - the render is carried by devkit revision
-# aae433e, branch jason-extended-cognition/pr15-p321-template;
-# sha256 over the whole file).
+# Template render 0.1.16 (WD2 de-brand sites; supersedes the
+# strict-R6b P3-21 twin-roll render previously pinned here): the
+# render landed in this repository at e5f76d9, merged at e711e93;
+# sha256 over the whole file.
 TEMPLATE_LAUNCHER_SHA256 = (
-    "01d6636b2b1bc255c87652e0c76e5861ab474a911db7aeff7ebf0dfed35f4dd5"
+    "990c73937da4a3b239735f465f23229c2b88c03d6d19ede6402c77b3281c4d82"
 )
 CHECKS = 0
 
