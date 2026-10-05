@@ -40,7 +40,7 @@ def _bootstrap_identity() -> None:
             f"[FAIL] workspace bootstrap not found at {bootstrap} - NEXT "
             "action: FIX - set QIVEN_WORKSPACE_CONTROL to the control "
             "checkout that contains bootstrap/qiven-bootstrap.py (the Devkit "
-            "revision is the lock's qiven-devkit node - WR-6, no local pin), "
+            "revision is the lock's qiven-devkit node - devkit-identity, no local pin), "
             "then retry the launcher"
         )
     completed = subprocess.run(
@@ -52,7 +52,7 @@ def _bootstrap_identity() -> None:
         sys.stdout.write(completed.stdout)
         sys.stderr.write(completed.stderr)
         raise SystemExit(
-            "[FAIL] workspace bootstrap rejected the local Devkit (WR-6: "
+            "[FAIL] workspace bootstrap rejected the local Devkit (devkit-identity: "
             "wrong local Devkit revision fails before Operator code "
             "executes) - NEXT action: FIX - the preflight output above names "
             "the mismatch; align the local Devkit checkout "
@@ -67,7 +67,7 @@ def _bootstrap_identity() -> None:
         # the former warn-and-continue let an unverified identity ride
         # straight into `importlib.import_module("qiven_operator")`.
         raise SystemExit(
-            "[FAIL] preflight receipt unreadable (required WR-6 identity "
+            "[FAIL] preflight receipt unreadable (required devkit-identity "
             f"evidence); refusing Operator import: {exc} - NEXT action: "
             "DIAGNOSE - run the bootstrap preflight printed above directly "
             "to see its raw output; fix what makes it non-JSON, then retry "
@@ -75,14 +75,14 @@ def _bootstrap_identity() -> None:
         )
     if not isinstance(receipt, dict):
         raise SystemExit(
-            "[FAIL] preflight receipt is not an object (required WR-6 "
-            f"identity evidence); refusing Operator import: {type(receipt).__name__}"
+            "[FAIL] preflight receipt is not an object (required devkit-identity "
+            f"evidence); refusing Operator import: {type(receipt).__name__}"
             " - NEXT action: DIAGNOSE - the bootstrap must print exactly one "
             "JSON receipt on stdout; run it directly to see the stray output, "
             "then retry the launcher"
         )
     for note in receipt.get("bootstrap_notes", []):
-        print(f"[wr6] devkit identity note: {note}", file=sys.stderr)
+        print(f"[devkit-identity] devkit identity note: {note}", file=sys.stderr)
 
 
 os.environ["QIVEN_TARGET_ROOT"] = str(TARGET_ROOT)

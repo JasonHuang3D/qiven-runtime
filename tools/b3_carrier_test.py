@@ -418,7 +418,7 @@ def launcher_cases(temp: Path) -> None:
                      "['fixture identity note']}))\n")
     done = launch(control)
     check(done.returncode == 0, "B3-L4.exit", done.stdout)
-    check("[wr6] devkit identity note: fixture identity note" in done.stdout,
+    check("[devkit-identity] devkit identity note: fixture identity note" in done.stdout,
           "B3-L4.notes-surfaced", done.stdout)
     check("OPERATOR-REACHED" in done.stdout, "B3-L4.happy-path", done.stdout)
 
