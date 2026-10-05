@@ -405,6 +405,13 @@ def launcher_cases(temp: Path) -> None:
     check("fixture rejection detail" in done.stdout, "B3-L3.relayed-evidence", done.stdout)
     check("[FAIL] workspace bootstrap rejected the local Devkit" in done.stdout,
           "B3-L3.typed-refusal", done.stdout)
+    # P3-21 (runtime twin mirrors the context twin): the devkit-rejection
+    # refusal carries the typed NEXT element - FIX naming the correction
+    # (align the local Devkit checkout to the lock's qiven-devkit node).
+    check(done.returncode == 1, "B3-L3.exit-1", done.stdout)
+    check("NEXT action: FIX" in done.stdout, "B3-L3.next-fix", done.stdout)
+    check("qiven-devkit node" in done.stdout, "B3-L3.next-fix-correction", done.stdout)
+    check("retry the launcher" in done.stdout, "B3-L3.next-retry", done.stdout)
 
     # ---------------- L4: notes surfaced; operator reached -----------
     write(bootstrap, "import json\nprint(json.dumps({'bootstrap_notes': "
@@ -420,6 +427,13 @@ def launcher_cases(temp: Path) -> None:
     check(done.returncode != 0, "B3-L5.exit", done.stdout)
     check("[FAIL] workspace bootstrap not found at" in done.stdout,
           "B3-L5.typed-refusal", done.stdout)
+    # P3-21 (runtime twin mirrors the context twin): the bootstrap-not-found
+    # refusal carries the typed NEXT element too - FIX naming the missing
+    # QIVEN_WORKSPACE_CONTROL locator.
+    check(done.returncode == 1, "B3-L5.exit-1", done.stdout)
+    check("NEXT action: FIX" in done.stdout, "B3-L5.next-fix", done.stdout)
+    check("QIVEN_WORKSPACE_CONTROL" in done.stdout, "B3-L5.next-fix-correction", done.stdout)
+    check("retry the launcher" in done.stdout, "B3-L5.next-retry", done.stdout)
 
 
 def main() -> int:

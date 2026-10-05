@@ -551,7 +551,11 @@ MVP-3+ batches (ARCH §17.3 list).
 
 ## Review record
 
-Self-review 2026-09-23 (authoring session, pre-publication):
+Drafting-hygiene review 2026-09-23 (authoring session):
+
+> 2026-10-05: descriptor renamed from "pre-publication self-review" per
+> qiven-devkit design-first-workflow; publication review defers to the
+> qiven-context base-contract ADR-0062 d4 chain.
 
 1. *D-2 vs implementation-standard "minimal abstraction"* — the
    JournalDb wrapper IS the seam; confirmed no interface layer added.

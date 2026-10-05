@@ -39,10 +39,12 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parent
 REPO = TOOLS.parent
 CANONICAL_OPERATOR = TOOLS.parent.parent / "qiven-devkit" / "tools" / "qiven_operator.py"
-# Template 0.1.13 strict-R6b render (v61 integral-review roll; the
-# receipt-shape refusal NEXT lines; sha256 over the whole file).
+# Template strict-R6b render (P3-21 twin roll: the two tokenless
+# refusal sites carry NEXT FIX lines, mirroring the published
+# qiven-context twin - the local devkit checkout's template has not
+# rolled this render yet; sha256 over the whole file).
 TEMPLATE_LAUNCHER_SHA256 = (
-    "21b4cb072b70ee5d8d015d7f88906c5cb4b85464baa7ea2aee1db803e70cbe05"
+    "01d6636b2b1bc255c87652e0c76e5861ab474a911db7aeff7ebf0dfed35f4dd5"
 )
 CHECKS = 0
 

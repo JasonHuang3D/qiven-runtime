@@ -37,9 +37,11 @@ def _bootstrap_identity() -> None:
     bootstrap = control / "bootstrap" / "qiven-bootstrap.py"
     if not bootstrap.is_file():
         raise SystemExit(
-            f"[FAIL] workspace bootstrap not found at {bootstrap}; set "
-            "QIVEN_WORKSPACE_CONTROL to the control checkout (the Devkit "
-            "revision is the lock's qiven-devkit node - WR-6, no local pin)."
+            f"[FAIL] workspace bootstrap not found at {bootstrap} - NEXT "
+            "action: FIX - set QIVEN_WORKSPACE_CONTROL to the control "
+            "checkout that contains bootstrap/qiven-bootstrap.py (the Devkit "
+            "revision is the lock's qiven-devkit node - WR-6, no local pin), "
+            "then retry the launcher"
         )
     completed = subprocess.run(
         [sys.executable, str(bootstrap), "preflight",
@@ -51,7 +53,11 @@ def _bootstrap_identity() -> None:
         sys.stderr.write(completed.stderr)
         raise SystemExit(
             "[FAIL] workspace bootstrap rejected the local Devkit (WR-6: "
-            "wrong local Devkit revision fails before Operator code executes)"
+            "wrong local Devkit revision fails before Operator code "
+            "executes) - NEXT action: FIX - the preflight output above names "
+            "the mismatch; align the local Devkit checkout "
+            f"({DEVKIT_CHECKOUT}) to the workspace lock's qiven-devkit node, "
+            "then retry the launcher"
         )
     try:
         receipt = json.loads(completed.stdout)
